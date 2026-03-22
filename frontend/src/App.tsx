@@ -7,6 +7,7 @@ import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
 import ServerDetail from '@/pages/ServerDetail'
 import Settings from '@/pages/Settings'
+import History from '@/pages/History'
 
 export default function App() {
   const { init } = useAuthStore()
@@ -45,6 +46,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Settings />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/history"
+          element={
+            <RequireAuth>
+              <Layout>
+                <History />
               </Layout>
             </RequireAuth>
           }

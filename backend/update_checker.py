@@ -81,7 +81,9 @@ async def _gather_stats(server: Server) -> dict:
         "disk": "df -P / | awk 'NR==2{print $5}'",
         "pkg_count": "dpkg --list 2>/dev/null | grep -c '^ii'",
         "apt_cache": "stat -c %Y /var/cache/apt/pkgcache.bin 2>/dev/null || echo ''",
-        "os_info": "lsb_release -ds 2>/dev/null || grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '\"'",
+        # Prefer /etc/os-release PRETTY_NAME — works correctly on Proxmox VE,
+        # Ubuntu, Debian, Raspberry Pi OS, etc. Fall back to lsb_release.
+        "os_info": "grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '\"' || lsb_release -ds 2>/dev/null || echo Unknown",
     }
     tasks = {k: run_command(server, v, timeout=30) for k, v in commands.items()}
     results = {k: await t for k, t in tasks.items()}
@@ -204,6 +206,10 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         packages_json=json.dumps(packages),
     )
     db.add(check)
+
+    # Refresh server os_info if we got a better value
+    if stats.get("os_info") and stats["os_info"] != server.os_info:
+        server.os_info = stats["os_info"]
 
     # Upsert server stats
     stat_row = ServerStats(

@@ -434,18 +434,55 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
 
     if history.status == "success":
         subject = f"Apt Dashboard — Upgrade complete on {server.name}"
-        msg = (f"Upgrade completed successfully on *{server.name}* ({server.hostname}).\n"
-               f"{len(pkgs)} package(s) upgraded.")
+        pkg_list_text = "\n".join(f"  • {p}" for p in pkgs) if pkgs else "  (none)"
+        text = (f"Upgrade completed successfully on {server.name} ({server.hostname}).\n"
+                f"{len(pkgs)} package(s) upgraded:\n{pkg_list_text}")
+        pkg_rows = "".join(f"<tr><td style='padding:2px 8px;font-family:monospace'>{p}</td></tr>" for p in pkgs)
+        html = f"""<html><body style='font-family:sans-serif'>
+<p>Upgrade completed on <strong>{server.name}</strong> ({server.hostname}) — {len(pkgs)} package(s).</p>
+{"<table border='0' cellpadding='0' style='border-collapse:collapse;margin-top:8px'>" + pkg_rows + "</table>" if pkgs else ""}
+</body></html>"""
     else:
         if not cfg.notify_on_error:
             return
         subject = f"Apt Dashboard — Upgrade FAILED on {server.name}"
-        msg = (f"⚠️ Upgrade *FAILED* on *{server.name}* ({server.hostname}).\n"
-               f"Check the dashboard for details.")
+        text = f"Upgrade FAILED on {server.name} ({server.hostname}). Check the dashboard for details."
+        html = f"<html><body><p>⚠️ Upgrade <strong>FAILED</strong> on <strong>{server.name}</strong> ({server.hostname}).<br>Check the dashboard for details.</p></body></html>"
 
-    html = f"<html><body><p>{msg.replace('*', '<strong>').replace('*', '</strong>')}</p></body></html>"
-    await _send_email(cfg, subject, html, msg.replace("*", ""))
-    await _send_telegram(cfg, msg)
+    await _send_email(cfg, subject, html, text)
+    await _send_telegram(cfg, text)
+
+
+async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
+    """Send one summary notification after an upgrade-all batch."""
+    if not cfg.notify_on_upgrade_complete:
+        return
+
+    successes = [(s, h) for s, h in results if h.status == "success"]
+    failures = [(s, h) for s, h in results if h.status != "success"]
+
+    subject = f"Apt Dashboard — Upgrade All complete ({len(successes)} ok, {len(failures)} failed)"
+
+    lines = [f"Upgrade-all finished: {len(results)} server(s) processed.\n"]
+    if successes:
+        lines.append("✓ Succeeded:")
+        for s, h in successes:
+            try:
+                pkgs = json.loads(h.packages_upgraded or "[]")
+            except Exception:
+                pkgs = []
+            lines.append(f"  • {s.name} — {len(pkgs)} package(s) upgraded")
+            for p in pkgs:
+                lines.append(f"      {p}")
+    if failures:
+        lines.append("\n✗ Failed:")
+        for s, h in failures:
+            lines.append(f"  • {s.name} — {h.status}")
+
+    text = "\n".join(lines)
+    html = "<html><body><pre style='font-family:monospace'>" + text + "</pre></body></html>"
+    await _send_email(cfg, subject, html, text)
+    await _send_telegram(cfg, text)
 
 
 async def get_telegram_updates(bot_token: str) -> list[dict]:

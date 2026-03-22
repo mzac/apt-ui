@@ -108,6 +108,8 @@ export const groups = {
 
 export const stats = {
   overview: () => get<FleetOverview>('/api/stats/overview'),
+  globalHistory: (page = 1) =>
+    get<{ total: number; page: number; per_page: number; items: (UpdateHistory & { server_name: string })[] }>(`/api/history?page=${page}`),
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,25 @@ export const notifications = {
   testEmail: () => post('/api/notifications/test/email'),
   testTelegram: () => post('/api/notifications/test/telegram'),
   detectChatId: () => get<{ chats: { id: number; title: string }[] }>('/api/notifications/telegram/detect-chat-id'),
+}
+
+// ---------------------------------------------------------------------------
+// Config export / import
+// ---------------------------------------------------------------------------
+
+export const config = {
+  export: () => get<Record<string, unknown>>('/api/config/export'),
+  import: (data: Record<string, unknown>, opts?: { overwrite_servers?: boolean; overwrite_schedule?: boolean; overwrite_notifications?: boolean }) =>
+    post<{ imported: Record<string, unknown> }>('/api/config/import', { data, ...opts }),
+  features: () => get<{ enable_terminal: boolean }>('/api/config/features'),
+  exportCsv: () => fetch('/api/config/servers/csv', { credentials: 'include' }),
+  importCsv: (file: File, overwrite = false) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`/api/config/servers/csv?overwrite=${overwrite}`, {
+      method: 'POST', credentials: 'include', body: form,
+    }).then(r => r.json() as Promise<{ added: number; skipped: number }>)
+  },
 }
 
 // ---------------------------------------------------------------------------

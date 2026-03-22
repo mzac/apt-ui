@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
-import { servers as serversApi, groups as groupsApi } from '@/api/client'
+import { servers as serversApi, groups as groupsApi, config as configApi } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup } from '@/types'
 import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket } from '@/api/client'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -9,7 +9,7 @@ import StatusDot from '@/components/StatusDot'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
-const TABS = ['Packages', 'Terminal', 'History', 'Stats'] as const
+const TABS = ['Packages', 'Upgrade', 'Shell', 'History', 'Stats'] as const
 type Tab = typeof TABS[number]
 
 export default function ServerDetail() {
@@ -37,6 +37,13 @@ export default function ServerDetail() {
   useEffect(() => {
     if ((location.state as any)?.openEdit) {
       setShowEdit(true)
+    }
+  }, [location.state])
+
+  // Auto-select tab from navigation state
+  useEffect(() => {
+    if ((location.state as any)?.tab) {
+      setTab((location.state as any).tab as Tab)
     }
   }, [location.state])
 
@@ -154,7 +161,8 @@ export default function ServerDetail() {
       </div>
 
       {tab === 'Packages' && <PackagesTab serverId={serverId} server={server} onRefresh={load} />}
-      {tab === 'Terminal' && <TerminalTab serverId={serverId} server={server} onRefresh={load} />}
+      {tab === 'Upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={load} />}
+      {tab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
       {tab === 'History' && <HistoryTab serverId={serverId} />}
       {tab === 'Stats' && <StatsTab serverId={serverId} />}
     </div>
@@ -177,6 +185,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
     ssh_port: String(server.ssh_port),
     group_id: server.group_id ? String(server.group_id) : '',
     is_enabled: server.is_enabled,
+    tags: (server.tags || []).join(', '),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -189,6 +198,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       ssh_port: String(server.ssh_port),
       group_id: server.group_id ? String(server.group_id) : '',
       is_enabled: server.is_enabled,
+      tags: (server.tags || []).join(', '),
     })
   }, [server])
 
@@ -203,6 +213,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         ssh_port: parseInt(editForm.ssh_port) || 22,
         group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
         is_enabled: editForm.is_enabled,
+        tags: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
       })
       onSaved()
     } catch (err: unknown) {
@@ -261,6 +272,17 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
               <option key={g.id} value={String(g.id)}>{g.name}</option>
             ))}
           </select>
+        </div>
+        <div>
+          <label className="label">Tags</label>
+          <input
+            type="text"
+            className="input w-full text-xs"
+            placeholder="tag1, tag2, tag3"
+            value={editForm.tags}
+            onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))}
+          />
+          <p className="text-xs text-text-muted mt-0.5">Comma-separated tags</p>
         </div>
         <div className="flex items-end pb-1">
           <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
@@ -357,6 +379,13 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
               <button onClick={clearSelection} className="btn-secondary text-xs py-0.5">Clear</button>
             </div>
             <span className="text-xs text-text-muted ml-auto">{sorted.length} packages</span>
+            <button
+              onClick={() => { setSelected(new Set(packages.map(p => p.name))); setUpgradeModal(true) }}
+              disabled={packages.length === 0}
+              className="btn-amber text-xs"
+            >
+              Upgrade All ({packages.length})
+            </button>
             {someChecked && (
               <button
                 onClick={() => setUpgradeModal(true)}
@@ -542,7 +571,7 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
           setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓' : '✗'} ${d.packages_upgraded} packages upgraded\x1b[0m\n`])
         }
       },
-      () => setDone(true),
+      () => { setDone(true); window.dispatchEvent(new CustomEvent('apt:refresh')) },
     )
     wsRef.current = ws
   }
@@ -625,7 +654,7 @@ function AutoremoveModal({ serverId, packages, onClose }: {
           setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Autoremove successful' : '✗ Autoremove failed'}\x1b[0m\n`])
         }
       },
-      () => setDone(true),
+      () => { setDone(true); window.dispatchEvent(new CustomEvent('apt:refresh')) },
     )
     wsRef.current = ws
   }
@@ -682,32 +711,29 @@ function AutoremoveModal({ serverId, packages, onClose }: {
 
 
 // ---------------------------------------------------------------------------
-// Terminal tab
+// Shell panel wrapper (checks feature flag)
 // ---------------------------------------------------------------------------
-function TerminalTab({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
-  const [mode, setMode] = useState<'upgrade' | 'shell'>('upgrade')
+function SshShellPanelWrapper({ serverId }: { serverId: number }) {
+  const [terminalEnabled, setTerminalEnabled] = useState<boolean | null>(null)
 
-  return (
-    <div className="space-y-3">
-      {/* Mode selector */}
-      <div className="flex gap-1 border-b border-border">
-        {(['upgrade', 'shell'] as const).map(m => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 capitalize ${
-              mode === m ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
-            }`}
-          >
-            {m === 'upgrade' ? 'Upgrade' : 'Shell'}
-          </button>
-        ))}
+  useEffect(() => {
+    configApi.features().then(f => setTerminalEnabled(f.enable_terminal)).catch(() => setTerminalEnabled(false))
+  }, [])
+
+  if (terminalEnabled === null) {
+    return <div className="text-text-muted text-sm py-8 text-center font-mono">Loading…</div>
+  }
+
+  if (!terminalEnabled) {
+    return (
+      <div className="card p-6 text-center space-y-2">
+        <p className="text-text-muted text-sm">Shell access is disabled.</p>
+        <p className="text-text-muted text-xs font-mono">Set <span className="text-cyan">ENABLE_TERMINAL=true</span> in your docker-compose.yml to enable it.</p>
       </div>
+    )
+  }
 
-      {mode === 'upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={onRefresh} />}
-      {mode === 'shell' && <SshShellPanel serverId={serverId} />}
-    </div>
-  )
+  return <SshShellPanel serverId={serverId} />
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +773,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
       setRunning(false)
       setDone(true)
       onRefresh()
+      window.dispatchEvent(new CustomEvent('apt:refresh'))
     })
     wsRef.current = ws
   }

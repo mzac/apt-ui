@@ -37,6 +37,7 @@ async def init_db():
             "ALTER TABLE update_checks ADD COLUMN autoremove_packages TEXT",
             "ALTER TABLE servers ADD COLUMN os_info TEXT",
             "ALTER TABLE servers ADD COLUMN is_enabled BOOLEAN DEFAULT 1",
+            "ALTER TABLE servers ADD COLUMN tags TEXT",
         ]
         for sql in migrations:
             try:

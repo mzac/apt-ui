@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { servers as serversApi, groups as groupsApi, scheduler as schedulerApi, notifications as notifApi, auth } from '@/api/client'
+import { servers as serversApi, groups as groupsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
-const TABS = ['Servers', 'Schedule', 'Notifications', 'Account'] as const
+const TABS = ['Servers', 'Schedule', 'Notifications', 'Account', 'Backup'] as const
 type Tab = typeof TABS[number]
 
 const PALETTE = [
@@ -50,6 +50,7 @@ export default function Settings() {
       {tab === 'Schedule' && <ScheduleTab />}
       {tab === 'Notifications' && <NotificationsTab />}
       {tab === 'Account' && <AccountTab />}
+      {tab === 'Backup' && <BackupTab />}
     </div>
   )
 }
@@ -69,7 +70,7 @@ function ServersTab() {
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; detail: string }>>({})
   // Inline editing state
   const [editingServer, setEditingServer] = useState<number | null>(null)
-  const [editForm, setEditForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', group_id: '', is_enabled: true })
+  const [editForm, setEditForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', group_id: '', is_enabled: true, tags: '' })
   const [editError, setEditError] = useState('')
   const [editingGroup, setEditingGroup] = useState<number | null>(null)
   const [editGroupForm, setEditGroupForm] = useState({ name: '', color: '#3b82f6' })
@@ -91,6 +92,7 @@ function ServersTab() {
       ssh_port: String(s.ssh_port),
       group_id: s.group_id ? String(s.group_id) : '',
       is_enabled: s.is_enabled,
+      tags: (s.tags || []).join(', '),
     })
     setEditError('')
   }
@@ -106,6 +108,7 @@ function ServersTab() {
         ssh_port: parseInt(editForm.ssh_port) || 22,
         group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
         is_enabled: editForm.is_enabled,
+        tags: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
       })
       setEditingServer(null)
       load()
@@ -298,6 +301,7 @@ function ServersTab() {
                 <th className="text-left px-3 py-2">Hostname</th>
                 <th className="text-left px-3 py-2">User / Port</th>
                 <th className="text-left px-3 py-2">Group</th>
+                <th className="text-left px-3 py-2">Tags</th>
                 <th className="text-left px-3 py-2">Enabled</th>
                 <th className="text-left px-3 py-2">Actions</th>
               </tr>
@@ -330,6 +334,10 @@ function ServersTab() {
                     </select>
                   </td>
                   <td className="px-2 py-2">
+                    <input className="input w-full text-xs py-1" placeholder="tag1, tag2" value={editForm.tags}
+                      onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))} />
+                  </td>
+                  <td className="px-2 py-2">
                     <input type="checkbox" checked={editForm.is_enabled}
                       onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
                       className="w-4 h-4 accent-green" />
@@ -358,6 +366,15 @@ function ServersTab() {
                     ) : <span className="text-text-muted text-xs">—</span>}
                   </td>
                   <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {(s.tags || []).length > 0
+                        ? (s.tags || []).map(t => (
+                            <span key={t} className="badge text-xs bg-surface-2 text-text-muted border border-border">{t}</span>
+                          ))
+                        : <span className="text-text-muted text-xs">—</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
                     <span className={`text-xs font-mono ${s.is_enabled ? 'text-green' : 'text-text-muted'}`}>
                       {s.is_enabled ? 'yes' : 'no'}
                     </span>
@@ -378,7 +395,7 @@ function ServersTab() {
                 </tr>
               ))}
               {serverList.length === 0 && (
-                <tr><td colSpan={6} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -664,6 +681,211 @@ function AccountTab() {
       </div>
 
       <button onClick={logout} className="btn-danger w-full">Logout</button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Backup tab — export / import configuration
+// ---------------------------------------------------------------------------
+function BackupTab() {
+  const [importing, setImporting] = useState(false)
+  const [importOpts, setImportOpts] = useState({
+    overwrite_servers: false,
+    overwrite_schedule: true,
+    overwrite_notifications: true,
+  })
+  const [importResult, setImportResult] = useState<string | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+
+  async function handleExport() {
+    setExporting(true)
+    try {
+      const data = await configApi.export()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const date = new Date().toISOString().slice(0, 10)
+      a.download = `apt-dashboard-config-${date}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: unknown) {
+      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      setImportResult(null)
+      setImportError(null)
+      setImporting(true)
+      try {
+        const parsed = JSON.parse(ev.target?.result as string)
+        const res = await configApi.import(parsed, importOpts)
+        const r = res.imported as Record<string, unknown>
+        const parts = []
+        if (r.groups) parts.push(`${r.groups} groups added`)
+        if (r.servers) parts.push(`${r.servers} servers added`)
+        if (r.skipped_servers) parts.push(`${r.skipped_servers} servers skipped (already exist)`)
+        if (r.schedule) parts.push('schedule updated')
+        if (r.notifications) parts.push('notifications updated')
+        setImportResult(parts.length ? parts.join(', ') : 'Nothing changed')
+      } catch (err: unknown) {
+        setImportError('Import failed: ' + (err instanceof Error ? err.message : String(err)))
+      } finally {
+        setImporting(false)
+        e.target.value = ''
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  return (
+    <div className="space-y-8 max-w-lg">
+      {/* Export */}
+      <div className="card p-5 space-y-3">
+        <h2 className="text-sm font-medium text-text-primary">Export Configuration</h2>
+        <p className="text-xs text-text-muted">
+          Downloads a JSON file containing all groups, servers, schedule settings, and notification settings.
+          SSH keys are <span className="text-amber">not</span> included.
+          The file may contain SMTP passwords and Telegram tokens — keep it secure.
+        </p>
+        <button onClick={handleExport} disabled={exporting} className="btn-primary">
+          {exporting ? 'Exporting…' : 'Export to JSON'}
+        </button>
+      </div>
+
+      {/* Import */}
+      <div className="card p-5 space-y-3">
+        <h2 className="text-sm font-medium text-text-primary">Import Configuration</h2>
+        <p className="text-xs text-text-muted">
+          Import a previously exported JSON file. Groups and servers are matched by name / hostname.
+        </p>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-4 h-4 accent-green"
+              checked={importOpts.overwrite_servers}
+              onChange={e => setImportOpts(o => ({ ...o, overwrite_servers: e.target.checked }))}
+            />
+            Overwrite existing servers (update hostname matches with imported values)
+          </label>
+          <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-4 h-4 accent-green"
+              checked={importOpts.overwrite_schedule}
+              onChange={e => setImportOpts(o => ({ ...o, overwrite_schedule: e.target.checked }))}
+            />
+            Overwrite schedule settings
+          </label>
+          <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-4 h-4 accent-green"
+              checked={importOpts.overwrite_notifications}
+              onChange={e => setImportOpts(o => ({ ...o, overwrite_notifications: e.target.checked }))}
+            />
+            Overwrite notification settings
+          </label>
+        </div>
+
+        <label className={`btn-secondary inline-block cursor-pointer ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
+          {importing ? 'Importing…' : 'Choose JSON file…'}
+          <input type="file" accept=".json,application/json" className="hidden" onChange={handleFileChange} disabled={importing} />
+        </label>
+
+        {importResult && <p className="text-green text-sm">✓ {importResult}</p>}
+        {importError && <p className="text-red text-sm">{importError}</p>}
+      </div>
+
+      {/* CSV */}
+      <div className="card p-5 space-y-3">
+        <h2 className="text-sm font-medium text-text-primary">CSV — Servers Only</h2>
+        <p className="text-xs text-text-muted">
+          Export or import just the server list as CSV. Columns: <span className="font-mono text-text-primary">name, hostname, username, ssh_port, group_name, is_enabled</span>.
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="btn-secondary text-xs"
+            onClick={async () => {
+              const res = await configApi.exportCsv()
+              const blob = await res.blob()
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `apt-dashboard-servers-${new Date().toISOString().slice(0,10)}.csv`
+              a.click()
+              URL.revokeObjectURL(url)
+            }}
+          >
+            Export CSV
+          </button>
+
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => {
+              const example = 'name,hostname,username,ssh_port,group_name,is_enabled\nmy-server,192.168.1.10,root,22,homelab,true\n'
+              const blob = new Blob([example], { type: 'text/csv' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url; a.download = 'apt-dashboard-servers-example.csv'; a.click()
+              URL.revokeObjectURL(url)
+            }}
+          >
+            Download Example CSV
+          </button>
+        </div>
+
+        <CsvImport />
+      </div>
+    </div>
+  )
+}
+
+function CsvImport() {
+  const [overwrite, setOverwrite] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setResult(null); setError(null); setLoading(true)
+    try {
+      const res = await configApi.importCsv(file, overwrite)
+      setResult(`${res.added} server(s) added, ${res.skipped} skipped`)
+    } catch (err: unknown) {
+      setError('Import failed: ' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setLoading(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+        <input type="checkbox" className="w-4 h-4 accent-green" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} />
+        Overwrite existing servers (match by hostname)
+      </label>
+      <label className={`btn-secondary inline-block cursor-pointer text-xs ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+        {loading ? 'Importing…' : 'Import CSV…'}
+        <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleFile} disabled={loading} />
+      </label>
+      {result && <p className="text-green text-sm">✓ {result}</p>}
+      {error && <p className="text-red text-sm">{error}</p>}
     </div>
   )
 }

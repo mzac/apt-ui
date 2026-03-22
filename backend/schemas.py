@@ -64,6 +64,7 @@ class ServerCreate(BaseModel):
     username: str
     ssh_port: int = 22
     group_id: Optional[int] = None
+    tags: list[str] = []
 
 
 class ServerUpdate(BaseModel):
@@ -73,6 +74,7 @@ class ServerUpdate(BaseModel):
     ssh_port: Optional[int] = None
     group_id: Optional[int] = None
     is_enabled: Optional[bool] = None
+    tags: Optional[list[str]] = None
 
 
 class LatestCheckOut(BaseModel):
@@ -99,6 +101,7 @@ class ServerOut(BaseModel):
     group_name: Optional[str] = None
     group_color: Optional[str] = None
     os_info: Optional[str] = None
+    tags: list[str] = []
     is_enabled: bool
     created_at: datetime
     updated_at: datetime

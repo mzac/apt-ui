@@ -56,6 +56,10 @@ def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGr
             reboot_required=check.reboot_required,
             error_message=check.error_message,
         )
+    try:
+        tags = json.loads(server.tags) if server.tags else []
+    except Exception:
+        tags = []
     return ServerOut(
         id=server.id,
         name=server.name,
@@ -66,6 +70,7 @@ def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGr
         group_name=group.name if group else None,
         group_color=group.color if group else None,
         os_info=server.os_info,
+        tags=tags,
         is_enabled=server.is_enabled,
         created_at=server.created_at,
         updated_at=server.updated_at,
@@ -142,6 +147,7 @@ async def create_server(
         username=body.username,
         ssh_port=body.ssh_port,
         group_id=body.group_id,
+        tags=json.dumps(body.tags) if body.tags else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -149,16 +155,30 @@ async def create_server(
     await db.commit()
     await db.refresh(server)
 
-    # Test SSH connectivity immediately
+    # Test SSH connectivity and grab OS info immediately
     result = await test_connection(server)
     if result.success:
-        # Try to grab OS info
         from backend.ssh_manager import run_command
-        os_result = await run_command(server, "lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'")
+        os_result = await run_command(server, "grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '\"' || lsb_release -ds 2>/dev/null || echo Unknown")
         if os_result.success and os_result.stdout.strip():
             server.os_info = os_result.stdout.strip().splitlines()[0]
             await db.commit()
             await db.refresh(server)
+
+        # Kick off a full update check in the background so the dashboard
+        # shows real package counts without requiring a manual "Check"
+        import asyncio
+        from backend.update_checker import check_server
+        from backend.database import AsyncSessionLocal
+
+        async def _bg_check():
+            async with AsyncSessionLocal() as bg_db:
+                from sqlalchemy import select as _select
+                srv = (await bg_db.execute(_select(Server).where(Server.id == server.id))).scalar_one_or_none()
+                if srv:
+                    await check_server(srv, bg_db)
+
+        asyncio.create_task(_bg_check())
 
     return _build_server_out(server, None, group)
 
@@ -195,6 +215,8 @@ async def update_server(
         server.group_id = None
     if body.is_enabled is not None:
         server.is_enabled = body.is_enabled
+    if body.tags is not None:
+        server.tags = json.dumps(body.tags)
 
     server.updated_at = datetime.utcnow()
     await db.commit()

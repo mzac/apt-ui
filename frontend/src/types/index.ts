@@ -37,6 +37,7 @@ export interface Server {
   group_name: string | null
   group_color: string | null
   os_info: string | null
+  tags: string[]
   is_enabled: boolean
   created_at: string
   updated_at: string

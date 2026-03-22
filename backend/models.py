@@ -38,6 +38,7 @@ class Server(Base):
     ssh_port: Mapped[int] = mapped_column(Integer, default=22)
     group_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("server_groups.id"), nullable=True)
     os_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of tag strings
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())

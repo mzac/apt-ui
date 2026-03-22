@@ -8,6 +8,7 @@ const ansiConvert = new Convert({ escapeXML: true })
 interface Props {
   servers: Server[]
   onClose: () => void
+  onMinimize?: () => void
 }
 
 interface ServerProgress {
@@ -16,7 +17,7 @@ interface ServerProgress {
   packagesUpgraded?: number
 }
 
-export default function UpgradeAllModal({ servers, onClose }: Props) {
+export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props) {
   const [action, setAction] = useState('upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
   const [started, setStarted] = useState(false)
@@ -66,6 +67,11 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
     wsRef.current = ws
   }
 
+  function handleClose() {
+    window.dispatchEvent(new CustomEvent('apt:refresh'))
+    onClose()
+  }
+
   const statusIcon = (s: ServerProgress['status']) =>
     ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗' }[s])
 
@@ -74,7 +80,20 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
       <div className="bg-surface border border-border rounded-lg w-full max-w-3xl max-h-[90vh] flex flex-col">
         <div className="p-4 border-b border-border flex items-center justify-between">
           <h2 className="font-mono text-sm text-text-primary">Upgrade All Servers</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-red">✕</button>
+          <div className="flex items-center gap-2">
+            {started && !done && onMinimize && (
+              <button
+                onClick={onMinimize}
+                className="text-text-muted hover:text-text-primary text-lg leading-none"
+                title="Minimize"
+              >
+                ─
+              </button>
+            )}
+            {(!started || done) && (
+              <button onClick={handleClose} className="text-text-muted hover:text-red">✕</button>
+            )}
+          </div>
         </div>
 
         {!started ? (
@@ -114,7 +133,7 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
 
             <div className="flex gap-2">
               <button onClick={start} className="btn-amber">Start Upgrade</button>
-              <button onClick={onClose} className="btn-secondary">Cancel</button>
+              <button onClick={handleClose} className="btn-secondary">Cancel</button>
             </div>
           </div>
         ) : (
@@ -173,7 +192,7 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
             </div>
 
             {done && (
-              <button onClick={onClose} className="btn-primary">Done</button>
+              <button onClick={handleClose} className="btn-primary">Done</button>
             )}
           </div>
         )}

@@ -9,6 +9,7 @@ services:
       # Optional overrides:
       # - JWT_SECRET=change-me-to-a-random-string
       # - LOG_LEVEL=INFO
+      # - ENABLE_TERMINAL=true   # Enable interactive SSH shell in the UI (disabled by default)
     volumes:
       - apt-dashboard-data:/data
     restart: unless-stopped

@@ -7,6 +7,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const nav = [
     { to: '/', label: 'Dashboard' },
+    { to: '/history', label: 'History' },
     { to: '/settings', label: 'Settings' },
   ]
 
@@ -14,9 +15,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-bg text-text-primary font-sans">
       {/* Top bar */}
       <header className="bg-surface border-b border-border h-12 flex items-center px-4 gap-6 sticky top-0 z-40">
-        <span className="font-mono text-green font-medium tracking-tight text-sm select-none">
+        <Link to="/" className="font-mono text-green font-medium tracking-tight text-sm hover:text-green/80 transition-colors">
           ⬡ apt-dashboard
-        </span>
+        </Link>
         <nav className="flex gap-1 flex-1">
           {nav.map(({ to, label }) => (
             <Link

@@ -76,6 +76,57 @@ async def fleet_overview(
     )
 
 
+@router.get("/history")
+async def global_history(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    import json
+    from backend.models import Server
+
+    offset = (page - 1) * per_page
+    result = await db.execute(
+        select(UpdateHistory)
+        .order_by(UpdateHistory.started_at.desc())
+        .offset(offset)
+        .limit(per_page)
+    )
+    rows = result.scalars().all()
+
+    total_result = await db.execute(select(func.count()).select_from(UpdateHistory))
+    total = total_result.scalar_one()
+
+    # Build server name map
+    srv_result = await db.execute(select(Server))
+    srv_map = {s.id: s.name for s in srv_result.scalars().all()}
+
+    items = []
+    for h in rows:
+        pkgs = None
+        if h.packages_upgraded:
+            try:
+                pkgs = json.loads(h.packages_upgraded)
+            except Exception:
+                pkgs = []
+        items.append({
+            "id": h.id,
+            "server_id": h.server_id,
+            "server_name": srv_map.get(h.server_id, f"Server {h.server_id}"),
+            "started_at": h.started_at,
+            "completed_at": h.completed_at,
+            "status": h.status,
+            "action": h.action,
+            "phased_updates": h.phased_updates,
+            "packages_upgraded": pkgs,
+            "log_output": h.log_output,
+            "initiated_by": h.initiated_by,
+        })
+
+    return {"total": total, "page": page, "per_page": per_page, "items": items}
+
+
 @router.get("/servers/{server_id}/history")
 async def server_history(
     server_id: int,

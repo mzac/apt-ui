@@ -49,6 +49,7 @@ async def upgrade_server(
     allow_phased: bool = False,
     initiated_by: str = "manual",
     send_fn=None,
+    skip_notify: bool = False,
 ) -> UpdateHistory:
     """
     Run apt-get upgrade (or dist-upgrade) on *server*.
@@ -172,20 +173,21 @@ async def upgrade_server(
         except Exception as exc:
             logger.warning("Post-upgrade check failed on %s: %s", server.name, exc)
 
-        # Fire notifications
-        try:
-            from backend.database import AsyncSessionLocal
-            from backend.models import NotificationConfig
-            from backend.notifier import notify_upgrade_complete
-            from sqlalchemy import select
+        # Fire notifications (suppressed when called from upgrade-all batch)
+        if not skip_notify:
+            try:
+                from backend.database import AsyncSessionLocal
+                from backend.models import NotificationConfig
+                from backend.notifier import notify_upgrade_complete
+                from sqlalchemy import select
 
-            async with AsyncSessionLocal() as ndb:
-                cfg_res = await ndb.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
-                cfg = cfg_res.scalar_one_or_none()
-                if cfg:
-                    await notify_upgrade_complete(cfg, server, history)
-        except Exception as exc:
-            logger.warning("Upgrade notification failed: %s", exc)
+                async with AsyncSessionLocal() as ndb:
+                    cfg_res = await ndb.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
+                    cfg = cfg_res.scalar_one_or_none()
+                    if cfg:
+                        await notify_upgrade_complete(cfg, server, history)
+            except Exception as exc:
+                logger.warning("Upgrade notification failed: %s", exc)
 
         return history
 

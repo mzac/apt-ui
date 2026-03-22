@@ -94,6 +94,7 @@ from backend.routers import upgrades as upgrades_router
 from backend.routers import stats as stats_router
 from backend.routers import scheduler as scheduler_router
 from backend.routers import notifications as notifications_router
+from backend.routers import config_io as config_io_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -103,6 +104,13 @@ app.include_router(upgrades_router.router)
 app.include_router(stats_router.router)
 app.include_router(scheduler_router.router)
 app.include_router(notifications_router.router)
+app.include_router(config_io_router.router)
+
+
+@app.get("/api/config/features")
+async def features():
+    from backend.config import ENABLE_TERMINAL
+    return {"enable_terminal": ENABLE_TERMINAL}
 
 
 @app.get("/health")

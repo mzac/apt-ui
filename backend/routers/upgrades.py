@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user, get_current_user_ws
+from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import UpgradeRequest
@@ -268,11 +269,46 @@ async def ws_upgrade_all(websocket: WebSocket):
                     send_fn=send_fn,
                 )
 
+    histories: list = []
+
+    async def _do_tracked(server: Server):
+        async with semaphore:
+            async with AsyncSessionLocal() as session:
+                async def send_fn(msg: dict):
+                    msg["server_id"] = server.id
+                    msg["server_name"] = server.name
+                    try:
+                        await websocket.send_json(msg)
+                    except Exception:
+                        pass
+
+                h = await upgrade_server(
+                    server, session,
+                    action=action,
+                    allow_phased=allow_phased,
+                    send_fn=send_fn,
+                    skip_notify=True,  # suppress per-server emails
+                )
+                histories.append((server, h))
+
     try:
-        await asyncio.gather(*[_do(s) for s in to_upgrade])
+        await asyncio.gather(*[_do_tracked(s) for s in to_upgrade])
     except WebSocketDisconnect:
         pass
     finally:
+        # Send one summary email/telegram for the whole batch
+        try:
+            from backend.models import NotificationConfig
+            from backend.notifier import notify_upgrade_all_complete
+            from sqlalchemy import select as _select
+            async with AsyncSessionLocal() as ndb:
+                cfg_res = await ndb.execute(_select(NotificationConfig).where(NotificationConfig.id == 1))
+                cfg = cfg_res.scalar_one_or_none()
+                if cfg and histories:
+                    await notify_upgrade_all_complete(cfg, histories)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Upgrade-all notification failed: %s", exc)
         try:
             await websocket.close()
         except Exception:
@@ -286,6 +322,11 @@ async def ws_upgrade_all(websocket: WebSocket):
 @router.websocket("/api/ws/shell/{server_id}")
 async def ws_shell(websocket: WebSocket, server_id: int):
     await websocket.accept()
+
+    if not ENABLE_TERMINAL:
+        await websocket.send_json({"type": "error", "data": "Terminal access is disabled. Set ENABLE_TERMINAL=true in your environment."})
+        await websocket.close(code=1008)
+        return
 
     # Auth via cookie
     token = websocket.cookies.get("apt_dashboard_token")
