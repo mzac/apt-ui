@@ -22,6 +22,7 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
   const [started, setStarted] = useState(false)
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
+  const [filterServer, setFilterServer] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
 
@@ -118,38 +119,57 @@ export default function UpgradeAllModal({ servers, onClose }: Props) {
           </div>
         ) : (
           <div className="flex-1 overflow-hidden flex flex-col p-4 gap-3">
-            {/* Server status list */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {/* Server status chips — click to filter terminal output */}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setFilterServer(null)}
+                className={`px-2 py-1 rounded text-xs font-mono border transition-colors ${
+                  filterServer === null
+                    ? 'bg-surface border-text-muted text-text-primary'
+                    : 'border-border text-text-muted hover:border-text-muted'
+                }`}
+              >
+                All
+              </button>
               {servers.map(s => {
                 const p = progress[s.id]
+                const active = filterServer === s.id
+                const borderColor =
+                  p?.status === 'done' ? '#22c55e' :
+                  p?.status === 'error' ? '#ef4444' :
+                  p?.status === 'running' ? '#06b6d4' : '#374151'
                 return (
-                  <div key={s.id} className={`card px-2 py-1.5 flex items-center gap-2 text-xs font-mono ${
-                    p?.status === 'done' ? 'border-green/30' :
-                    p?.status === 'error' ? 'border-red/30' :
-                    p?.status === 'running' ? 'border-cyan/30' : ''
-                  }`}>
+                  <button
+                    key={s.id}
+                    onClick={() => setFilterServer(active ? null : s.id)}
+                    className={`px-2 py-1 rounded text-xs font-mono border transition-colors flex items-center gap-1.5 ${
+                      active ? 'bg-surface text-text-primary' : 'text-text-muted hover:text-text-primary'
+                    }`}
+                    style={{ borderColor: active ? borderColor : undefined }}
+                  >
                     <span>{statusIcon(p?.status || 'pending')}</span>
-                    <span className="truncate">{s.name}</span>
-                    {p?.packagesUpgraded != null && <span className="text-text-muted ml-auto">{p.packagesUpgraded} pkgs</span>}
-                  </div>
+                    <span className="truncate max-w-[100px]">{s.name}</span>
+                    {p?.packagesUpgraded != null && <span className="text-text-muted">{p.packagesUpgraded}↑</span>}
+                  </button>
                 )
               })}
             </div>
 
-            {/* Aggregated terminal output */}
+            {/* Terminal output — filtered by selected server or all */}
             <div
               ref={termRef}
               className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary min-h-0"
               style={{ maxHeight: '40vh' }}
             >
-              {servers.flatMap(s =>
-                (progress[s.id]?.lines || []).map((line, i) => (
+              {servers.flatMap(s => {
+                if (filterServer !== null && filterServer !== s.id) return []
+                return (progress[s.id]?.lines || []).map((line, i) => (
                   <div key={`${s.id}-${i}`}>
-                    <span className="text-text-muted">[{s.name}] </span>
+                    {filterServer === null && <span className="text-text-muted">[{s.name}] </span>}
                     <span dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
                   </div>
                 ))
-              )}
+              })}
             </div>
 
             {done && (
