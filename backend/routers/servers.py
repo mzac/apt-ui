@@ -9,7 +9,7 @@ from backend.auth import get_current_user
 from backend.database import get_db
 from backend.models import Server, ServerGroup, UpdateCheck, User
 from backend.schemas import ServerCreate, ServerOut, ServerUpdate, LatestCheckOut
-from backend.ssh_manager import test_connection
+from backend.ssh_manager import test_connection, run_command
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 
@@ -52,6 +52,7 @@ def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGr
             security_packages=check.security_packages,
             regular_packages=check.regular_packages,
             held_packages=check.held_packages,
+            autoremove_count=check.autoremove_count or 0,
             reboot_required=check.reboot_required,
             error_message=check.error_message,
         )
@@ -217,6 +218,21 @@ async def delete_server(
     server = await _get_server_or_404(server_id, db)
     await db.delete(server)
     await db.commit()
+
+
+@router.post("/{server_id}/reboot")
+async def reboot_server(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    server = await _get_server_or_404(server_id, db)
+    sudo = "" if server.username == "root" else "sudo "
+    result = await run_command(server, f"{sudo}reboot", timeout=15)
+    # SSH will drop mid-command on reboot — exit code 255 is normal here
+    if result.exit_code == 0 or result.exit_code == 255:
+        return {"success": True, "detail": "Reboot command sent"}
+    return {"success": False, "detail": result.stderr or "Reboot command failed"}
 
 
 @router.post("/{server_id}/test")

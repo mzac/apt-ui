@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Dark background with rounded corners -->
+  <rect width="32" height="32" rx="6" fill="#0f1117"/>
+  <!-- Green terminal chevron prompt -->
+  <path d="M5 10 L12 16 L5 22" stroke="#22c55e" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Blinking cursor bar -->
+  <rect x="15" y="19" width="12" height="3" rx="1.2" fill="#22c55e"/>
+</svg>

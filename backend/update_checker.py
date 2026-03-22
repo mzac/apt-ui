@@ -31,6 +31,22 @@ _APT_LINE_RE = re.compile(
 )
 
 
+def _parse_autoremove_packages(output: str) -> list[str]:
+    """Extract package names from apt-get --dry-run autoremove output."""
+    packages = []
+    in_section = False
+    for line in output.splitlines():
+        if "The following packages will be REMOVED:" in line:
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("  "):
+                packages.extend(line.split())
+            else:
+                in_section = False
+    return packages
+
+
 def _parse_apt_upgradable(output: str) -> list[dict]:
     """Parse `apt list --upgradable` output into a list of package dicts."""
     packages = []
@@ -126,7 +142,7 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
     # Run apt update + list --upgradable + held + reboot concurrently with stats
     apt_update_task = run_command(
         server,
-        "sudo apt-get update -q 2>&1",
+        ("" if server.username == "root" else "sudo ") + "apt-get update -q 2>&1",
         timeout=120,
     )
     stats_task = _gather_stats(server)
@@ -150,12 +166,15 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         await db.refresh(check)
         return check
 
-    # Parallel: list upgradable, held packages, reboot required
+    # Parallel: list upgradable, held packages, reboot required, autoremove dry-run
     list_task = run_command(server, "apt list --upgradable 2>/dev/null", timeout=60)
     held_task = run_command(server, "apt-mark showhold 2>/dev/null", timeout=30)
     reboot_task = run_command(server, "test -f /var/run/reboot-required && echo yes || echo no", timeout=10)
+    autoremove_task = run_command(server, "apt-get --dry-run autoremove 2>/dev/null", timeout=60)
 
-    list_result, held_result, reboot_result = await asyncio.gather(list_task, held_task, reboot_task)
+    list_result, held_result, reboot_result, autoremove_result = await asyncio.gather(
+        list_task, held_task, reboot_task, autoremove_task
+    )
 
     packages = _parse_apt_upgradable(list_result.stdout)
     security_count = sum(1 for p in packages if p["is_security"])
@@ -163,6 +182,7 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
 
     held_list = [h.strip() for h in held_result.stdout.splitlines() if h.strip()] if held_result.success else []
     reboot_required = reboot_result.stdout.strip() == "yes"
+    autoremove_packages = _parse_autoremove_packages(autoremove_result.stdout) if autoremove_result.success else []
 
     # Update os_info on server if we got fresh data
     if stats.get("os_info") and not server.os_info:
@@ -177,6 +197,8 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         regular_packages=regular_count,
         held_packages=len(held_list),
         held_packages_list=json.dumps(held_list),
+        autoremove_count=len(autoremove_packages),
+        autoremove_packages=json.dumps(autoremove_packages) if autoremove_packages else None,
         reboot_required=reboot_required,
         raw_output=list_result.stdout[:1_000_000],  # cap at 1MB
         packages_json=json.dumps(packages),

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { servers as serversApi } from '@/api/client'
-import type { Server, PackageInfo, UpdateHistory } from '@/types'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket } from '@/api/client'
+import { useParams, Link, useLocation } from 'react-router-dom'
+import { servers as serversApi, groups as groupsApi } from '@/api/client'
+import type { Server, PackageInfo, UpdateHistory, ServerGroup } from '@/types'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket } from '@/api/client'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
@@ -15,23 +15,48 @@ type Tab = typeof TABS[number]
 export default function ServerDetail() {
   const { id } = useParams<{ id: string }>()
   const serverId = parseInt(id!)
+  const location = useLocation()
 
   const [server, setServer] = useState<Server | null>(null)
+  const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
+  const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
+  const [rebootMsg, setRebootMsg] = useState<string | null>(null)
+  const [showEdit, setShowEdit] = useState(false)
 
   const load = useCallback(async () => {
-    const list = await serversApi.list()
+    const [list, glist] = await Promise.all([serversApi.list(), groupsApi.list()])
     const s = list.find(x => x.id === serverId) || null
     setServer(s)
+    setGroupList(glist)
   }, [serverId])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if ((location.state as any)?.openEdit) {
+      setShowEdit(true)
+    }
+  }, [location.state])
 
   async function handleCheck() {
     setChecking(true)
     try { await serversApi.check(serverId); await load() }
     finally { setChecking(false) }
+  }
+
+  async function handleReboot() {
+    setRebootState('rebooting')
+    setRebootMsg(null)
+    try {
+      const res = await serversApi.reboot(serverId)
+      setRebootMsg(res.success ? 'Reboot command sent.' : res.detail)
+    } catch (err: unknown) {
+      setRebootMsg((err as Error).message)
+    } finally {
+      setRebootState('idle')
+    }
   }
 
   if (!server) return (
@@ -61,9 +86,30 @@ export default function ServerDetail() {
             </span>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button onClick={handleCheck} disabled={checking} className="btn-secondary text-xs">
             {checking ? 'Checking…' : 'Check Now'}
+          </button>
+          {c?.reboot_required && rebootState === 'idle' && (
+            <button onClick={() => setRebootState('confirm')} className="btn-secondary text-xs text-amber border-amber/40 hover:border-amber/70">
+              ↻ Reboot
+            </button>
+          )}
+          {c?.reboot_required && rebootState === 'confirm' && (
+            <>
+              <span className="text-xs text-amber font-mono self-center">Reboot {server.name}?</span>
+              <button onClick={handleReboot} className="btn-danger text-xs">Yes, reboot</button>
+              <button onClick={() => setRebootState('idle')} className="btn-secondary text-xs">Cancel</button>
+            </>
+          )}
+          {rebootState === 'rebooting' && (
+            <span className="text-xs text-text-muted font-mono self-center">Sending reboot…</span>
+          )}
+          {rebootMsg && (
+            <span className="text-xs text-text-muted font-mono self-center">{rebootMsg}</span>
+          )}
+          <button onClick={() => setShowEdit(v => !v)} className="btn-secondary text-xs">
+            {showEdit ? 'Cancel Edit' : 'Edit'}
           </button>
         </div>
       </div>
@@ -77,8 +123,19 @@ export default function ServerDetail() {
           )}
           {c.reboot_required && <span className="text-amber">↻ reboot required</span>}
           {c.held_packages > 0 && <span className="text-blue">{c.held_packages} held packages</span>}
+          {c.autoremove_count > 0 && <span className="text-amber">{c.autoremove_count} auto-removable</span>}
           {c.checked_at && <span>checked {new Date(c.checked_at).toLocaleString()}</span>}
         </div>
+      )}
+
+      {/* Edit form */}
+      {showEdit && (
+        <EditServerForm
+          server={server}
+          groupList={groupList}
+          onSaved={() => { load(); setShowEdit(false) }}
+          onCancel={() => setShowEdit(false)}
+        />
       )}
 
       {/* Tabs */}
@@ -105,22 +162,152 @@ export default function ServerDetail() {
 }
 
 // ---------------------------------------------------------------------------
+// Edit server form
+// ---------------------------------------------------------------------------
+function EditServerForm({ server, groupList, onSaved, onCancel }: {
+  server: Server
+  groupList: ServerGroup[]
+  onSaved: () => void
+  onCancel: () => void
+}) {
+  const [editForm, setEditForm] = useState({
+    name: server.name,
+    hostname: server.hostname,
+    username: server.username,
+    ssh_port: String(server.ssh_port),
+    group_id: server.group_id ? String(server.group_id) : '',
+    is_enabled: server.is_enabled,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setEditForm({
+      name: server.name,
+      hostname: server.hostname,
+      username: server.username,
+      ssh_port: String(server.ssh_port),
+      group_id: server.group_id ? String(server.group_id) : '',
+      is_enabled: server.is_enabled,
+    })
+  }, [server])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      await serversApi.update(server.id, {
+        name: editForm.name,
+        hostname: editForm.hostname,
+        username: editForm.username,
+        ssh_port: parseInt(editForm.ssh_port) || 22,
+        group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
+        is_enabled: editForm.is_enabled,
+      })
+      onSaved()
+    } catch (err: unknown) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card p-4 space-y-3">
+      <h3 className="text-xs text-text-muted uppercase tracking-wide">Edit Server</h3>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div>
+          <label className="label">Display Name</label>
+          <input
+            className="input w-full text-sm"
+            value={editForm.name}
+            onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+          />
+        </div>
+        <div>
+          <label className="label">Hostname</label>
+          <input
+            className="input w-full text-sm"
+            value={editForm.hostname}
+            onChange={e => setEditForm(f => ({ ...f, hostname: e.target.value }))}
+          />
+        </div>
+        <div>
+          <label className="label">SSH User</label>
+          <input
+            className="input w-full text-sm"
+            value={editForm.username}
+            onChange={e => setEditForm(f => ({ ...f, username: e.target.value }))}
+          />
+        </div>
+        <div>
+          <label className="label">Port</label>
+          <input
+            className="input w-full text-sm"
+            type="number"
+            value={editForm.ssh_port}
+            onChange={e => setEditForm(f => ({ ...f, ssh_port: e.target.value }))}
+          />
+        </div>
+        <div>
+          <label className="label">Group</label>
+          <select
+            className="input w-full text-sm"
+            value={editForm.group_id}
+            onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))}
+          >
+            <option value="">None</option>
+            {groupList.map(g => (
+              <option key={g.id} value={String(g.id)}>{g.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-end pb-1">
+          <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+            <input
+              type="checkbox"
+              checked={editForm.is_enabled}
+              onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
+              className="w-4 h-4 accent-green"
+            />
+            Enabled
+          </label>
+        </div>
+      </div>
+      {error && <p className="text-xs text-red font-mono">{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={onCancel} className="btn-secondary text-sm">Cancel</button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Packages tab
 // ---------------------------------------------------------------------------
 function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
   const [packages, setPackages] = useState<PackageInfo[]>([])
   const [held, setHeld] = useState<string[]>([])
+  const [autoremove, setAutoremove] = useState<string[]>([])
   const [sortCol, setSortCol] = useState<'name' | 'security'>('security')
   const [filterSec, setFilterSec] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [upgradeModal, setUpgradeModal] = useState(false)
   const [allowPhased, setAllowPhased] = useState(false)
+  const [selectedRemove, setSelectedRemove] = useState<Set<string>>(new Set())
+  const [removeTarget, setRemoveTarget] = useState<string[] | null>(null)
+  const [removeModal, setRemoveModal] = useState(false)
 
   const loadPackages = useCallback(() => {
     serversApi.packages(serverId).then(data => {
       setPackages(data.packages)
       setHeld(data.held)
+      setAutoremove(data.autoremove ?? [])
       setSelected(new Set())
+      setSelectedRemove(new Set())
     })
   }, [serverId])
 
@@ -242,12 +429,77 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
         </div>
       )}
 
+      {autoremove.length > 0 && (
+        <div className="card overflow-hidden">
+          <div className="px-3 py-2 border-b border-border flex items-center justify-between flex-wrap gap-2">
+            <span className="text-xs font-mono text-amber">
+              {autoremove.length} package{autoremove.length !== 1 ? 's' : ''} can be auto-removed
+            </span>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => setSelectedRemove(new Set(autoremove))}
+                className="btn-secondary text-xs py-0.5"
+              >
+                Select All
+              </button>
+              {selectedRemove.size > 0 && (
+                <button
+                  onClick={() => { setRemoveTarget([...selectedRemove]); setRemoveModal(true) }}
+                  className="btn-danger text-xs py-0.5"
+                >
+                  Remove Selected ({selectedRemove.size})
+                </button>
+              )}
+              <button
+                onClick={() => { setRemoveTarget(null); setRemoveModal(true) }}
+                className="btn-secondary text-xs py-0.5 text-amber border-amber/40"
+              >
+                Remove All
+              </button>
+            </div>
+          </div>
+          <table className="w-full text-sm">
+            <tbody>
+              {autoremove.map(pkg => (
+                <tr
+                  key={pkg}
+                  className="border-b border-border/50 hover:bg-surface-2/50 cursor-pointer"
+                  onClick={() => setSelectedRemove(s => {
+                    const n = new Set(s)
+                    n.has(pkg) ? n.delete(pkg) : n.add(pkg)
+                    return n
+                  })}
+                >
+                  <td className="px-3 py-1.5 w-8">
+                    <input
+                      type="checkbox"
+                      readOnly
+                      checked={selectedRemove.has(pkg)}
+                      className="w-4 h-4 accent-green pointer-events-none"
+                    />
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-xs text-text-muted">{pkg}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {upgradeModal && (
         <SelectiveUpgradeModal
           serverId={serverId}
           packages={[...selected]}
           allowPhased={allowPhased}
           onClose={() => { setUpgradeModal(false); loadPackages(); onRefresh() }}
+        />
+      )}
+
+      {removeModal && (
+        <AutoremoveModal
+          serverId={serverId}
+          packages={removeTarget}
+          onClose={() => { setRemoveModal(false); setRemoveTarget(null); loadPackages(); onRefresh() }}
         />
       )}
     </div>
@@ -340,9 +592,128 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
 }
 
 // ---------------------------------------------------------------------------
+// Autoremove modal
+// ---------------------------------------------------------------------------
+function AutoremoveModal({ serverId, packages, onClose }: {
+  serverId: number
+  packages: string[] | null  // null = remove all autoremovable packages
+  onClose: () => void
+}) {
+  const [lines, setLines] = useState<string[]>([])
+  const [done, setDone] = useState(false)
+  const [started, setStarted] = useState(false)
+  const wsRef = useRef<WebSocket | null>(null)
+  const termRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => () => { wsRef.current?.close() }, [])
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
+  }, [lines])
+
+  function start() {
+    setStarted(true)
+    setLines([])
+    const ws = createAutoremoveWebSocket(
+      serverId,
+      { packages },
+      (msg) => {
+        if (msg.type === 'output') setLines(l => [...l, msg.data as string])
+        else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+        else if (msg.type === 'error') setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+        else if (msg.type === 'complete') {
+          const d = msg.data as { success: boolean }
+          setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Autoremove successful' : '✗ Autoremove failed'}\x1b[0m\n`])
+        }
+      },
+      () => setDone(true),
+    )
+    wsRef.current = ws
+  }
+
+  const label = packages === null
+    ? 'Remove all auto-removable packages'
+    : `Remove ${packages.length} selected package${packages.length !== 1 ? 's' : ''}`
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface border border-border rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <h2 className="font-mono text-sm text-text-primary">Autoremove Packages</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-red">✕</button>
+        </div>
+
+        {!started ? (
+          <div className="p-4 space-y-4">
+            <p className="text-sm text-text-muted">{label}</p>
+            {packages !== null && packages.length > 0 && (
+              <div className="card p-3 max-h-48 overflow-y-auto">
+                {packages.map(p => (
+                  <div key={p} className="font-mono text-xs text-text-muted py-0.5">{p}</div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-amber">
+              ⚠️ These packages will be permanently removed from the server.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={start} className="btn-danger">{label}</button>
+              <button onClick={onClose} className="btn-secondary">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col p-4 gap-3 min-h-0">
+            <div
+              ref={termRef}
+              className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary"
+              style={{ minHeight: '200px' }}
+            >
+              {lines.map((line, i) => (
+                <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+              ))}
+              {!done && <span className="text-cyan animate-pulse">▋</span>}
+            </div>
+            {done && <button onClick={onClose} className="btn-primary">Done</button>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// ---------------------------------------------------------------------------
 // Terminal tab
 // ---------------------------------------------------------------------------
 function TerminalTab({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
+  const [mode, setMode] = useState<'upgrade' | 'shell'>('upgrade')
+
+  return (
+    <div className="space-y-3">
+      {/* Mode selector */}
+      <div className="flex gap-1 border-b border-border">
+        {(['upgrade', 'shell'] as const).map(m => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 capitalize ${
+              mode === m ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
+            }`}
+          >
+            {m === 'upgrade' ? 'Upgrade' : 'Shell'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={onRefresh} />}
+      {mode === 'shell' && <SshShellPanel serverId={serverId} />}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade panel (extracted from old TerminalTab body)
+// ---------------------------------------------------------------------------
+function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
   const [action, setAction] = useState('upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
   const [lines, setLines] = useState<string[]>([])
@@ -430,6 +801,135 @@ function TerminalTab({ serverId, server, onRefresh }: { serverId: number; server
         ))}
         {running && <span className="text-cyan animate-pulse">▋</span>}
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SSH Shell panel
+// ---------------------------------------------------------------------------
+function SshShellPanel({ serverId }: { serverId: number }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<any>(null)   // Terminal instance
+  const fitRef = useRef<any>(null)    // FitAddon instance
+  const wsRef = useRef<WebSocket | null>(null)
+  const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close()
+      termRef.current?.dispose()
+    }
+  }, [])
+
+  async function connect() {
+    if (!containerRef.current) return
+    setStatus('connecting')
+    setError(null)
+
+    // Dispose any existing session
+    wsRef.current?.close()
+    if (termRef.current) {
+      termRef.current.dispose()
+      termRef.current = null
+    }
+
+    // Dynamically import xterm to avoid SSR issues
+    const { Terminal } = await import('@xterm/xterm')
+    const { FitAddon } = await import('@xterm/addon-fit')
+
+
+    const term = new Terminal({
+      theme: {
+        background: '#0f1117',
+        foreground: '#e2e8f0',
+        cursor: '#22c55e',
+        selectionBackground: '#22c55e44',
+      },
+      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+      fontSize: 13,
+      lineHeight: 1.4,
+      cursorBlink: true,
+      scrollback: 5000,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(containerRef.current)
+    fit.fit()
+    termRef.current = term
+    fitRef.current = fit
+
+    const ro = new ResizeObserver(() => fitRef.current?.fit())
+    ro.observe(containerRef.current)
+
+    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/shell/${serverId}`
+    const ws = new WebSocket(url)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ cols: term.cols, rows: term.rows }))
+      setStatus('connected')
+    }
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data)
+        if (msg.type === 'output') term.write(msg.data)
+        else if (msg.type === 'error') {
+          term.write(`\r\n\x1b[31m[error] ${msg.data}\x1b[0m\r\n`)
+          setError(msg.data)
+        }
+      } catch {}
+    }
+
+    ws.onclose = () => {
+      setStatus('disconnected')
+      termRef.current?.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n')
+    }
+
+    term.onData((data: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data }))
+      }
+    })
+
+    term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+      }
+    })
+  }
+
+  function disconnect() {
+    wsRef.current?.close()
+    setStatus('disconnected')
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        {status === 'connected' ? (
+          <button onClick={disconnect} className="btn-secondary text-xs">Disconnect</button>
+        ) : (
+          <button onClick={connect} disabled={status === 'connecting'} className="btn-secondary text-xs">
+            {status === 'connecting' ? 'Connecting…' : status === 'disconnected' ? 'Reconnect' : 'Connect Shell'}
+          </button>
+        )}
+        {status === 'connected' && <span className="text-xs text-green font-mono">● connected</span>}
+        {status === 'disconnected' && <span className="text-xs text-text-muted font-mono">● disconnected</span>}
+        {error && <span className="text-xs text-red font-mono truncate max-w-xs">{error}</span>}
+      </div>
+      {status === 'idle' && (
+        <div className="bg-bg border border-border rounded flex items-center justify-center text-text-muted text-sm font-mono" style={{ height: '200px' }}>
+          Click "Connect Shell" to open an interactive SSH terminal
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="rounded border border-border overflow-hidden"
+        style={{ height: '480px', display: status === 'idle' ? 'none' : 'block' }}
+      />
     </div>
   )
 }

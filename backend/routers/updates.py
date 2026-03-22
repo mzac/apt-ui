@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -87,4 +88,11 @@ async def get_packages(
         except Exception:
             pass
 
-    return {"packages": packages, "held": held, "checked_at": check.checked_at}
+    autoremove = []
+    if check.autoremove_packages:
+        try:
+            autoremove = json.loads(check.autoremove_packages)
+        except Exception:
+            pass
+
+    return {"packages": packages, "held": held, "autoremove": autoremove, "checked_at": check.checked_at}

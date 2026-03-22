@@ -12,9 +12,17 @@ from backend import config
 _jwt_secret: str | None = None
 
 
+def init_jwt_secret(secret: str) -> None:
+    """Called once at startup to set the JWT secret (from env var or DB)."""
+    global _jwt_secret
+    _jwt_secret = secret
+
+
 def get_jwt_secret() -> str:
     global _jwt_secret
     if _jwt_secret is None:
+        # Fallback: env var or ephemeral random (won't persist across restarts
+        # unless init_jwt_secret() was called during startup via seed_defaults)
         _jwt_secret = config.JWT_SECRET or secrets.token_hex(32)
     return _jwt_secret
 
