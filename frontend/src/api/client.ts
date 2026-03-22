@@ -76,6 +76,7 @@ export const servers = {
     post<Server>('/api/servers', data),
   update: (id: number, data: Partial<Server>) => put<Server>(`/api/servers/${id}`, data),
   remove: (id: number) => del(`/api/servers/${id}`),
+  reboot: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/reboot`),
   test: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/test`),
   check: (id: number) => post<{ status: string; packages_available: number }>(`/api/servers/${id}/check`),
   checkAll: () => post<{ checked: number }>('/api/servers/check-all'),
@@ -84,7 +85,7 @@ export const servers = {
   upgradeAll: (action: string, allow_phased: boolean) =>
     post('/api/servers/upgrade-all', { action, allow_phased }),
   packages: (id: number) =>
-    get<{ packages: PackageInfo[]; held: string[]; checked_at: string }>(`/api/servers/${id}/packages`),
+    get<{ packages: PackageInfo[]; held: string[]; autoremove: string[]; checked_at: string }>(`/api/servers/${id}/packages`),
   history: (id: number, page = 1) =>
     get<{ total: number; page: number; items: UpdateHistory[] }>(`/api/servers/${id}/history?page=${page}`),
 }
@@ -169,6 +170,20 @@ export function createSelectiveUpgradeWebSocket(
   onClose?: () => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/upgrade-selective/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params)) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createAutoremoveWebSocket(
+  serverId: number,
+  params: { packages: string[] | null },
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/autoremove/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }

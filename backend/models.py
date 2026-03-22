@@ -67,6 +67,8 @@ class UpdateCheck(Base):
     regular_packages: Mapped[int] = mapped_column(Integer, default=0)
     held_packages: Mapped[int] = mapped_column(Integer, default=0)
     held_packages_list: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    autoremove_count: Mapped[int] = mapped_column(Integer, default=0)
+    autoremove_packages: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of names
     reboot_required: Mapped[bool] = mapped_column(Boolean, default=False)
     raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
     packages_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
@@ -138,3 +140,11 @@ class ScheduleConfig(Base):
     allow_phased_on_auto: Mapped[bool] = mapped_column(Boolean, default=False)
     upgrade_concurrency: Mapped[int] = mapped_column(Integer, default=5)
     log_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+
+
+class AppConfig(Base):
+    """Generic key-value store for app-wide persistent settings (e.g. JWT secret)."""
+    __tablename__ = "app_config"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)

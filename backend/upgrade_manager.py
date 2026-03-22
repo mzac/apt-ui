@@ -30,8 +30,13 @@ def _get_lock(server_id: int) -> asyncio.Lock:
     return _upgrade_locks[server_id]
 
 
-def _build_upgrade_command(action: str, allow_phased: bool) -> str:
-    base = f"sudo DEBIAN_FRONTEND=noninteractive apt-get {action} -y"
+def _sudo(server) -> str:
+    """Return 'sudo ' prefix unless the SSH user is root."""
+    return "" if server.username == "root" else "sudo "
+
+
+def _build_upgrade_command(server, action: str, allow_phased: bool) -> str:
+    base = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get {action} -y"
     if allow_phased:
         base += " -o APT::Get::Always-Include-Phased-Updates=true"
     return base
@@ -98,7 +103,7 @@ async def upgrade_server(
                 await send_fn({"type": "status", "data": "running_update"})
 
             # Step 1: apt-get update
-            update_cmd = "sudo apt-get update -q"
+            update_cmd = f"{_sudo(server)}apt-get update -q"
             if send_fn:
                 update_result = await run_command_stream(server, update_cmd, _send)
             else:
@@ -110,7 +115,7 @@ async def upgrade_server(
                 raise RuntimeError(update_result.stderr or "SSH connection failed")
 
             # Step 2: apt-get upgrade / dist-upgrade
-            upgrade_cmd = _build_upgrade_command(action, allow_phased)
+            upgrade_cmd = _build_upgrade_command(server, action, allow_phased)
             if send_fn:
                 await send_fn({"type": "status", "data": "running_upgrade"})
                 upgrade_result = await run_command_stream(server, upgrade_cmd, _send, timeout=3600)
@@ -244,12 +249,12 @@ async def upgrade_packages_selective(
             if send_fn:
                 await send_fn({"type": "status", "data": "running_update"})
 
-            update_result = await run_command_stream(server, "sudo apt-get update -q", _send)
+            update_result = await run_command_stream(server, f"{_sudo(server)}apt-get update -q", _send)
             if update_result.exit_code == 255:
                 raise RuntimeError(update_result.stderr or "SSH connection failed")
 
             pkg_list = " ".join(packages)
-            cmd = f"sudo DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {pkg_list}"
+            cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {pkg_list}"
             if allow_phased:
                 cmd += " -o APT::Get::Always-Include-Phased-Updates=true"
 
@@ -308,6 +313,104 @@ async def upgrade_packages_selective(
                     await notify_upgrade_complete(cfg, server, history)
         except Exception as exc:
             logger.warning("Upgrade notification failed: %s", exc)
+
+        return history
+
+
+async def run_autoremove(
+    server: Server,
+    db: AsyncSession,
+    packages: list[str] | None = None,
+    initiated_by: str = "manual",
+    send_fn=None,
+) -> UpdateHistory:
+    """
+    Run apt-get autoremove (all) or apt-get remove (specific packages).
+    Uses the same lock and history machinery as upgrade_server.
+    packages=None means remove all autoremovable packages.
+    """
+    lock = _get_lock(server.id)
+    if lock.locked():
+        msg = f"An upgrade is already running on {server.name}"
+        if send_fn:
+            await send_fn({"type": "error", "data": msg})
+        history = UpdateHistory(
+            server_id=server.id,
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            status="error",
+            action="autoremove",
+            phased_updates=False,
+            log_output=msg,
+            initiated_by=initiated_by,
+        )
+        db.add(history)
+        await db.commit()
+        await db.refresh(history)
+        return history
+
+    async with lock:
+        history = UpdateHistory(
+            server_id=server.id,
+            started_at=datetime.utcnow(),
+            status="running",
+            action="autoremove",
+            phased_updates=False,
+            initiated_by=initiated_by,
+        )
+        db.add(history)
+        await db.commit()
+        await db.refresh(history)
+
+        log_chunks: list[str] = []
+
+        async def _send(msg: dict):
+            log_chunks.append(msg.get("data", ""))
+            if send_fn:
+                await send_fn(msg)
+
+        try:
+            if send_fn:
+                await send_fn({"type": "status", "data": "running_autoremove"})
+
+            if packages:
+                pkg_list = " ".join(packages)
+                cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get remove -y {pkg_list}"
+            else:
+                cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get autoremove -y"
+
+            result = await run_command_stream(server, cmd, _send, timeout=600)
+
+            combined = "".join(log_chunks)
+            if "sudo: a password is required" in combined:
+                raise RuntimeError("Sudo requires a password. Configure passwordless sudo for this user.")
+            if "Could not get lock" in combined:
+                raise RuntimeError("apt lock is held by another process. Try again later.")
+
+            success = result.exit_code == 0
+            history.completed_at = datetime.utcnow()
+            history.status = "success" if success else "error"
+            history.log_output = combined[:1_000_000]
+
+            if send_fn:
+                await send_fn({"type": "complete", "data": {"success": success}})
+
+        except Exception as exc:
+            error_msg = str(exc)
+            history.completed_at = datetime.utcnow()
+            history.status = "error"
+            history.log_output = ("".join(log_chunks) + f"\n\nError: {error_msg}")[:1_000_000]
+            if send_fn:
+                await send_fn({"type": "error", "data": error_msg})
+            logger.error("Autoremove failed on %s: %s", server.name, error_msg)
+        finally:
+            await db.commit()
+            await db.refresh(history)
+
+        try:
+            await check_server(server, db)
+        except Exception as exc:
+            logger.warning("Post-autoremove check failed on %s: %s", server.name, exc)
 
         return history
 

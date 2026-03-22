@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import asyncssh
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,7 @@ from backend.auth import get_current_user, get_current_user_ws
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import UpgradeRequest
+from backend.ssh_manager import _connect_options
 from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
 
 router = APIRouter(tags=["upgrades"])
@@ -275,3 +277,151 @@ async def ws_upgrade_all(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — interactive SSH shell
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/shell/{server_id}")
+async def ws_shell(websocket: WebSocket, server_id: int):
+    await websocket.accept()
+
+    # Auth via cookie
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+    # Read first message for terminal size
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+        size_params = json.loads(raw)
+        cols = int(size_params.get("cols", 80))
+        rows = int(size_params.get("rows", 24))
+    except Exception:
+        cols, rows = 80, 24
+
+    try:
+        async with asyncssh.connect(**_connect_options(server)) as conn:
+            process = await conn.create_process(
+                term_type="xterm-256color",
+                term_size=(cols, rows),
+                encoding=None,
+            )
+
+            async def ssh_to_ws():
+                """Read chunks from SSH stdout and send to WebSocket."""
+                try:
+                    while True:
+                        data = await process.stdout.read(4096)
+                        if not data:
+                            break
+                        text = data.decode("utf-8", errors="replace")
+                        await websocket.send_json({"type": "output", "data": text})
+                except Exception:
+                    pass
+
+            async def ws_to_ssh():
+                """Receive WebSocket messages and forward to SSH stdin."""
+                try:
+                    while True:
+                        raw_msg = await websocket.receive_text()
+                        msg = json.loads(raw_msg)
+                        if msg.get("type") == "input":
+                            process.stdin.write(msg["data"].encode())
+                        elif msg.get("type") == "resize":
+                            new_cols = int(msg.get("cols", cols))
+                            new_rows = int(msg.get("rows", rows))
+                            process.change_terminal_size(new_cols, new_rows)
+                except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    pass
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(ssh_to_ws()),
+                    asyncio.create_task(ws_to_ssh()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            process.close()
+
+    except Exception as exc:
+        try:
+            await websocket.send_json({"type": "error", "data": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — autoremove
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/autoremove/{server_id}")
+async def ws_autoremove(websocket: WebSocket, server_id: int):
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+
+        packages = params.get("packages", None)  # None = all, [] = all too
+
+        await websocket.send_json({"type": "status", "data": "connecting"})
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            from backend.upgrade_manager import run_autoremove
+            await run_autoremove(
+                server, db,
+                packages=packages if packages else None,
+                send_fn=send_fn,
+            )
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass

@@ -154,79 +154,227 @@ def _categorize(server_data: list[dict]):
     return up_to_date, with_updates, with_errors, no_check
 
 
-def _build_html_summary(subject: str, server_data: list[dict]) -> str:
+def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: C901
     up_to_date, with_updates, with_errors, no_check = _categorize(server_data)
     total = len(server_data)
     reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
     held_servers = [sd for sd in server_data if sd["held"]]
+    today_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    rows_with_updates = ""
+    # ---------------------------------------------------------------------------
+    # Fleet overview stat cards (4-up on desktop, 2-up on mobile)
+    # ---------------------------------------------------------------------------
+    def stat_card(value: int, label: str, color: str) -> str:
+        return (
+            f'<td width="25%" style="padding:4px;">'
+            f'<div style="background:#ffffff;border-radius:8px;padding:14px 8px;'
+            f'text-align:center;border:1px solid #e5e7eb;">'
+            f'<div style="font-size:26px;font-weight:700;color:{color};'
+            f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',monospace;">{value}</div>'
+            f'<div style="font-size:11px;color:#6b7280;margin-top:3px;'
+            f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">{label}</div>'
+            f'</div></td>'
+        )
+
+    overview_cards = (
+        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">'
+        '<tr>'
+        + stat_card(total, "Total", "#111827")
+        + stat_card(len(up_to_date), "Up to date", "#16a34a")
+        + stat_card(len(with_updates), "Updates", "#d97706" if with_updates else "#6b7280")
+        + stat_card(len(with_errors), "Errors", "#dc2626" if with_errors else "#6b7280")
+        + '</tr></table>'
+    )
+
+    # ---------------------------------------------------------------------------
+    # Per-server update cards
+    # ---------------------------------------------------------------------------
+    def pkg_row(p: dict) -> str:
+        sec = p["is_security"]
+        phased = " <span style='color:#6b7280;font-size:10px;'>[phased]</span>" if p["is_phased"] else ""
+        icon = "🔒&nbsp;" if sec else "&nbsp;&nbsp;&nbsp;"
+        bg = "#fff7ed" if sec else "#ffffff"
+        name_color = "#92400e" if sec else "#111827"
+        return (
+            f'<tr style="background:{bg};border-bottom:1px solid #f3f4f6;">'
+            f'<td style="padding:7px 10px;font-family:\'SF Mono\',\'Fira Code\',monospace;'
+            f'font-size:12px;color:{name_color};white-space:nowrap;">'
+            f'{icon}<strong>{p["name"]}</strong></td>'
+            f'<td style="padding:7px 10px;font-family:\'SF Mono\',\'Fira Code\',monospace;'
+            f'font-size:11px;color:#6b7280;word-break:break-all;">'
+            f'{p["current_version"]}</td>'
+            f'<td style="padding:7px 10px;font-family:\'SF Mono\',\'Fira Code\',monospace;'
+            f'font-size:11px;color:#16a34a;word-break:break-all;">'
+            f'→&nbsp;{p["available_version"]}{phased}</td>'
+            f'</tr>'
+        )
+
+    server_cards = ""
     for sd in with_updates:
         s, chk, pkgs = sd["server"], sd["check"], sd["packages"]
         sec_pkgs = [p for p in pkgs if p["is_security"]]
         reg_pkgs = [p for p in pkgs if not p["is_security"]]
-        pkg_rows = ""
-        for p in sec_pkgs:
-            phased = " <em>[phased]</em>" if p["is_phased"] else ""
-            pkg_rows += (
-                f"<tr style='background:#1e1e2e'>"
-                f"<td>🔒 <strong>{p['name']}</strong></td>"
-                f"<td>{p['current_version']}</td>"
-                f"<td>→ {p['available_version']}{phased}</td>"
-                f"<td><em>{p['repository']}</em></td></tr>"
-            )
-        for p in reg_pkgs:
-            phased = " <em>[phased]</em>" if p["is_phased"] else ""
-            pkg_rows += (
-                f"<tr>"
-                f"<td>{p['name']}</td>"
-                f"<td>{p['current_version']}</td>"
-                f"<td>→ {p['available_version']}{phased}</td>"
-                f"<td><em>{p['repository']}</em></td></tr>"
-            )
-        rows_with_updates += f"""
-        <h3 style="color:#f59e0b">{s.name} ({s.hostname})
-          — {chk.packages_available} updates
-          ({chk.security_packages} security, {chk.regular_packages} regular)</h3>
-        <table border="1" cellpadding="4" cellspacing="0"
-               style="border-collapse:collapse;font-family:monospace;font-size:12px;width:100%">
-          <tr style="background:#374151;color:#fff">
-            <th>Package</th><th>Current</th><th>Available</th><th>Repo</th>
-          </tr>
-          {pkg_rows}
-        </table>
-        """
+        ordered_pkgs = sec_pkgs + reg_pkgs
 
-    error_rows = "".join(
-        f"<li><strong>{sd['server'].name}</strong> ({sd['server'].hostname}): "
-        f"{sd['check'].error_message or 'unknown error'}</li>"
-        for sd in with_errors
-    )
-    held_rows = "".join(
-        f"<li><strong>{sd['server'].name}</strong>: {', '.join(sd['held'])}</li>"
-        for sd in held_servers
-    )
-    reboot_rows = "".join(
-        f"<li>{sd['server'].name} ({sd['server'].hostname})</li>"
-        for sd in reboot_servers
-    )
-    up_names = ", ".join(sd["server"].name for sd in up_to_date) or "none"
+        reboot_badge = (
+            '<span style="background:#fef3c7;color:#92400e;font-size:10px;'
+            'padding:2px 6px;border-radius:4px;margin-left:6px;">↻ reboot</span>'
+            if chk.reboot_required else ""
+        )
+
+        all_pkg_rows = "".join(pkg_row(p) for p in ordered_pkgs)
+
+        server_cards += f"""
+<div style="background:#ffffff;border-radius:8px;border:1px solid #e5e7eb;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#fffbeb;padding:12px 16px;border-bottom:1px solid #fde68a;">
+    <div style="font-size:15px;font-weight:600;color:#92400e;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      {s.name}{reboot_badge}
+    </div>
+    <div style="font-size:12px;color:#6b7280;margin-top:2px;
+                font-family:'SF Mono','Fira Code',monospace;">{s.hostname}</div>
+    <div style="font-size:12px;color:#374151;margin-top:4px;">
+      <strong>{chk.packages_available}</strong> updates
+      {"&nbsp;·&nbsp;<span style='color:#dc2626;font-weight:600;'>" + str(chk.security_packages) + " security</span>" if chk.security_packages else ""}
+    </div>
+  </div>
+  <div style="overflow-x:auto;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="border-collapse:collapse;min-width:320px;">
+      <tr style="background:#f9fafb;">
+        <th style="padding:6px 10px;text-align:left;font-size:10px;color:#9ca3af;
+                   font-weight:600;letter-spacing:.05em;white-space:nowrap;">PACKAGE</th>
+        <th style="padding:6px 10px;text-align:left;font-size:10px;color:#9ca3af;
+                   font-weight:600;letter-spacing:.05em;white-space:nowrap;">CURRENT</th>
+        <th style="padding:6px 10px;text-align:left;font-size:10px;color:#9ca3af;
+                   font-weight:600;letter-spacing:.05em;white-space:nowrap;">AVAILABLE</th>
+      </tr>
+      {all_pkg_rows}
+    </table>
+  </div>
+</div>"""
+
+    # ---------------------------------------------------------------------------
+    # Errors / held / reboot / up-to-date sections
+    # ---------------------------------------------------------------------------
+    error_section = ""
+    if with_errors:
+        items = "".join(
+            f'<div style="padding:8px 12px;border-bottom:1px solid #fecaca;">'
+            f'<strong style="color:#111827;">{sd["server"].name}</strong>'
+            f'<span style="color:#6b7280;font-size:12px;"> ({sd["server"].hostname})</span><br>'
+            f'<span style="color:#dc2626;font-size:12px;">{sd["check"].error_message or "unknown error"}</span>'
+            f'</div>'
+            for sd in with_errors
+        )
+        error_section = f"""
+<div style="background:#fff;border-radius:8px;border:1px solid #fca5a5;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#fef2f2;padding:10px 16px;border-bottom:1px solid #fca5a5;">
+    <span style="font-size:14px;font-weight:600;color:#dc2626;">❌ Errors</span>
+  </div>
+  {items}
+</div>"""
+
+    reboot_section = ""
+    if reboot_servers:
+        items = "".join(
+            f'<div style="padding:6px 12px;border-bottom:1px solid #fde68a;'
+            f'font-size:13px;color:#111827;">'
+            f'<strong>{sd["server"].name}</strong> '
+            f'<span style="color:#6b7280;font-size:12px;">({sd["server"].hostname})</span></div>'
+            for sd in reboot_servers
+        )
+        reboot_section = f"""
+<div style="background:#fff;border-radius:8px;border:1px solid #fde68a;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#fffbeb;padding:10px 16px;border-bottom:1px solid #fde68a;">
+    <span style="font-size:14px;font-weight:600;color:#92400e;">↻ Reboot required</span>
+  </div>
+  {items}
+</div>"""
+
+    held_section = ""
+    if held_servers:
+        items = "".join(
+            f'<div style="padding:6px 12px;border-bottom:1px solid #bfdbfe;'
+            f'font-size:12px;color:#374151;">'
+            f'<strong>{sd["server"].name}:</strong> '
+            f'<span style="font-family:\'SF Mono\',monospace;">{", ".join(sd["held"])}</span></div>'
+            for sd in held_servers
+        )
+        held_section = f"""
+<div style="background:#fff;border-radius:8px;border:1px solid #bfdbfe;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#eff6ff;padding:10px 16px;border-bottom:1px solid #bfdbfe;">
+    <span style="font-size:14px;font-weight:600;color:#1d4ed8;">📌 Held packages</span>
+  </div>
+  {items}
+</div>"""
+
+    up_to_date_section = ""
+    if up_to_date:
+        names = "".join(
+            f'<span style="display:inline-block;background:#f0fdf4;color:#166534;'
+            f'border:1px solid #bbf7d0;border-radius:4px;padding:2px 8px;'
+            f'font-size:12px;margin:2px;">{sd["server"].name}</span>'
+            for sd in up_to_date
+        )
+        up_to_date_section = f"""
+<div style="background:#fff;border-radius:8px;border:1px solid #bbf7d0;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#f0fdf4;padding:10px 16px;border-bottom:1px solid #bbf7d0;">
+    <span style="font-size:14px;font-weight:600;color:#166534;">✓ Up to date</span>
+  </div>
+  <div style="padding:10px 12px;">{names}</div>
+</div>"""
 
     return f"""<!DOCTYPE html>
-<html><body style="font-family:sans-serif;background:#0f1117;color:#e5e7eb;padding:20px">
-<h1 style="color:#22c55e">{subject}</h1>
-<p>Fleet overview: <strong>{total}</strong> servers checked —
-   <span style="color:#22c55e">{len(up_to_date)} up to date</span>,
-   <span style="color:#f59e0b">{len(with_updates)} with updates</span>,
-   <span style="color:#ef4444">{len(with_errors)} errors</span>
-</p>
-{f'<h2 style="color:#f59e0b">Servers with updates</h2>{rows_with_updates}' if with_updates else ''}
-{f'<h2>Servers needing reboot</h2><ul>{reboot_rows}</ul>' if reboot_servers else ''}
-{f'<h2>Servers with held packages</h2><ul>{held_rows}</ul>' if held_servers else ''}
-{f'<h2 style="color:#ef4444">Servers with errors</h2><ul>{error_rows}</ul>' if with_errors else ''}
-<h2 style="color:#22c55e">Up to date</h2><p>{up_names}</p>
-<hr><p style="color:#6b7280;font-size:12px">Generated at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
-</body></html>"""
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>{subject}</title>
+  <style>
+    @media only screen and (max-width:480px) {{
+      .wrap {{ padding:10px !important; }}
+    }}
+  </style>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f5;
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div class="wrap" style="max-width:600px;margin:0 auto;padding:20px;">
+
+  <!-- Header -->
+  <div style="background:#1a1f2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="font-size:11px;color:#4ade80;letter-spacing:.1em;
+                font-weight:600;text-transform:uppercase;margin-bottom:4px;">APT DASHBOARD</div>
+    <div style="font-size:20px;font-weight:700;color:#f9fafb;">Daily Summary</div>
+    <div style="font-size:12px;color:#9ca3af;margin-top:4px;">{today_str}</div>
+  </div>
+
+  <!-- Fleet overview -->
+  {overview_cards}
+
+  <!-- Servers with updates -->
+  {"".join(['<div style="font-size:13px;font-weight:600;color:#92400e;margin-bottom:8px;padding-left:2px;">🟡 Servers with updates</div>', server_cards]) if with_updates else ""}
+
+  {error_section}
+  {reboot_section}
+  {held_section}
+  {up_to_date_section}
+
+  <!-- Footer -->
+  <div style="text-align:center;padding:16px 0 0;
+              font-size:11px;color:#9ca3af;">
+    Apt Dashboard · {today_str}
+  </div>
+
+</div>
+</body>
+</html>"""
 
 
 def _build_text_summary(subject: str, server_data: list[dict]) -> str:

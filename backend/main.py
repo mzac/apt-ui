@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 
 async def seed_defaults():
     """Create default admin user, notification config, and schedule config if missing."""
+    import secrets
     import bcrypt
     from sqlalchemy import select
+    from backend import auth as auth_module
 
     async with AsyncSessionLocal() as session:
         # Default admin user
@@ -46,6 +48,24 @@ async def seed_defaults():
         )
         if not result.scalar_one_or_none():
             session.add(models.ScheduleConfig(id=1))
+
+        # JWT secret: use env var if set, otherwise persist in DB so sessions
+        # survive container restarts (the DB lives on a mounted volume).
+        from backend.config import JWT_SECRET
+        if JWT_SECRET:
+            auth_module.init_jwt_secret(JWT_SECRET)
+        else:
+            result = await session.execute(
+                select(models.AppConfig).where(models.AppConfig.key == "jwt_secret")
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                auth_module.init_jwt_secret(row.value)
+            else:
+                new_secret = secrets.token_hex(32)
+                session.add(models.AppConfig(key="jwt_secret", value=new_secret))
+                auth_module.init_jwt_secret(new_secret)
+                logger.info("Generated and stored new JWT secret in database.")
 
         await session.commit()
 

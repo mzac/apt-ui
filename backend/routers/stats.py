@@ -27,6 +27,7 @@ async def fleet_overview(
     errors = 0
     reboot_required = 0
     held_total = 0
+    autoremove_total = 0
     last_check_time: datetime | None = None
 
     for server in servers:
@@ -51,6 +52,7 @@ async def fleet_overview(
         if check.reboot_required:
             reboot_required += 1
         held_total += check.held_packages
+        autoremove_total += check.autoremove_count or 0
 
     # Next check time from scheduler
     next_check_time = None
@@ -68,6 +70,7 @@ async def fleet_overview(
         errors=errors,
         reboot_required=reboot_required,
         held_packages_total=held_total,
+        autoremove_total=autoremove_total,
         last_check_time=last_check_time,
         next_check_time=next_check_time,
     )

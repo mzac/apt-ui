@@ -15,7 +15,9 @@
     "zustand": "^5.0.0",
     "recharts": "^2.13.0",
     "ansi-to-html": "^0.7.2",
-    "clsx": "^2.1.1"
+    "clsx": "^2.1.1",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.5",

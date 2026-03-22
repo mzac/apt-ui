@@ -29,3 +29,17 @@ async def init_db():
     from backend import models  # noqa: F401 — ensure models are registered
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Apply incremental column migrations for existing databases.
+        # SQLite supports ALTER TABLE ADD COLUMN but not IF NOT EXISTS,
+        # so we catch the error when a column already exists.
+        migrations = [
+            "ALTER TABLE update_checks ADD COLUMN autoremove_count INTEGER DEFAULT 0",
+            "ALTER TABLE update_checks ADD COLUMN autoremove_packages TEXT",
+            "ALTER TABLE servers ADD COLUMN os_info TEXT",
+            "ALTER TABLE servers ADD COLUMN is_enabled BOOLEAN DEFAULT 1",
+        ]
+        for sql in migrations:
+            try:
+                await conn.execute(__import__('sqlalchemy').text(sql))
+            except Exception:
+                pass  # Column already exists — ignore

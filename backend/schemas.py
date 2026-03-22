@@ -82,6 +82,7 @@ class LatestCheckOut(BaseModel):
     security_packages: int = 0
     regular_packages: int = 0
     held_packages: int = 0
+    autoremove_count: int = 0
     reboot_required: bool = False
     error_message: Optional[str] = None
 
@@ -172,6 +173,7 @@ class FleetOverview(BaseModel):
     errors: int
     reboot_required: int
     held_packages_total: int
+    autoremove_total: int = 0
     last_check_time: Optional[datetime] = None
     next_check_time: Optional[datetime] = None
 

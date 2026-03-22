@@ -6,6 +6,21 @@ import { useAuthStore } from '@/hooks/useAuth'
 const TABS = ['Servers', 'Schedule', 'Notifications', 'Account'] as const
 type Tab = typeof TABS[number]
 
+const PALETTE = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#a3e635',
+  '#e879f9', '#fb7185', '#34d399', '#60a5fa', '#fbbf24',
+]
+
+function pickDistinctColor(existingColors: string[]): string {
+  const used = new Set(existingColors.map(c => c.toLowerCase()))
+  const candidate = PALETTE.find(c => !used.has(c))
+  if (candidate) return candidate
+  // All palette colors used — generate a random hue
+  const hue = Math.floor(Math.random() * 360)
+  return `hsl(${hue},70%,55%)`
+}
+
 // ---------------------------------------------------------------------------
 // Main Settings page
 // ---------------------------------------------------------------------------
@@ -52,6 +67,12 @@ function ServersTab() {
   const [formError, setFormError] = useState('')
   const [testing, setTesting] = useState<number | null>(null)
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; detail: string }>>({})
+  // Inline editing state
+  const [editingServer, setEditingServer] = useState<number | null>(null)
+  const [editForm, setEditForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', group_id: '', is_enabled: true })
+  const [editError, setEditError] = useState('')
+  const [editingGroup, setEditingGroup] = useState<number | null>(null)
+  const [editGroupForm, setEditGroupForm] = useState({ name: '', color: '#3b82f6' })
 
   const load = useCallback(async () => {
     const [s, g] = await Promise.all([serversApi.list(), groupsApi.list()])
@@ -60,6 +81,54 @@ function ServersTab() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  function startEditServer(s: Server) {
+    setEditingServer(s.id)
+    setEditForm({
+      name: s.name,
+      hostname: s.hostname,
+      username: s.username,
+      ssh_port: String(s.ssh_port),
+      group_id: s.group_id ? String(s.group_id) : '',
+      is_enabled: s.is_enabled,
+    })
+    setEditError('')
+  }
+
+  async function handleSaveServer() {
+    if (!editingServer) return
+    setEditError('')
+    try {
+      await serversApi.update(editingServer, {
+        name: editForm.name,
+        hostname: editForm.hostname,
+        username: editForm.username,
+        ssh_port: parseInt(editForm.ssh_port) || 22,
+        group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
+        is_enabled: editForm.is_enabled,
+      })
+      setEditingServer(null)
+      load()
+    } catch (err: unknown) {
+      setEditError((err as Error).message)
+    }
+  }
+
+  function startEditGroup(g: ServerGroup) {
+    setEditingGroup(g.id)
+    setEditGroupForm({ name: g.name, color: g.color || '#3b82f6' })
+  }
+
+  async function handleSaveGroup() {
+    if (!editingGroup) return
+    try {
+      await groupsApi.update(editingGroup, editGroupForm)
+      setEditingGroup(null)
+      load()
+    } catch (err: unknown) {
+      setFormError((err as Error).message)
+    }
+  }
 
   async function handleAddServer(e: React.FormEvent) {
     e.preventDefault()
@@ -84,7 +153,9 @@ function ServersTab() {
     e.preventDefault()
     try {
       await groupsApi.create(groupForm)
-      setGroupForm({ name: '', color: '#3b82f6' })
+      const updated = await groupsApi.list()
+      setGroupList(updated)
+      setGroupForm({ name: '', color: pickDistinctColor(updated.map(g => g.color || '')) })
       setShowAddGroup(false)
       load()
     } catch (err: unknown) {
@@ -114,18 +185,18 @@ function ServersTab() {
     load()
   }
 
-  async function handleToggleEnabled(server: Server) {
-    await serversApi.update(server.id, { is_enabled: !server.is_enabled })
-    load()
-  }
-
   return (
     <div className="space-y-8">
       {/* Groups */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide">Server Groups</h2>
-          <button className="btn-secondary text-xs" onClick={() => setShowAddGroup(!showAddGroup)}>+ Add Group</button>
+          <button className="btn-secondary text-xs" onClick={() => {
+            if (!showAddGroup) {
+              setGroupForm({ name: '', color: pickDistinctColor(groupList.map(g => g.color || '')) })
+            }
+            setShowAddGroup(!showAddGroup)
+          }}>+ Add Group</button>
         </div>
 
         {showAddGroup && (
@@ -146,14 +217,37 @@ function ServersTab() {
         <div className="flex flex-wrap gap-2">
           {groupList.map(g => (
             <div key={g.id} className="card px-3 py-2 flex items-center gap-2 text-sm">
-              <span className="w-3 h-3 rounded-full" style={{ background: g.color || '#6b7280' }} />
-              <span className="font-mono">{g.name}</span>
-              <span className="text-text-muted text-xs">{g.server_count} servers</span>
-              <button onClick={() => handleDeleteGroup(g.id)} className="text-text-muted hover:text-red text-xs ml-1">✕</button>
+              {editingGroup === g.id ? (
+                <>
+                  <input
+                    className="input w-32 text-xs py-1"
+                    value={editGroupForm.name}
+                    onChange={e => setEditGroupForm(f => ({ ...f, name: e.target.value }))}
+                    autoFocus
+                  />
+                  <input
+                    type="color"
+                    className="h-7 w-10 rounded border border-border bg-surface-2 cursor-pointer"
+                    value={editGroupForm.color}
+                    onChange={e => setEditGroupForm(f => ({ ...f, color: e.target.value }))}
+                  />
+                  <button onClick={handleSaveGroup} className="btn-primary text-xs py-0.5">✓</button>
+                  <button onClick={() => setEditingGroup(null)} className="btn-secondary text-xs py-0.5">✕</button>
+                </>
+              ) : (
+                <>
+                  <span className="w-3 h-3 rounded-full shrink-0" style={{ background: g.color || '#6b7280' }} />
+                  <span className="font-mono">{g.name}</span>
+                  <span className="text-text-muted text-xs">{g.server_count} servers</span>
+                  <button onClick={() => startEditGroup(g)} className="text-text-muted hover:text-text-primary text-xs">✎</button>
+                  <button onClick={() => handleDeleteGroup(g.id)} className="text-text-muted hover:text-red text-xs">✕</button>
+                </>
+              )}
             </div>
           ))}
           {groupList.length === 0 && <p className="text-text-muted text-sm">No groups yet.</p>}
         </div>
+        {formError && <p className="text-red text-xs mt-1">{formError}</p>}
       </section>
 
       {/* Servers */}
@@ -202,18 +296,60 @@ function ServersTab() {
               <tr className="border-b border-border text-text-muted text-xs uppercase">
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Hostname</th>
-                <th className="text-left px-3 py-2">User</th>
+                <th className="text-left px-3 py-2">User / Port</th>
                 <th className="text-left px-3 py-2">Group</th>
                 <th className="text-left px-3 py-2">Enabled</th>
                 <th className="text-left px-3 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {serverList.map((s, i) => (
+              {serverList.map((s, i) => editingServer === s.id ? (
+                /* ── Inline edit row ── */
+                <tr key={s.id} className="border-b border-border/50 bg-surface-2/50">
+                  <td className="px-2 py-2">
+                    <input className="input w-full text-xs py-1" value={editForm.name}
+                      onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} autoFocus />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input className="input w-full text-xs py-1" value={editForm.hostname}
+                      onChange={e => setEditForm(f => ({ ...f, hostname: e.target.value }))} />
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="flex gap-1">
+                      <input className="input w-24 text-xs py-1" value={editForm.username}
+                        onChange={e => setEditForm(f => ({ ...f, username: e.target.value }))} placeholder="user" />
+                      <input className="input w-16 text-xs py-1" type="number" value={editForm.ssh_port}
+                        onChange={e => setEditForm(f => ({ ...f, ssh_port: e.target.value }))} placeholder="22" />
+                    </div>
+                  </td>
+                  <td className="px-2 py-2">
+                    <select className="input w-full text-xs py-1" value={editForm.group_id}
+                      onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))}>
+                      <option value="">None</option>
+                      {groupList.map(g => <option key={g.id} value={String(g.id)}>{g.name}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-2 py-2">
+                    <input type="checkbox" checked={editForm.is_enabled}
+                      onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
+                      className="w-4 h-4 accent-green" />
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="flex flex-col gap-1">
+                      <div className="flex gap-1">
+                        <button onClick={handleSaveServer} className="btn-primary text-xs py-0.5">Save</button>
+                        <button onClick={() => setEditingServer(null)} className="btn-secondary text-xs py-0.5">Cancel</button>
+                      </div>
+                      {editError && <span className="text-red text-xs">{editError}</span>}
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                /* ── Normal display row ── */
                 <tr key={s.id} className={`border-b border-border/50 ${i % 2 === 0 ? '' : 'bg-surface-2/30'}`}>
                   <td className="px-3 py-2 font-mono">{s.name}</td>
-                  <td className="px-3 py-2 font-mono text-text-muted">{s.hostname}:{s.ssh_port}</td>
-                  <td className="px-3 py-2 font-mono text-text-muted">{s.username}</td>
+                  <td className="px-3 py-2 font-mono text-text-muted">{s.hostname}</td>
+                  <td className="px-3 py-2 font-mono text-text-muted text-xs">{s.username} :{s.ssh_port}</td>
                   <td className="px-3 py-2">
                     {s.group_name ? (
                       <span className="badge text-xs" style={{ background: (s.group_color || '#3b82f6') + '22', color: s.group_color || '#3b82f6', border: `1px solid ${s.group_color || '#3b82f6'}44` }}>
@@ -222,27 +358,22 @@ function ServersTab() {
                     ) : <span className="text-text-muted text-xs">—</span>}
                   </td>
                   <td className="px-3 py-2">
-                    <button
-                      onClick={() => handleToggleEnabled(s)}
-                      className={`text-xs font-mono ${s.is_enabled ? 'text-green' : 'text-text-muted'}`}
-                    >
+                    <span className={`text-xs font-mono ${s.is_enabled ? 'text-green' : 'text-text-muted'}`}>
                       {s.is_enabled ? 'yes' : 'no'}
-                    </button>
+                    </span>
                   </td>
-                  <td className="px-3 py-2 flex gap-2">
-                    <button
-                      onClick={() => handleTestConnection(s.id)}
-                      disabled={testing === s.id}
-                      className="btn-secondary text-xs py-0.5"
-                    >
-                      {testing === s.id ? '…' : 'Test'}
-                    </button>
-                    {testResults[s.id] && (
-                      <span className={`text-xs self-center ${testResults[s.id].success ? 'text-green' : 'text-red'}`}>
-                        {testResults[s.id].success ? '✓' : '✗'}
-                      </span>
-                    )}
-                    <button onClick={() => handleDeleteServer(s.id)} className="btn-danger text-xs py-0.5">Delete</button>
+                  <td className="px-3 py-2">
+                    <div className="flex gap-1 flex-wrap">
+                      <button onClick={() => startEditServer(s)} className="btn-secondary text-xs py-0.5">Edit</button>
+                      <button
+                        onClick={() => handleTestConnection(s.id)}
+                        disabled={testing === s.id}
+                        className="btn-secondary text-xs py-0.5"
+                      >
+                        {testing === s.id ? '…' : testResults[s.id] ? (testResults[s.id].success ? '✓ OK' : '✗ Fail') : 'Test'}
+                      </button>
+                      <button onClick={() => handleDeleteServer(s.id)} className="btn-danger text-xs py-0.5">Del</button>
+                    </div>
                   </td>
                 </tr>
               ))}

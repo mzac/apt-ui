@@ -22,6 +22,7 @@ export interface LatestCheck {
   security_packages: number
   regular_packages: number
   held_packages: number
+  autoremove_count: number
   reboot_required: boolean
   error_message: string | null
 }
@@ -72,6 +73,7 @@ export interface FleetOverview {
   errors: number
   reboot_required: number
   held_packages_total: number
+  autoremove_total: number
   last_check_time: string | null
   next_check_time: string | null
 }
