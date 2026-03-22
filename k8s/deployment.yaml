@@ -1,0 +1,116 @@
+---
+# Secret — create once with:
+#   kubectl create secret generic apt-dashboard-secrets \
+#     --from-literal=ssh-private-key="$(cat ~/.ssh/id_ed25519)" \
+#     --from-literal=jwt-secret="$(openssl rand -hex 32)"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: apt-dashboard-secrets
+  namespace: default
+type: Opaque
+stringData:
+  ssh-private-key: ""   # fill in or use kubectl create secret
+  jwt-secret: ""        # fill in or use kubectl create secret
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: apt-dashboard-data
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn   # change to your storage class if not using Longhorn
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apt-dashboard
+  namespace: default
+  labels:
+    app: apt-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apt-dashboard
+  template:
+    metadata:
+      labels:
+        app: apt-dashboard
+    spec:
+      containers:
+        - name: apt-dashboard
+          image: apt-dashboard:latest   # replace with your registry image
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: SSH_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: apt-dashboard-secrets
+                  key: ssh-private-key
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: apt-dashboard-secrets
+                  key: jwt-secret
+            - name: TZ
+              value: America/Montreal
+            - name: DATABASE_PATH
+              value: /data/apt-dashboard.db
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: apt-dashboard-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apt-dashboard
+  namespace: default
+  labels:
+    app: apt-dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app: apt-dashboard
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

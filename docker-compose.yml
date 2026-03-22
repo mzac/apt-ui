@@ -1,0 +1,23 @@
+services:
+  apt-dashboard:
+    build: .
+    ports:
+      - "8111:8000"
+    environment:
+      - SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY}
+      - TZ=America/Montreal
+      # Optional overrides:
+      # - JWT_SECRET=change-me-to-a-random-string
+      # - LOG_LEVEL=INFO
+    volumes:
+      - apt-dashboard-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  apt-dashboard-data:

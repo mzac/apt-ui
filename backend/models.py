@@ -1,0 +1,140 @@
+from datetime import datetime
+from sqlalchemy import (
+    Boolean, DateTime, Float, ForeignKey, Integer, Text, func
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from backend.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ServerGroup(Base):
+    __tablename__ = "server_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    color: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    servers: Mapped[list["Server"]] = relationship("Server", back_populates="group")
+
+
+class Server(Base):
+    __tablename__ = "servers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    hostname: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    ssh_port: Mapped[int] = mapped_column(Integer, default=22)
+    group_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("server_groups.id"), nullable=True)
+    os_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    group: Mapped["ServerGroup | None"] = relationship("ServerGroup", back_populates="servers")
+    update_checks: Mapped[list["UpdateCheck"]] = relationship(
+        "UpdateCheck", back_populates="server", cascade="all, delete-orphan"
+    )
+    update_history: Mapped[list["UpdateHistory"]] = relationship(
+        "UpdateHistory", back_populates="server", cascade="all, delete-orphan"
+    )
+    server_stats: Mapped[list["ServerStats"]] = relationship(
+        "ServerStats", back_populates="server", cascade="all, delete-orphan"
+    )
+
+
+class UpdateCheck(Base):
+    __tablename__ = "update_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(Integer, ForeignKey("servers.id"), nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    status: Mapped[str] = mapped_column(Text, nullable=False)  # success / error
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    packages_available: Mapped[int] = mapped_column(Integer, default=0)
+    security_packages: Mapped[int] = mapped_column(Integer, default=0)
+    regular_packages: Mapped[int] = mapped_column(Integer, default=0)
+    held_packages: Mapped[int] = mapped_column(Integer, default=0)
+    held_packages_list: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    reboot_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    packages_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+
+    server: Mapped["Server"] = relationship("Server", back_populates="update_checks")
+
+
+class UpdateHistory(Base):
+    __tablename__ = "update_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(Integer, ForeignKey("servers.id"), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)  # running / success / error
+    action: Mapped[str] = mapped_column(Text, nullable=False)  # upgrade / dist-upgrade
+    phased_updates: Mapped[bool] = mapped_column(Boolean, default=False)
+    packages_upgraded: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    log_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    initiated_by: Mapped[str] = mapped_column(Text, default="manual")  # manual / scheduled
+
+    server: Mapped["Server"] = relationship("Server", back_populates="update_history")
+
+
+class ServerStats(Base):
+    __tablename__ = "server_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(Integer, ForeignKey("servers.id"), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kernel_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disk_usage_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_apt_update: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    total_packages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
+
+
+class NotificationConfig(Base):
+    __tablename__ = "notification_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    smtp_host: Mapped[str | None] = mapped_column(Text, nullable=True)
+    smtp_port: Mapped[int] = mapped_column(Integer, default=587)
+    smtp_use_tls: Mapped[bool] = mapped_column(Boolean, default=True)
+    smtp_username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    smtp_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_from: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_bot_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    daily_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    daily_summary_time: Mapped[str] = mapped_column(Text, default="07:00")
+    notify_on_upgrade_complete: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_on_error: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ScheduleConfig(Base):
+    __tablename__ = "schedule_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    check_cron: Mapped[str] = mapped_column(Text, default="0 6 * * *")
+    auto_upgrade_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_upgrade_cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allow_phased_on_auto: Mapped[bool] = mapped_column(Boolean, default=False)
+    upgrade_concurrency: Mapped[int] = mapped_column(Integer, default=5)
+    log_retention_days: Mapped[int] = mapped_column(Integer, default=90)

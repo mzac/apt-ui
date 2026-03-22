@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0f1117;
+    color: #e5e7eb;
+    font-family: 'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track { background: #1a1d27; }
+  ::-webkit-scrollbar-thumb { background: #2e3347; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3e4459; }
+}
+
+@layer components {
+  .btn {
+    @apply px-3 py-1.5 rounded text-sm font-medium transition-colors focus:outline-none;
+  }
+  .btn-primary {
+    @apply btn bg-green text-bg hover:bg-green/90 disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply btn bg-surface-2 text-text-primary border border-border hover:bg-surface hover:border-green/40 disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply btn bg-red/10 text-red border border-red/30 hover:bg-red/20 disabled:opacity-50;
+  }
+  .btn-amber {
+    @apply btn bg-amber/10 text-amber border border-amber/30 hover:bg-amber/20 disabled:opacity-50;
+  }
+  .card {
+    @apply bg-surface border border-border rounded-lg;
+  }
+  .input {
+    @apply w-full bg-surface-2 border border-border rounded px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:border-green placeholder-text-muted;
+  }
+  .label {
+    @apply block text-xs text-text-muted mb-1 uppercase tracking-wide;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-mono;
+  }
+}

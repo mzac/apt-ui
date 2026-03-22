@@ -1,0 +1,56 @@
+import { useEffect } from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuthStore } from '@/hooks/useAuth'
+import RequireAuth from '@/components/RequireAuth'
+import Layout from '@/components/Layout'
+import Login from '@/pages/Login'
+import Dashboard from '@/pages/Dashboard'
+import ServerDetail from '@/pages/ServerDetail'
+import Settings from '@/pages/Settings'
+
+export default function App() {
+  const { init } = useAuthStore()
+
+  useEffect(() => {
+    init()
+  }, [init])
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Dashboard />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/servers/:id"
+          element={
+            <RequireAuth>
+              <Layout>
+                <ServerDetail />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Settings />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
