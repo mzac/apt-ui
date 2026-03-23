@@ -131,6 +131,8 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN auto_tag_os BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN auto_tag_virt BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN run_apt_update_before_upgrade BOOLEAN DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN conffile_action TEXT DEFAULT 'confdef_confold'",
+            "ALTER TABLE servers ADD COLUMN ssh_private_key_enc TEXT",
         ]
         for sql in migrations:
             try:
