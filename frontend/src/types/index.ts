@@ -7,6 +7,20 @@ export interface User {
   is_default_password: boolean
 }
 
+export interface Tag {
+  id: number
+  name: string
+  color: string
+  sort_order: number
+  server_count: number
+}
+
+export interface GroupRef {
+  id: number
+  name: string
+  color: string | null
+}
+
 export interface ServerGroup {
   id: number
   name: string
@@ -36,12 +50,18 @@ export interface Server {
   group_id: number | null
   group_name: string | null
   group_color: string | null
+  groups: GroupRef[]
   os_info: string | null
-  tags: string[]
+  tags: Tag[]
   is_enabled: boolean
   created_at: string
   updated_at: string
   latest_check: LatestCheck | null
+  cpu_count: number | null
+  mem_total_mb: number | null
+  kernel_version: string | null
+  uptime_seconds: number | null
+  virt_type: string | null
 }
 
 export interface PackageInfo {
@@ -51,6 +71,17 @@ export interface PackageInfo {
   repository: string
   is_security: boolean
   is_phased: boolean
+  description?: string
+}
+
+export interface PackageSearchResult {
+  name: string
+  description: string
+  installed_size: number
+  download_size: number
+  version: string
+  section: string
+  is_installed: boolean
 }
 
 export interface UpdateHistory {
@@ -91,6 +122,8 @@ export interface ScheduleConfig {
   next_check_time: string | null
   next_upgrade_time: string | null
   timezone: string
+  auto_tag_os: boolean
+  auto_tag_virt: boolean
 }
 
 export interface NotificationConfig {
@@ -110,6 +143,35 @@ export interface NotificationConfig {
   daily_summary_time: string
   notify_on_upgrade_complete: boolean
   notify_on_error: boolean
+  daily_summary_email: boolean
+  daily_summary_telegram: boolean
+  notify_upgrade_email: boolean
+  notify_upgrade_telegram: boolean
+  notify_error_email: boolean
+  notify_error_telegram: boolean
+}
+
+export interface TemplatePackage {
+  id: number
+  template_id: number
+  package_name: string
+  notes: string | null
+}
+
+export interface Template {
+  id: number
+  name: string
+  description: string | null
+  created_at: string
+  packages: TemplatePackage[]
+}
+
+export interface CheckAllProgress {
+  running: boolean
+  total: number
+  done: number
+  current_servers: string[]
+  results: Record<string, string>
 }
 
 export type ServerStatus = 'up_to_date' | 'updates_available' | 'error' | 'checking' | 'upgrading' | 'disabled' | 'unknown'

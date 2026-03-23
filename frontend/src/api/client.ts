@@ -1,6 +1,7 @@
 import type {
-  FleetOverview, NotificationConfig, PackageInfo,
-  ScheduleConfig, Server, ServerGroup, UpdateHistory, User,
+  CheckAllProgress, FleetOverview, NotificationConfig, PackageInfo,
+  PackageSearchResult, ScheduleConfig, Server, ServerGroup, Tag, Template,
+  TemplatePackage, UpdateHistory, User,
 } from '@/types'
 
 // ---------------------------------------------------------------------------
@@ -72,20 +73,35 @@ export const servers = {
     if (params?.status) q.set('status', params.status)
     return get<Server[]>(`/api/servers${q.toString() ? '?' + q : ''}`)
   },
-  create: (data: { name: string; hostname: string; username: string; ssh_port?: number; group_id?: number }) =>
-    post<Server>('/api/servers', data),
-  update: (id: number, data: Partial<Server>) => put<Server>(`/api/servers/${id}`, data),
+  create: (data: {
+    name: string
+    hostname: string
+    username: string
+    ssh_port?: number
+    group_id?: number
+    group_ids?: number[]
+    tag_ids?: number[]
+    tag_names?: string[]
+  }) => post<Server>('/api/servers', data),
+  update: (id: number, data: Partial<Server> & {
+    tag_ids?: number[]
+    tag_names?: string[]
+    group_ids?: number[]
+  }) => put<Server>(`/api/servers/${id}`, data),
   remove: (id: number) => del(`/api/servers/${id}`),
   reboot: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/reboot`),
   test: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/test`),
   check: (id: number) => post<{ status: string; packages_available: number }>(`/api/servers/${id}/check`),
-  checkAll: () => post<{ checked: number }>('/api/servers/check-all'),
+  checkAll: () => post<{ detail: string; total: number }>('/api/servers/check-all'),
+  checkProgress: () => get<CheckAllProgress>('/api/servers/check-all/progress'),
   upgrade: (id: number, action: string, allow_phased: boolean) =>
     post(`/api/servers/${id}/upgrade`, { action, allow_phased }),
   upgradeAll: (action: string, allow_phased: boolean) =>
     post('/api/servers/upgrade-all', { action, allow_phased }),
   packages: (id: number) =>
     get<{ packages: PackageInfo[]; held: string[]; autoremove: string[]; checked_at: string }>(`/api/servers/${id}/packages`),
+  packageSearch: (id: number, q: string) =>
+    get<PackageSearchResult[]>(`/api/servers/${id}/packages/search?q=${encodeURIComponent(q)}`),
   history: (id: number, page = 1) =>
     get<{ total: number; page: number; items: UpdateHistory[] }>(`/api/servers/${id}/history?page=${page}`),
 }
@@ -100,6 +116,35 @@ export const groups = {
     post<ServerGroup>('/api/groups', data),
   update: (id: number, data: Partial<ServerGroup>) => put<ServerGroup>(`/api/groups/${id}`, data),
   remove: (id: number) => del(`/api/groups/${id}`),
+}
+
+// ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+export const tags = {
+  list: () => get<Tag[]>('/api/tags'),
+  create: (data: { name: string; color?: string; sort_order?: number }) =>
+    post<Tag>('/api/tags', data),
+  update: (id: number, data: Partial<Tag>) => put<Tag>(`/api/tags/${id}`, data),
+  remove: (id: number) => del(`/api/tags/${id}`),
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+export const templates = {
+  list: () => get<Template[]>('/api/templates'),
+  create: (data: { name: string; description?: string; packages?: { package_name: string; notes?: string }[] }) =>
+    post<Template>('/api/templates', data),
+  update: (id: number, data: { name?: string; description?: string }) =>
+    put<Template>(`/api/templates/${id}`, data),
+  remove: (id: number) => del(`/api/templates/${id}`),
+  addPackage: (id: number, data: { package_name: string; notes?: string }) =>
+    post<TemplatePackage>(`/api/templates/${id}/packages`, data),
+  removePackage: (templateId: number, pkgId: number) =>
+    del(`/api/templates/${templateId}/packages/${pkgId}`),
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +199,7 @@ export const config = {
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket helper
+// WebSocket helpers
 // ---------------------------------------------------------------------------
 
 export function createUpgradeWebSocket(
@@ -207,6 +252,34 @@ export function createAutoremoveWebSocket(
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/autoremove/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createInstallWebSocket(
+  serverId: number,
+  packages: string[],
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify({ packages })) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createTemplateApplyWebSocket(
+  templateId: number,
+  serverIds: number[],
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/template-apply/${templateId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify({ server_ids: serverIds })) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()
   return ws

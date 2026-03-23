@@ -8,6 +8,7 @@ import Dashboard from '@/pages/Dashboard'
 import ServerDetail from '@/pages/ServerDetail'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
+import Templates from '@/pages/Templates'
 
 export default function App() {
   const { init } = useAuthStore()
@@ -56,6 +57,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <History />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/templates"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Templates />
               </Layout>
             </RequireAuth>
           }

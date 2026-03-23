@@ -1,4 +1,3 @@
-import asyncio
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -28,30 +27,6 @@ async def trigger_check(
     check = await check_server(server, db)
     return {"id": check.id, "status": check.status, "packages_available": check.packages_available}
 
-
-@router.post("/check-all")
-async def trigger_check_all(
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
-):
-    from backend.models import ScheduleConfig
-    from backend.update_checker import check_all_servers
-
-    cfg_result = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
-    cfg = cfg_result.scalar_one_or_none()
-    concurrency = cfg.upgrade_concurrency if cfg else 5
-
-    result = await db.execute(select(Server).where(Server.is_enabled == True))
-    servers = result.scalars().all()
-
-    results = await check_all_servers(list(servers), db, concurrency)
-    return {
-        "checked": len(results),
-        "results": [
-            {"server_id": sid, "status": c.status, "packages_available": c.packages_available}
-            for sid, c in results.items()
-        ],
-    }
 
 
 @router.get("/{server_id}/packages")

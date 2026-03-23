@@ -14,7 +14,9 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Server, UpdateHistory
+from sqlalchemy import select
+
+from backend.models import Server, UpdateCheck, UpdateHistory
 from backend.ssh_manager import run_command, run_command_stream
 from backend.update_checker import check_server
 
@@ -138,8 +140,9 @@ async def upgrade_server(
 
             success = upgrade_result.exit_code == 0
 
-            # Parse upgraded package list from output
-            packages_upgraded = _parse_upgraded_packages(combined_output)
+            # Parse upgraded package list from output and enrich with version info
+            pkg_names = _parse_upgraded_packages(combined_output)
+            packages_upgraded = await _enrich_packages_with_versions(pkg_names, server.id, db)
 
             history.completed_at = datetime.utcnow()
             history.status = "success" if success else "error"
@@ -272,7 +275,8 @@ async def upgrade_packages_selective(
                 raise RuntimeError("apt lock is held by another process. Try again later.")
 
             success = upgrade_result.exit_code == 0
-            packages_upgraded = _parse_upgraded_packages(combined_output)
+            pkg_names = _parse_upgraded_packages(combined_output)
+            packages_upgraded = await _enrich_packages_with_versions(pkg_names, server.id, db)
 
             history.completed_at = datetime.utcnow()
             history.status = "success" if success else "error"
@@ -431,3 +435,39 @@ def _parse_upgraded_packages(output: str) -> list[str]:
             else:
                 in_section = False
     return packages
+
+
+async def _enrich_packages_with_versions(
+    names: list[str], server_id: int, db: AsyncSession
+) -> list[dict]:
+    """
+    Look up version info from the latest successful UpdateCheck and return
+    a list of dicts with name/from_version/to_version for each upgraded package.
+    Falls back to name-only entries when version data is unavailable.
+    """
+    version_map: dict[str, dict] = {}
+    try:
+        result = await db.execute(
+            select(UpdateCheck)
+            .where(UpdateCheck.server_id == server_id, UpdateCheck.status == "success")
+            .order_by(UpdateCheck.checked_at.desc())
+            .limit(1)
+        )
+        last_check = result.scalar_one_or_none()
+        if last_check and last_check.packages_json:
+            for p in json.loads(last_check.packages_json):
+                version_map[p["name"]] = {
+                    "from_version": p.get("current_version", ""),
+                    "to_version": p.get("available_version", ""),
+                }
+    except Exception:
+        pass
+
+    enriched = []
+    for name in names:
+        entry: dict = {"name": name}
+        if name in version_map:
+            entry["from_version"] = version_map[name]["from_version"]
+            entry["to_version"] = version_map[name]["to_version"]
+        enriched.append(entry)
+    return enriched

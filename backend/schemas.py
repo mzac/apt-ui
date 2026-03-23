@@ -29,6 +29,32 @@ class UserOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+class TagOut(BaseModel):
+    id: int
+    name: str
+    color: str
+    sort_order: int
+    server_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class TagCreate(BaseModel):
+    name: str
+    color: str = '#6366f1'
+    sort_order: int = 0
+
+
+class TagUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+# ---------------------------------------------------------------------------
 # Server Groups
 # ---------------------------------------------------------------------------
 
@@ -54,6 +80,14 @@ class ServerGroupOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class GroupRef(BaseModel):
+    id: int
+    name: str
+    color: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ---------------------------------------------------------------------------
 # Servers
 # ---------------------------------------------------------------------------
@@ -64,7 +98,10 @@ class ServerCreate(BaseModel):
     username: str
     ssh_port: int = 22
     group_id: Optional[int] = None
+    group_ids: list[int] = []
     tags: list[str] = []
+    tag_ids: list[int] = []
+    tag_names: list[str] = []
 
 
 class ServerUpdate(BaseModel):
@@ -73,8 +110,11 @@ class ServerUpdate(BaseModel):
     username: Optional[str] = None
     ssh_port: Optional[int] = None
     group_id: Optional[int] = None
+    group_ids: Optional[list[int]] = None
     is_enabled: Optional[bool] = None
     tags: Optional[list[str]] = None
+    tag_ids: Optional[list[int]] = None
+    tag_names: Optional[list[str]] = None
 
 
 class LatestCheckOut(BaseModel):
@@ -100,12 +140,19 @@ class ServerOut(BaseModel):
     group_id: Optional[int] = None
     group_name: Optional[str] = None
     group_color: Optional[str] = None
+    groups: list[GroupRef] = []
     os_info: Optional[str] = None
-    tags: list[str] = []
+    tags: list[TagOut] = []
     is_enabled: bool
     created_at: datetime
     updated_at: datetime
     latest_check: Optional[LatestCheckOut] = None
+    # Stats fields from latest ServerStats row
+    cpu_count: Optional[int] = None
+    mem_total_mb: Optional[int] = None
+    kernel_version: Optional[str] = None
+    uptime_seconds: Optional[int] = None
+    virt_type: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -121,6 +168,7 @@ class PackageInfo(BaseModel):
     repository: str
     is_security: bool
     is_phased: bool
+    description: str = ""
 
 
 class UpdateCheckOut(BaseModel):
@@ -138,6 +186,20 @@ class UpdateCheckOut(BaseModel):
     packages_json: Optional[list[PackageInfo]] = None
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Package search (for package install feature)
+# ---------------------------------------------------------------------------
+
+class PackageSearchResult(BaseModel):
+    name: str
+    description: str
+    installed_size: int
+    download_size: int
+    version: str
+    section: str
+    is_installed: bool
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +244,18 @@ class FleetOverview(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Check-all progress
+# ---------------------------------------------------------------------------
+
+class CheckAllProgress(BaseModel):
+    running: bool
+    total: int
+    done: int
+    current_servers: list[str]
+    results: dict[str, str]
+
+
+# ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 
@@ -197,6 +271,8 @@ class ScheduleConfigOut(BaseModel):
     next_check_time: Optional[datetime] = None
     next_upgrade_time: Optional[datetime] = None
     timezone: str = ""
+    auto_tag_os: bool = False
+    auto_tag_virt: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -209,6 +285,8 @@ class ScheduleConfigUpdate(BaseModel):
     allow_phased_on_auto: Optional[bool] = None
     upgrade_concurrency: Optional[int] = None
     log_retention_days: Optional[int] = None
+    auto_tag_os: Optional[bool] = None
+    auto_tag_virt: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +310,12 @@ class NotificationConfigOut(BaseModel):
     daily_summary_time: str
     notify_on_upgrade_complete: bool
     notify_on_error: bool
+    daily_summary_email: bool = True
+    daily_summary_telegram: bool = True
+    notify_upgrade_email: bool = True
+    notify_upgrade_telegram: bool = True
+    notify_error_email: bool = True
+    notify_error_telegram: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -252,3 +336,48 @@ class NotificationConfigUpdate(BaseModel):
     daily_summary_time: Optional[str] = None
     notify_on_upgrade_complete: Optional[bool] = None
     notify_on_error: Optional[bool] = None
+    daily_summary_email: Optional[bool] = None
+    daily_summary_telegram: Optional[bool] = None
+    notify_upgrade_email: Optional[bool] = None
+    notify_upgrade_telegram: Optional[bool] = None
+    notify_error_email: Optional[bool] = None
+    notify_error_telegram: Optional[bool] = None
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+class TemplatePackageOut(BaseModel):
+    id: int
+    template_id: int
+    package_name: str
+    notes: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TemplatePackageCreate(BaseModel):
+    package_name: str
+    notes: Optional[str] = None
+
+
+class TemplateOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+    packages: list[TemplatePackageOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class TemplateCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    packages: list[TemplatePackageCreate] = []
+
+
+class TemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None

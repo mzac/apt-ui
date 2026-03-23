@@ -421,6 +421,18 @@ def _build_telegram_summary(subject: str, server_data: list[dict]) -> str:
 # Event-driven notifications
 # ---------------------------------------------------------------------------
 
+def _pkg_label(p) -> str:
+    """Return a human-readable package label with version transition if available."""
+    if isinstance(p, dict):
+        name = p.get("name", str(p))
+        frm = p.get("from_version", "")
+        to = p.get("to_version", "")
+        if frm and to:
+            return f"{name}: {frm} → {to}"
+        return name
+    return str(p)
+
+
 async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, history: UpdateHistory):
     if not cfg.notify_on_upgrade_complete:
         return
@@ -434,20 +446,60 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
 
     if history.status == "success":
         subject = f"Apt Dashboard — Upgrade complete on {server.name}"
-        pkg_list_text = "\n".join(f"  • {p}" for p in pkgs) if pkgs else "  (none)"
-        text = (f"Upgrade completed successfully on {server.name} ({server.hostname}).\n"
-                f"{len(pkgs)} package(s) upgraded:\n{pkg_list_text}")
-        pkg_rows = "".join(f"<tr><td style='padding:2px 8px;font-family:monospace'>{p}</td></tr>" for p in pkgs)
-        html = f"""<html><body style='font-family:sans-serif'>
-<p>Upgrade completed on <strong>{server.name}</strong> ({server.hostname}) — {len(pkgs)} package(s).</p>
-{"<table border='0' cellpadding='0' style='border-collapse:collapse;margin-top:8px'>" + pkg_rows + "</table>" if pkgs else ""}
+        action_label = history.action or "upgrade"
+        date_str = (history.completed_at or history.started_at).strftime("%Y-%m-%d %H:%M UTC")
+
+        pkg_lines = [_pkg_label(p) for p in pkgs]
+        pkg_list_text = "\n".join(f"  • {l}" for l in pkg_lines) if pkg_lines else "  (none)"
+        text = (
+            f"Upgrade completed on {server.name} ({server.hostname})\n"
+            f"Action: {action_label} | {len(pkgs)} package(s) | {date_str}\n\n"
+            f"Packages upgraded:\n{pkg_list_text}"
+        )
+
+        def _pkg_row(p):
+            if isinstance(p, dict) and p.get("from_version") and p.get("to_version"):
+                return (
+                    f"<tr>"
+                    f"<td style='padding:3px 8px 3px 0;font-family:monospace;white-space:nowrap'>{p['name']}</td>"
+                    f"<td style='padding:3px 8px;color:#888;font-family:monospace;white-space:nowrap'>{p['from_version']}</td>"
+                    f"<td style='padding:3px 4px;color:#888'>→</td>"
+                    f"<td style='padding:3px 0 3px 4px;font-family:monospace;white-space:nowrap;color:#22c55e'>{p['to_version']}</td>"
+                    f"</tr>"
+                )
+            name = p.get("name", str(p)) if isinstance(p, dict) else str(p)
+            return f"<tr><td style='padding:3px 8px 3px 0;font-family:monospace'>{name}</td></tr>"
+
+        pkg_rows = "".join(_pkg_row(p) for p in pkgs)
+        pkg_table = (
+            "<table border='0' cellpadding='0' style='border-collapse:collapse;margin-top:8px'>"
+            + pkg_rows + "</table>"
+        ) if pkgs else "<p style='color:#888;font-size:13px'>(no packages listed)</p>"
+
+        html = f"""<html><body style='font-family:sans-serif;background:#0f1117;color:#e2e8f0'>
+<div style='max-width:600px;margin:20px auto;background:#1a1d27;border-radius:8px;padding:24px'>
+  <h2 style='margin:0 0 4px 0;color:#22c55e'>✓ Upgrade complete</h2>
+  <p style='margin:0 0 16px 0;color:#94a3b8'>{server.name} ({server.hostname}) — {date_str}</p>
+  <p style='margin:0 0 8px 0;color:#94a3b8'>Action: <strong style='color:#e2e8f0'>{action_label}</strong>
+     &nbsp;|&nbsp; <strong style='color:#e2e8f0'>{len(pkgs)}</strong> package(s) upgraded</p>
+  <hr style='border:none;border-top:1px solid #2d3748;margin:16px 0'>
+  <h3 style='margin:0 0 8px 0;font-size:14px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em'>Packages upgraded</h3>
+  {pkg_table}
+</div>
 </body></html>"""
     else:
         if not cfg.notify_on_error:
             return
         subject = f"Apt Dashboard — Upgrade FAILED on {server.name}"
         text = f"Upgrade FAILED on {server.name} ({server.hostname}). Check the dashboard for details."
-        html = f"<html><body><p>⚠️ Upgrade <strong>FAILED</strong> on <strong>{server.name}</strong> ({server.hostname}).<br>Check the dashboard for details.</p></body></html>"
+        html = (
+            "<html><body style='font-family:sans-serif;background:#0f1117;color:#e2e8f0'>"
+            "<div style='max-width:600px;margin:20px auto;background:#1a1d27;border-radius:8px;padding:24px'>"
+            f"<h2 style='color:#ef4444'>✗ Upgrade failed</h2>"
+            f"<p style='color:#94a3b8'><strong style='color:#e2e8f0'>{server.name}</strong> ({server.hostname})</p>"
+            "<p style='color:#94a3b8'>Check the dashboard for details and log output.</p>"
+            "</div></body></html>"
+        )
 
     await _send_email(cfg, subject, html, text)
     await _send_telegram(cfg, text)
@@ -473,7 +525,7 @@ async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
                 pkgs = []
             lines.append(f"  • {s.name} — {len(pkgs)} package(s) upgraded")
             for p in pkgs:
-                lines.append(f"      {p}")
+                lines.append(f"      {_pkg_label(p)}")
     if failures:
         lines.append("\n✗ Failed:")
         for s, h in failures:

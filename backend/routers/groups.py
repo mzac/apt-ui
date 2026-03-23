@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user
 from backend.database import get_db
-from backend.models import Server, ServerGroup, User
+from backend.models import Server, ServerGroup, ServerGroupMembership, User
 from backend.schemas import ServerGroupCreate, ServerGroupOut, ServerGroupUpdate
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
@@ -19,10 +19,20 @@ async def _get_group_or_404(group_id: int, db: AsyncSession) -> ServerGroup:
 
 
 async def _server_count(group_id: int, db: AsyncSession) -> int:
+    # Count servers via the new multi-group membership table
     result = await db.execute(
+        select(func.count()).select_from(ServerGroupMembership).where(
+            ServerGroupMembership.group_id == group_id
+        )
+    )
+    membership_count = result.scalar_one()
+    if membership_count > 0:
+        return membership_count
+    # Fallback: count via legacy group_id column
+    result2 = await db.execute(
         select(func.count()).select_from(Server).where(Server.group_id == group_id)
     )
-    return result.scalar_one()
+    return result2.scalar_one()
 
 
 @router.get("", response_model=list[ServerGroupOut])
@@ -96,7 +106,13 @@ async def delete_group(
 ):
     group = await _get_group_or_404(group_id, db)
 
-    # Unassign servers from this group rather than deleting them
+    from sqlalchemy import delete as sa_delete
+    # Remove from multi-group memberships (cascade handles it, but be explicit)
+    await db.execute(
+        sa_delete(ServerGroupMembership).where(ServerGroupMembership.group_id == group_id)
+    )
+
+    # Unassign primary group_id on servers (legacy compat)
     result = await db.execute(select(Server).where(Server.group_id == group_id))
     for server in result.scalars().all():
         server.group_id = None

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 
@@ -7,11 +8,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user
 from backend.database import get_db
-from backend.models import Server, ServerGroup, UpdateCheck, User
-from backend.schemas import ServerCreate, ServerOut, ServerUpdate, LatestCheckOut
+from backend.models import Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag, UpdateCheck, User
+from backend.schemas import (
+    CheckAllProgress, GroupRef, ServerCreate, ServerOut, ServerUpdate,
+    LatestCheckOut, TagOut,
+)
 from backend.ssh_manager import test_connection, run_command
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
+
+# ---------------------------------------------------------------------------
+# In-memory check-all progress tracker
+# ---------------------------------------------------------------------------
+
+_check_progress: dict = {
+    "running": False,
+    "total": 0,
+    "done": 0,
+    "current": [],  # list of server names currently being checked
+    "results": {},  # server_id -> status string
+}
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +52,47 @@ async def _latest_check(server_id: int, db: AsyncSession) -> UpdateCheck | None:
     return result.scalar_one_or_none()
 
 
-def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGroup | None) -> ServerOut:
+async def _latest_stats(server_id: int, db: AsyncSession) -> ServerStats | None:
+    result = await db.execute(
+        select(ServerStats)
+        .where(ServerStats.server_id == server_id)
+        .order_by(ServerStats.recorded_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_server_tags(server_id: int, db: AsyncSession) -> list[TagOut]:
+    """Return TagOut list for a server from the server_tags join table."""
+    result = await db.execute(
+        select(Tag)
+        .join(ServerTag, ServerTag.tag_id == Tag.id)
+        .where(ServerTag.server_id == server_id)
+        .order_by(Tag.sort_order, Tag.name)
+    )
+    tags = result.scalars().all()
+    # We need server_count per tag; skip it in card context (use 0)
+    return [TagOut(id=t.id, name=t.name, color=t.color, sort_order=t.sort_order, server_count=0) for t in tags]
+
+
+async def _get_server_groups(server_id: int, db: AsyncSession) -> list[GroupRef]:
+    """Return GroupRef list for a server from the server_group_memberships join table."""
+    result = await db.execute(
+        select(ServerGroup)
+        .join(ServerGroupMembership, ServerGroupMembership.group_id == ServerGroup.id)
+        .where(ServerGroupMembership.server_id == server_id)
+        .order_by(ServerGroup.sort_order, ServerGroup.name)
+    )
+    groups = result.scalars().all()
+    return [GroupRef(id=g.id, name=g.name, color=g.color) for g in groups]
+
+
+async def _build_server_out(
+    server: Server,
+    check: UpdateCheck | None,
+    group: ServerGroup | None,
+    db: AsyncSession,
+) -> ServerOut:
     latest = None
     if check:
         held_list = None
@@ -56,10 +112,23 @@ def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGr
             reboot_required=check.reboot_required,
             error_message=check.error_message,
         )
-    try:
-        tags = json.loads(server.tags) if server.tags else []
-    except Exception:
-        tags = []
+
+    # New tag system (from server_tags)
+    tags = await _get_server_tags(server.id, db)
+
+    # Multiple group memberships
+    groups = await _get_server_groups(server.id, db)
+
+    # Primary group (backward compat)
+    primary_group = group
+    if primary_group is None and groups:
+        # Use first membership group as primary
+        first_g = await db.execute(select(ServerGroup).where(ServerGroup.id == groups[0].id))
+        primary_group = first_g.scalar_one_or_none()
+
+    # Latest stats
+    stats_row = await _latest_stats(server.id, db)
+
     return ServerOut(
         id=server.id,
         name=server.name,
@@ -67,14 +136,93 @@ def _build_server_out(server: Server, check: UpdateCheck | None, group: ServerGr
         username=server.username,
         ssh_port=server.ssh_port,
         group_id=server.group_id,
-        group_name=group.name if group else None,
-        group_color=group.color if group else None,
+        group_name=primary_group.name if primary_group else None,
+        group_color=primary_group.color if primary_group else None,
+        groups=groups,
         os_info=server.os_info,
         tags=tags,
         is_enabled=server.is_enabled,
         created_at=server.created_at,
         updated_at=server.updated_at,
         latest_check=latest,
+        cpu_count=stats_row.cpu_count if stats_row else None,
+        mem_total_mb=stats_row.mem_total_mb if stats_row else None,
+        kernel_version=stats_row.kernel_version if stats_row else None,
+        uptime_seconds=stats_row.uptime_seconds if stats_row else None,
+        virt_type=stats_row.virt_type if stats_row else None,
+    )
+
+
+async def _resolve_or_create_tags(
+    db: AsyncSession,
+    tag_ids: list[int],
+    tag_names: list[str],
+) -> list[int]:
+    """Return a deduplicated list of tag IDs, creating any new tags from tag_names."""
+    PALETTE = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#a3e635',
+        '#e879f9', '#fb7185', '#34d399', '#60a5fa', '#fbbf24',
+    ]
+
+    result_ids = list(tag_ids)
+
+    # Count existing tags for color picking
+    existing_count_res = await db.execute(select(Tag))
+    existing_count = len(existing_count_res.scalars().all())
+
+    for name in tag_names:
+        name = name.strip()
+        if not name:
+            continue
+        existing = await db.execute(select(Tag).where(Tag.name == name))
+        tag = existing.scalar_one_or_none()
+        if tag is None:
+            color = PALETTE[existing_count % len(PALETTE)]
+            existing_count += 1
+            tag = Tag(name=name, color=color, sort_order=0)
+            db.add(tag)
+            await db.flush()  # get the id
+        if tag.id not in result_ids:
+            result_ids.append(tag.id)
+
+    return list(set(result_ids))
+
+
+async def _set_server_tags(db: AsyncSession, server_id: int, tag_ids: list[int]):
+    """Replace all ServerTag associations for a server with the given tag_ids."""
+    await db.execute(delete(ServerTag).where(ServerTag.server_id == server_id))
+    for tid in tag_ids:
+        db.add(ServerTag(server_id=server_id, tag_id=tid))
+
+
+async def _set_server_groups(db: AsyncSession, server_id: int, group_ids: list[int], primary_group_id: int | None = None):
+    """Replace all ServerGroupMembership associations for a server."""
+    await db.execute(
+        delete(ServerGroupMembership).where(ServerGroupMembership.server_id == server_id)
+    )
+    seen = set()
+    for gid in group_ids:
+        if gid not in seen:
+            db.add(ServerGroupMembership(server_id=server_id, group_id=gid))
+            seen.add(gid)
+    # Also ensure primary group_id is included if provided
+    if primary_group_id and primary_group_id not in seen:
+        db.add(ServerGroupMembership(server_id=server_id, group_id=primary_group_id))
+
+
+# ---------------------------------------------------------------------------
+# Check-all progress endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/check-all/progress", response_model=CheckAllProgress)
+async def get_check_all_progress(_: User = Depends(get_current_user)):
+    return CheckAllProgress(
+        running=_check_progress["running"],
+        total=_check_progress["total"],
+        done=_check_progress["done"],
+        current_servers=list(_check_progress["current"]),
+        results={str(k): v for k, v in _check_progress["results"].items()},
     )
 
 
@@ -91,7 +239,10 @@ async def list_servers(
 ):
     q = select(Server)
     if group_id is not None:
-        q = q.where(Server.group_id == group_id)
+        # Filter by membership in the group_id
+        q = q.join(ServerGroupMembership, ServerGroupMembership.server_id == Server.id).where(
+            ServerGroupMembership.group_id == group_id
+        )
     result = await db.execute(q.order_by(Server.name))
     servers = result.scalars().all()
 
@@ -102,7 +253,7 @@ async def list_servers(
         if s.group_id:
             g_result = await db.execute(select(ServerGroup).where(ServerGroup.id == s.group_id))
             group = g_result.scalar_one_or_none()
-        server_out = _build_server_out(s, check, group)
+        server_out = await _build_server_out(s, check, group, db)
 
         # Filter by status if requested
         if status:
@@ -133,7 +284,7 @@ async def create_server(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="A server with that hostname already exists")
 
-    # Validate group exists if provided
+    # Validate primary group exists if provided
     group = None
     if body.group_id:
         g_result = await db.execute(select(ServerGroup).where(ServerGroup.id == body.group_id))
@@ -147,28 +298,49 @@ async def create_server(
         username=body.username,
         ssh_port=body.ssh_port,
         group_id=body.group_id,
-        tags=json.dumps(body.tags) if body.tags else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
     db.add(server)
+    await db.flush()  # get server.id
+
+    # Resolve tags
+    all_tag_ids = await _resolve_or_create_tags(db, body.tag_ids, body.tag_names)
+    # Also handle legacy tags list (strings)
+    if body.tags:
+        all_tag_ids = await _resolve_or_create_tags(db, all_tag_ids, body.tags)
+    await _set_server_tags(db, server.id, all_tag_ids)
+
+    # Set group memberships
+    group_ids = list(body.group_ids)
+    if body.group_id and body.group_id not in group_ids:
+        group_ids.append(body.group_id)
+    await _set_server_groups(db, server.id, group_ids, body.group_id)
+
     await db.commit()
     await db.refresh(server)
 
     # Test SSH connectivity and grab OS info immediately
     result = await test_connection(server)
     if result.success:
-        from backend.ssh_manager import run_command
-        os_result = await run_command(server, "grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '\"' || lsb_release -ds 2>/dev/null || echo Unknown")
+        os_result = await run_command(
+            server,
+            "if [ -f /etc/pve/pve-release ]; then "
+            "  ver=$(head -1 /etc/pve/pve-release | cut -d/ -f2 2>/dev/null); "
+            "  echo \"Proxmox VE ${ver}\"; "
+            "elif [ -f /etc/os-release ]; then "
+            "  grep '^PRETTY_NAME=' /etc/os-release | cut -d= -f2 | tr -d '\"'; "
+            "else "
+            "  lsb_release -ds 2>/dev/null || echo Unknown; "
+            "fi"
+        )
         if os_result.success and os_result.stdout.strip():
             server.os_info = os_result.stdout.strip().splitlines()[0]
             await db.commit()
             await db.refresh(server)
 
-        # Kick off a full update check in the background so the dashboard
-        # shows real package counts without requiring a manual "Check"
-        import asyncio
-        from backend.update_checker import check_server
+        # Kick off a full update check in the background
+        from backend.update_checker import check_server as do_check
         from backend.database import AsyncSessionLocal
 
         async def _bg_check():
@@ -176,11 +348,11 @@ async def create_server(
                 from sqlalchemy import select as _select
                 srv = (await bg_db.execute(_select(Server).where(Server.id == server.id))).scalar_one_or_none()
                 if srv:
-                    await check_server(srv, bg_db)
+                    await do_check(srv, bg_db)
 
         asyncio.create_task(_bg_check())
 
-    return _build_server_out(server, None, group)
+    return await _build_server_out(server, None, group, db)
 
 
 @router.put("/{server_id}", response_model=ServerOut)
@@ -215,8 +387,37 @@ async def update_server(
         server.group_id = None
     if body.is_enabled is not None:
         server.is_enabled = body.is_enabled
-    if body.tags is not None:
-        server.tags = json.dumps(body.tags)
+
+    # Handle tags
+    if body.tag_ids is not None or body.tag_names is not None or body.tags is not None:
+        new_ids = list(body.tag_ids or [])
+        new_names = list(body.tag_names or [])
+        # Legacy tags field support
+        if body.tags is not None:
+            new_names.extend(body.tags)
+        all_tag_ids = await _resolve_or_create_tags(db, new_ids, new_names)
+        await _set_server_tags(db, server.id, all_tag_ids)
+
+    # Handle multiple group memberships
+    if body.group_ids is not None:
+        group_ids = list(body.group_ids)
+        # Ensure primary group_id stays in memberships
+        effective_primary = body.group_id if "group_id" in body.model_fields_set else server.group_id
+        if effective_primary and effective_primary not in group_ids:
+            group_ids.append(effective_primary)
+        await _set_server_groups(db, server.id, group_ids, effective_primary)
+    elif "group_id" in body.model_fields_set:
+        # Primary group changed — update memberships to reflect
+        # Get current memberships
+        current_memberships = await _get_server_groups(server.id, db)
+        current_ids = [g.id for g in current_memberships]
+        # Replace old primary with new primary if needed
+        old_primary = server.group_id
+        new_primary = body.group_id
+        new_ids_list = [gid for gid in current_ids if gid != old_primary]
+        if new_primary:
+            new_ids_list.append(new_primary)
+        await _set_server_groups(db, server.id, new_ids_list, new_primary)
 
     server.updated_at = datetime.utcnow()
     await db.commit()
@@ -228,7 +429,7 @@ async def update_server(
         g_result = await db.execute(select(ServerGroup).where(ServerGroup.id == server.group_id))
         group = g_result.scalar_one_or_none()
 
-    return _build_server_out(server, check, group)
+    return await _build_server_out(server, check, group, db)
 
 
 @router.delete("/{server_id}", status_code=204)
@@ -268,3 +469,49 @@ async def test_server_connection(
     if result.success:
         return {"success": True, "detail": "Connection successful"}
     return {"success": False, "detail": result.stderr or "Connection failed"}
+
+
+@router.post("/check-all")
+async def check_all_servers_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Trigger a check on all enabled servers, tracking progress in _check_progress."""
+    from backend.update_checker import check_all_servers
+    from backend.models import ScheduleConfig
+
+    cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+    cfg = cfg_res.scalar_one_or_none()
+    concurrency = cfg.upgrade_concurrency if cfg else 5
+
+    srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers = list(srv_res.scalars().all())
+
+    _check_progress["running"] = True
+    _check_progress["total"] = len(servers)
+    _check_progress["done"] = 0
+    _check_progress["current"] = []
+    _check_progress["results"] = {}
+
+    async def _progress_cb(server: Server, status: str):
+        if status == "running":
+            _check_progress["current"].append(server.name)
+        else:
+            _check_progress["done"] += 1
+            _check_progress["results"][server.id] = status
+            try:
+                _check_progress["current"].remove(server.name)
+            except ValueError:
+                pass
+
+    async def _run():
+        from backend.database import AsyncSessionLocal
+        try:
+            async with AsyncSessionLocal() as bg_db:
+                await check_all_servers(servers, bg_db, concurrency=concurrency, progress_callback=_progress_cb)
+        finally:
+            _check_progress["running"] = False
+            _check_progress["current"] = []
+
+    asyncio.create_task(_run())
+    return {"detail": "Check started", "total": len(servers)}

@@ -6,6 +6,7 @@ import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremo
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
+import PackageInstallModal from '@/components/PackageInstallModal'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
@@ -185,7 +186,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
     ssh_port: String(server.ssh_port),
     group_id: server.group_id ? String(server.group_id) : '',
     is_enabled: server.is_enabled,
-    tags: (server.tags || []).join(', '),
+    tags: (server.tags || []).map(t => t.name).join(', '),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -198,7 +199,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       ssh_port: String(server.ssh_port),
       group_id: server.group_id ? String(server.group_id) : '',
       is_enabled: server.is_enabled,
-      tags: (server.tags || []).join(', '),
+      tags: (server.tags || []).map(t => t.name).join(', '),
     })
   }, [server])
 
@@ -213,7 +214,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         ssh_port: parseInt(editForm.ssh_port) || 22,
         group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
         is_enabled: editForm.is_enabled,
-        tags: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
+        tag_names: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
       })
       onSaved()
     } catch (err: unknown) {
@@ -308,6 +309,22 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Reboot heuristic — packages that typically require a restart
+// ---------------------------------------------------------------------------
+const REBOOT_PATTERNS = [
+  /^linux-image/, /^linux-headers/, /^linux-modules/, /^linux-firmware/,
+  /^proxmox-kernel/, /^pve-kernel/, /^raspberrypi-kernel/, /^rpi-/,
+  /^libc6$/, /^libc-bin$/, /^libc-dev/, /^libc6-dev/,
+  /^libssl/, /^openssl$/,
+  /^systemd$/, /^systemd-sysv$/, /^udev$/, /^dbus$/,
+  /^initramfs-tools/, /^linux-libc-dev/,
+  /^libgcc-s/, /^gcc-[0-9]+-base/,
+]
+function likelyRequiresReboot(name: string): boolean {
+  return REBOOT_PATTERNS.some(p => p.test(name))
+}
+
 // Packages tab
 // ---------------------------------------------------------------------------
 function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
@@ -322,6 +339,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   const [selectedRemove, setSelectedRemove] = useState<Set<string>>(new Set())
   const [removeTarget, setRemoveTarget] = useState<string[] | null>(null)
   const [removeModal, setRemoveModal] = useState(false)
+  const [showInstallModal, setShowInstallModal] = useState(false)
 
   const loadPackages = useCallback(() => {
     serversApi.packages(serverId).then(data => {
@@ -359,6 +377,16 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
 
   return (
     <div className="space-y-4">
+      {/* Install Package button — always visible */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => setShowInstallModal(true)}
+          className="btn-secondary text-xs"
+        >
+          + Install Package
+        </button>
+      </div>
+
       {packages.length === 0 ? (
         <p className="text-text-muted text-sm py-8 text-center">No pending updates.</p>
       ) : (
@@ -412,10 +440,13 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                   <th className="text-left px-3 py-2">Current</th>
                   <th className="text-left px-3 py-2">Available</th>
                   <th className="text-left px-3 py-2">Repo</th>
+                  <th className="px-3 py-2 w-8"></th>
                 </tr>
               </thead>
               <tbody>
-                {sorted.map(p => (
+                {sorted.map(p => {
+                  const reboot = likelyRequiresReboot(p.name)
+                  return (
                   <tr
                     key={p.name}
                     onClick={() => toggleOne(p.name)}
@@ -433,14 +464,36 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                     </td>
                     <td className="px-3 py-1.5 font-mono">
                       {p.is_security && <span className="text-red mr-1" title="Security update">🔒</span>}
+                      {reboot && <span className="text-amber mr-1" title="Likely requires reboot">↺</span>}
                       {p.name}
                       {p.is_phased && <span className="ml-1 text-text-muted">[phased]</span>}
                     </td>
                     <td className="px-3 py-1.5 font-mono text-text-muted">{p.current_version}</td>
                     <td className="px-3 py-1.5 font-mono text-text-primary">→ {p.available_version}</td>
                     <td className="px-3 py-1.5 font-mono text-text-muted text-xs">{p.repository}</td>
+                    <td className="px-3 py-1.5 text-right" onClick={e => e.stopPropagation()}>
+                      {(p.description || reboot) && (
+                        <span className="relative group/info inline-block">
+                          <span className="text-text-muted/50 hover:text-cyan cursor-default select-none text-xs font-mono">ⓘ</span>
+                          <div className="absolute right-0 bottom-full mb-1 z-50 hidden group-hover/info:block w-72 pointer-events-none">
+                            <div className="bg-surface border border-border rounded shadow-lg p-3 text-xs space-y-1.5">
+                              <p className="font-mono font-medium text-text-primary">{p.name}</p>
+                              {p.description && <p className="text-text-muted leading-snug">{p.description}</p>}
+                              <div className="border-t border-border/50 pt-1.5 space-y-0.5 font-mono">
+                                <p className="text-text-muted">{p.current_version} <span className="text-text-muted/50">→</span> <span className="text-green">{p.available_version}</span></p>
+                                <p className="text-text-muted/70">{p.repository}</p>
+                                {p.is_security && <p className="text-red">🔒 Security update</p>}
+                                {p.is_phased && <p className="text-text-muted">Phased rollout</p>}
+                                {reboot && <p className="text-amber">↺ Likely requires reboot</p>}
+                              </div>
+                            </div>
+                          </div>
+                        </span>
+                      )}
+                    </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -529,6 +582,14 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
           serverId={serverId}
           packages={removeTarget}
           onClose={() => { setRemoveModal(false); setRemoveTarget(null); loadPackages(); onRefresh() }}
+        />
+      )}
+
+      {showInstallModal && (
+        <PackageInstallModal
+          serverId={serverId}
+          serverName={server.name}
+          onClose={() => { setShowInstallModal(false); loadPackages(); onRefresh() }}
         />
       )}
     </div>
