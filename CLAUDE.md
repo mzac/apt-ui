@@ -45,6 +45,29 @@ docker exec -it apt-dashboard python -m backend.cli reset-password
 
 ---
 
+## Database Migrations
+
+**This project does not use Alembic.** Schema changes are handled via a hand-maintained migrations list in `backend/database.py` inside `init_db()`. SQLite's `ALTER TABLE ADD COLUMN` is used; errors are silently swallowed so the same list is safe against both fresh and existing databases.
+
+**Every time you add a column to a model in `backend/models.py` you must also add a corresponding `ALTER TABLE` statement to the `migrations` list in `backend/database.py`.** Failing to do this will cause `OperationalError: no such column` at runtime against any existing database that was created before the column was added.
+
+Pattern:
+```python
+# In backend/database.py — migrations list inside init_db()
+"ALTER TABLE <table> ADD COLUMN <column> <TYPE> DEFAULT <value>",
+```
+
+Examples from the codebase:
+```python
+"ALTER TABLE servers ADD COLUMN ssh_private_key_enc TEXT",
+"ALTER TABLE schedule_config ADD COLUMN conffile_action TEXT DEFAULT 'confdef_confold'",
+"ALTER TABLE schedule_config ADD COLUMN run_apt_update_before_upgrade BOOLEAN DEFAULT 0",
+```
+
+Nullable columns with no default use just the type (e.g. `TEXT`, `INTEGER`) with no `DEFAULT` clause — SQLite will fill existing rows with `NULL`.
+
+---
+
 ## Architecture Overview
 
 The app is a **single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files.
