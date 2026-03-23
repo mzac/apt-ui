@@ -4,6 +4,7 @@ import { servers as serversApi, groups as groupsApi, stats as statsApi } from '@
 import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useJobStore } from '@/hooks/useJobStore'
 import StatusDot from '@/components/StatusDot'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
@@ -76,10 +77,13 @@ export default function Dashboard() {
   const [activeGroup, setActiveGroup] = useState<number | null>(null)
   const [activeTag, setActiveTag] = useState<number | null>(null)
   const [search, setSearch] = useState('')
-  const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>('status')
+  const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>(
+    () => (sessionStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
+  )
   const [groupView, setGroupView] = useState(false)
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
   const [checking, setChecking] = useState<Set<number>>(new Set())
+  const { addJob, updateJob } = useJobStore()
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
   const [checkingAll, setCheckingAll] = useState(false)
@@ -208,6 +212,7 @@ export default function Dashboard() {
   async function handleCheckAll() {
     setCheckingAll(true)
     setCheckProgress({ done: 0, total: 0, current: [] })
+    addJob({ id: 'check-all', type: 'check-all', label: 'Check All', status: 'running', link: '/', startedAt: Date.now() })
     try {
       const res = await serversApi.checkAll()
       const total = res.total || serverList.filter(s => s.is_enabled).length
@@ -221,16 +226,19 @@ export default function Dashboard() {
             clearInterval(progressIntervalRef.current!)
             progressIntervalRef.current = null
             setCheckingAll(false)
+            updateJob('check-all', { status: 'complete', completedAt: Date.now() })
             await load()
           }
         } catch {
           clearInterval(progressIntervalRef.current!)
           progressIntervalRef.current = null
           setCheckingAll(false)
+          updateJob('check-all', { status: 'error', completedAt: Date.now() })
         }
       }, 2000)
     } catch {
       setCheckingAll(false)
+      updateJob('check-all', { status: 'error', completedAt: Date.now() })
     }
   }
 
@@ -239,6 +247,16 @@ export default function Dashboard() {
     return () => {
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
     }
+  }, [])
+
+  // Listen for restore event from bell dropdown
+  useEffect(() => {
+    function onRestore() {
+      setShowUpgradeAll(true)
+      setUpgradeMinimized(false)
+    }
+    window.addEventListener('apt:restore-upgrade-all', onRestore)
+    return () => window.removeEventListener('apt:restore-upgrade-all', onRestore)
   }, [])
 
   const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
@@ -392,7 +410,7 @@ export default function Dashboard() {
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <select className="input w-auto text-xs py-1" value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)}>
+        <select className="input w-auto text-xs py-1" value={sortBy} onChange={e => { const v = e.target.value as typeof sortBy; setSortBy(v); sessionStorage.setItem('dashboard:sortBy', v) }}>
           <option value="status">Sort: Status</option>
           <option value="updates">Sort: Updates</option>
           <option value="name">Sort: Name</option>
@@ -499,22 +517,14 @@ export default function Dashboard() {
         </div>
       )}
 
-      {showUpgradeAll && upgradeMinimized && (
-        <div
-          className="fixed bottom-4 right-4 z-50 bg-surface border border-cyan/50 rounded-lg px-4 py-3 cursor-pointer shadow-lg flex items-center gap-3"
-          onClick={() => setUpgradeMinimized(false)}
-        >
-          <span className="text-cyan animate-pulse">⚙</span>
-          <span className="font-mono text-sm text-text-primary">Upgrade running…</span>
-          <span className="text-text-muted text-xs">click to expand</span>
+      {showUpgradeAll && (
+        <div style={{ display: upgradeMinimized ? 'none' : undefined }}>
+          <UpgradeAllModal
+            servers={serversWithUpdates}
+            onClose={() => { setShowUpgradeAll(false); setUpgradeMinimized(false); load() }}
+            onMinimize={() => setUpgradeMinimized(true)}
+          />
         </div>
-      )}
-      {showUpgradeAll && !upgradeMinimized && (
-        <UpgradeAllModal
-          servers={serversWithUpdates}
-          onClose={() => { setShowUpgradeAll(false); setUpgradeMinimized(false); load() }}
-          onMinimize={() => setUpgradeMinimized(true)}
-        />
       )}
 
       {/* Custom disable confirmation modal */}

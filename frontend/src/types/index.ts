@@ -124,6 +124,7 @@ export interface ScheduleConfig {
   timezone: string
   auto_tag_os: boolean
   auto_tag_virt: boolean
+  run_apt_update_before_upgrade: boolean
 }
 
 export interface NotificationConfig {

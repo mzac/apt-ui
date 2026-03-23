@@ -130,6 +130,7 @@ async def init_db():
             "ALTER TABLE notification_config ADD COLUMN notify_error_telegram BOOLEAN DEFAULT 1",
             "ALTER TABLE schedule_config ADD COLUMN auto_tag_os BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN auto_tag_virt BOOLEAN DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN run_apt_update_before_upgrade BOOLEAN DEFAULT 0",
         ]
         for sql in migrations:
             try:

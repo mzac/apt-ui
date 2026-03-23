@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
-import { servers as serversApi, groups as groupsApi, config as configApi } from '@/api/client'
-import type { Server, PackageInfo, UpdateHistory, ServerGroup } from '@/types'
+import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
+import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
+import { useJobStore } from '@/hooks/useJobStore'
 import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket } from '@/api/client'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
@@ -179,17 +180,22 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
   onSaved: () => void
   onCancel: () => void
 }) {
+  const [tagList, setTagList] = useState<Tag[]>([])
   const [editForm, setEditForm] = useState({
     name: server.name,
     hostname: server.hostname,
     username: server.username,
     ssh_port: String(server.ssh_port),
-    group_id: server.group_id ? String(server.group_id) : '',
     is_enabled: server.is_enabled,
-    tags: (server.tags || []).map(t => t.name).join(', '),
+    group_ids: (server.groups || []).map(g => g.id),
+    tag_ids: (server.tags || []).map(t => t.id),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    tagsApi.list().then(setTagList)
+  }, [])
 
   useEffect(() => {
     setEditForm({
@@ -197,11 +203,25 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       hostname: server.hostname,
       username: server.username,
       ssh_port: String(server.ssh_port),
-      group_id: server.group_id ? String(server.group_id) : '',
       is_enabled: server.is_enabled,
-      tags: (server.tags || []).map(t => t.name).join(', '),
+      group_ids: (server.groups || []).map(g => g.id),
+      tag_ids: (server.tags || []).map(t => t.id),
     })
   }, [server])
+
+  function toggleGroup(id: number) {
+    setEditForm(f => ({
+      ...f,
+      group_ids: f.group_ids.includes(id) ? f.group_ids.filter(x => x !== id) : [...f.group_ids, id],
+    }))
+  }
+
+  function toggleTag(id: number) {
+    setEditForm(f => ({
+      ...f,
+      tag_ids: f.tag_ids.includes(id) ? f.tag_ids.filter(x => x !== id) : [...f.tag_ids, id],
+    }))
+  }
 
   async function handleSave() {
     setSaving(true)
@@ -212,9 +232,10 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         hostname: editForm.hostname,
         username: editForm.username,
         ssh_port: parseInt(editForm.ssh_port) || 22,
-        group_id: editForm.group_id ? parseInt(editForm.group_id) : null,
+        group_id: editForm.group_ids[0] ?? null,
+        group_ids: editForm.group_ids,
         is_enabled: editForm.is_enabled,
-        tag_names: editForm.tags.split(',').map(t => t.trim()).filter(Boolean),
+        tag_ids: editForm.tag_ids,
       })
       onSaved()
     } catch (err: unknown) {
@@ -227,76 +248,86 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
   return (
     <div className="card p-4 space-y-3">
       <h3 className="text-xs text-text-muted uppercase tracking-wide">Edit Server</h3>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div>
           <label className="label">Display Name</label>
-          <input
-            className="input w-full text-sm"
-            value={editForm.name}
-            onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-          />
+          <input className="input w-full text-sm" value={editForm.name}
+            onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} />
         </div>
         <div>
           <label className="label">Hostname</label>
-          <input
-            className="input w-full text-sm"
-            value={editForm.hostname}
-            onChange={e => setEditForm(f => ({ ...f, hostname: e.target.value }))}
-          />
+          <input className="input w-full text-sm" value={editForm.hostname}
+            onChange={e => setEditForm(f => ({ ...f, hostname: e.target.value }))} />
         </div>
         <div>
           <label className="label">SSH User</label>
-          <input
-            className="input w-full text-sm"
-            value={editForm.username}
-            onChange={e => setEditForm(f => ({ ...f, username: e.target.value }))}
-          />
+          <input className="input w-full text-sm" value={editForm.username}
+            onChange={e => setEditForm(f => ({ ...f, username: e.target.value }))} />
         </div>
         <div>
           <label className="label">Port</label>
-          <input
-            className="input w-full text-sm"
-            type="number"
-            value={editForm.ssh_port}
-            onChange={e => setEditForm(f => ({ ...f, ssh_port: e.target.value }))}
-          />
-        </div>
-        <div>
-          <label className="label">Group</label>
-          <select
-            className="input w-full text-sm"
-            value={editForm.group_id}
-            onChange={e => setEditForm(f => ({ ...f, group_id: e.target.value }))}
-          >
-            <option value="">None</option>
-            {groupList.map(g => (
-              <option key={g.id} value={String(g.id)}>{g.name}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Tags</label>
-          <input
-            type="text"
-            className="input w-full text-xs"
-            placeholder="tag1, tag2, tag3"
-            value={editForm.tags}
-            onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))}
-          />
-          <p className="text-xs text-text-muted mt-0.5">Comma-separated tags</p>
-        </div>
-        <div className="flex items-end pb-1">
-          <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
-            <input
-              type="checkbox"
-              checked={editForm.is_enabled}
-              onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
-              className="w-4 h-4 accent-green"
-            />
-            Enabled
-          </label>
+          <input className="input w-full text-sm" type="number" value={editForm.ssh_port}
+            onChange={e => setEditForm(f => ({ ...f, ssh_port: e.target.value }))} />
         </div>
       </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label">Groups</label>
+          <div className="flex flex-wrap gap-1.5">
+            {groupList.map(g => {
+              const sel = editForm.group_ids.includes(g.id)
+              const c = g.color || '#3b82f6'
+              return (
+                <button key={g.id} type="button" onClick={() => toggleGroup(g.id)}
+                  className="px-2 py-0.5 rounded text-xs border transition-all"
+                  style={{
+                    background: sel ? c + '33' : 'transparent',
+                    color: sel ? c : undefined,
+                    borderColor: sel ? c + '88' : c + '44',
+                    opacity: sel ? 1 : 0.55,
+                  }}>
+                  {g.name}
+                </button>
+              )
+            })}
+            {groupList.length === 0 && <span className="text-xs text-text-muted">No groups defined</span>}
+          </div>
+        </div>
+
+        <div>
+          <label className="label">Tags</label>
+          <div className="flex flex-wrap gap-1.5">
+            {tagList.map(t => {
+              const sel = editForm.tag_ids.includes(t.id)
+              const c = t.color || '#6366f1'
+              return (
+                <button key={t.id} type="button" onClick={() => toggleTag(t.id)}
+                  className="px-2 py-0.5 rounded text-xs border transition-all"
+                  style={{
+                    background: sel ? c + '33' : 'transparent',
+                    color: sel ? c : undefined,
+                    borderColor: sel ? c + '88' : c + '44',
+                    opacity: sel ? 1 : 0.55,
+                  }}>
+                  # {t.name}
+                </button>
+              )
+            })}
+            {tagList.length === 0 && <span className="text-xs text-text-muted">No tags defined</span>}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer w-fit">
+          <input type="checkbox" checked={editForm.is_enabled}
+            onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
+            className="w-4 h-4 accent-green" />
+          Enabled
+        </label>
+      </div>
+
       {error && <p className="text-xs text-red font-mono">{error}</p>}
       <div className="flex gap-2">
         <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
@@ -808,6 +839,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [done, setDone] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
+  const { addJob, updateJob } = useJobStore()
 
   useEffect(() => () => { wsRef.current?.close() }, [])
   useEffect(() => {
@@ -818,6 +850,8 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     setLines([])
     setDone(false)
     setRunning(true)
+    const jobId = `upgrade-${serverId}`
+    addJob({ id: jobId, type: 'upgrade', label: `Upgrading ${server.name}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
 
     const ws = createUpgradeWebSocket(serverId, { action, allow_phased: allowPhased }, (msg) => {
       if (msg.type === 'output') {
@@ -826,9 +860,11 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
         setLines(l => [...l, `\x1b[36m[status] ${msg.data}\x1b[0m\n`])
       } else if (msg.type === 'error') {
         setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+        updateJob(jobId, { status: 'error', completedAt: Date.now() })
       } else if (msg.type === 'complete') {
         const data = msg.data as { success: boolean; packages_upgraded: number }
         setLines(l => [...l, `\x1b[${data.success ? '32' : '31'}m\n[complete] ${data.success ? '✓ Upgrade successful' : '✗ Upgrade failed'} — ${data.packages_upgraded} packages\x1b[0m\n`])
+        updateJob(jobId, { status: data.success ? 'complete' : 'error', completedAt: Date.now() })
       }
     }, () => {
       setRunning(false)

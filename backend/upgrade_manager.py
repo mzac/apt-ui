@@ -52,6 +52,7 @@ async def upgrade_server(
     initiated_by: str = "manual",
     send_fn=None,
     skip_notify: bool = False,
+    run_apt_update: bool = False,
 ) -> UpdateHistory:
     """
     Run apt-get upgrade (or dist-upgrade) on *server*.
@@ -102,20 +103,19 @@ async def upgrade_server(
                 await send_fn(msg)
 
         try:
-            if send_fn:
-                await send_fn({"type": "status", "data": "running_update"})
-
-            # Step 1: apt-get update
-            update_cmd = f"{_sudo(server)}apt-get update -q"
-            if send_fn:
-                update_result = await run_command_stream(server, update_cmd, _send)
-            else:
-                update_result = await run_command(server, update_cmd, timeout=120)
-                log_chunks.append(update_result.stdout)
-                log_chunks.append(update_result.stderr)
-
-            if update_result.exit_code == 255:
-                raise RuntimeError(update_result.stderr or "SSH connection failed")
+            # Step 1: apt-get update (optional, controlled by preferences)
+            if run_apt_update:
+                if send_fn:
+                    await send_fn({"type": "status", "data": "running_update"})
+                update_cmd = f"{_sudo(server)}apt-get update -q"
+                if send_fn:
+                    update_result = await run_command_stream(server, update_cmd, _send)
+                else:
+                    update_result = await run_command(server, update_cmd, timeout=120)
+                    log_chunks.append(update_result.stdout)
+                    log_chunks.append(update_result.stderr)
+                if update_result.exit_code == 255:
+                    raise RuntimeError(update_result.stderr or "SSH connection failed")
 
             # Step 2: apt-get upgrade / dist-upgrade
             upgrade_cmd = _build_upgrade_command(server, action, allow_phased)
@@ -202,6 +202,7 @@ async def upgrade_packages_selective(
     allow_phased: bool = False,
     initiated_by: str = "manual",
     send_fn=None,
+    run_apt_update: bool = False,
 ) -> UpdateHistory:
     """
     Upgrade only the specified *packages* using apt-get install --only-upgrade.
@@ -251,12 +252,12 @@ async def upgrade_packages_selective(
                 await send_fn(msg)
 
         try:
-            if send_fn:
-                await send_fn({"type": "status", "data": "running_update"})
-
-            update_result = await run_command_stream(server, f"{_sudo(server)}apt-get update -q", _send)
-            if update_result.exit_code == 255:
-                raise RuntimeError(update_result.stderr or "SSH connection failed")
+            if run_apt_update:
+                if send_fn:
+                    await send_fn({"type": "status", "data": "running_update"})
+                update_result = await run_command_stream(server, f"{_sudo(server)}apt-get update -q", _send)
+                if update_result.exit_code == 255:
+                    raise RuntimeError(update_result.stderr or "SSH connection failed")
 
             pkg_list = " ".join(packages)
             cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {pkg_list}"

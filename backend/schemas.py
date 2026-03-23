@@ -273,6 +273,7 @@ class ScheduleConfigOut(BaseModel):
     timezone: str = ""
     auto_tag_os: bool = False
     auto_tag_virt: bool = False
+    run_apt_update_before_upgrade: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -287,6 +288,7 @@ class ScheduleConfigUpdate(BaseModel):
     log_retention_days: Optional[int] = None
     auto_tag_os: Optional[bool] = None
     auto_tag_virt: Optional[bool] = None
+    run_apt_update_before_upgrade: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------

@@ -225,6 +225,9 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 | allow_phased_on_auto | BOOLEAN DEFAULT false | include phased updates in auto-upgrades |
 | upgrade_concurrency | INTEGER DEFAULT 5 | max simultaneous server upgrades |
 | log_retention_days | INTEGER DEFAULT 90 | auto-purge check/history records older than this (0 = keep forever) |
+| auto_tag_os | BOOLEAN DEFAULT false | auto-create and assign OS tags on Check All |
+| auto_tag_virt | BOOLEAN DEFAULT false | auto-create and assign virt-type tags on Check All |
+| run_apt_update_before_upgrade | BOOLEAN DEFAULT false | run `apt-get update -q` before upgrading (disabled by default to avoid pulling in unreviewed updates) |
 
 ---
 
@@ -306,7 +309,7 @@ When `reset-password` is called without `--password`, it should prompt interacti
   - **dist-upgrade**: `sudo DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y` — handles changed dependencies, may install or remove packages. Needed for some kernel updates. Show a clear warning in the UI when this option is selected ("dist-upgrade may remove or install packages to resolve dependencies").
 - Use `apt-get` not `apt` for scripting reliability.
 - When phased updates is toggled on, append the phased updates option (specifically: `-o APT::Get::Always-Include-Phased-Updates=true`).
-- Before upgrade, always run `sudo apt-get update -q` first.
+- Running `apt-get update -q` before upgrade is **opt-in** via the `run_apt_update_before_upgrade` preference (default: false). When disabled, the upgrade only installs packages already known from the last "Check", avoiding surprise updates. When enabled, it fetches the latest package index first.
 - The SSH user must have passwordless sudo configured on the remote servers (document this as a prerequisite).
 - A single SSH key (no passphrase) is used for all servers. Only the username varies per server.
 - Stream the full output over WebSocket in real time.

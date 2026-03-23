@@ -8,10 +8,16 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 - **Fleet dashboard** — see all servers at a glance with update counts, security update highlights, reboot-required flags, and held packages
 - **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket
+- **Package info tooltips** — hover over any upgradable package to see its description, version delta, and whether it likely requires a reboot (kernel, libc, openssl, systemd, etc.)
+- **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
+- **Package install** — search `apt` cache and install new packages on any host directly from the UI
+- **Templates** — define named package sets and apply them to one or more hosts at once (useful for provisioning)
 - **Scheduled checks** — configurable cron schedule for automatic update checks
-- **Auto-upgrade** — optional hands-off mode to apply updates on a schedule
-- **Notifications** — daily summary + event alerts via email (SMTP) and Telegram
-- **Server groups** — colour-coded grouping and filtering
+- **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
+- **Notifications** — daily summary + per-event alerts via email (SMTP) and Telegram, with per-channel toggles
+- **Server groups** — colour-coded grouping; servers can belong to multiple groups
+- **Tags** — freeform colour-coded tags per server; auto-tagging by OS and machine type supported
+- **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
 - **Dark industrial UI** — dense, information-rich dashboard designed for ops use
 
 ---

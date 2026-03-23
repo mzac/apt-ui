@@ -821,6 +821,17 @@ function PreferencesTab() {
         </label>
       </section>
 
+      <section className="card p-4 space-y-3">
+        <h2 className="text-sm font-medium text-text-primary">Upgrade Behaviour</h2>
+        <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-amber" checked={form.run_apt_update_before_upgrade ?? false} onChange={e => setForm(f => ({ ...f, run_apt_update_before_upgrade: e.target.checked }))} />
+          Run <span className="font-mono text-text-primary">apt-get update</span> before upgrading
+        </label>
+        <p className="text-xs text-text-muted pl-6">
+          When disabled (default), upgrades only install packages already known from the last "Check". Enabling this fetches the latest package index first, which may pull in updates not yet visible on the dashboard.
+        </p>
+      </section>
+
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>
     </form>
   )

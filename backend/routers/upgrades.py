@@ -210,9 +210,13 @@ async def start_upgrade(
     _: User = Depends(get_current_user),
 ):
     server = await _get_server(server_id, db)
+    cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+    cfg = cfg_res.scalar_one_or_none()
+    run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
     # Fire and forget — client connects via WebSocket for live output
     asyncio.create_task(
-        upgrade_server(server, db, action=body.action, allow_phased=body.allow_phased)
+        upgrade_server(server, db, action=body.action, allow_phased=body.allow_phased,
+                       run_apt_update=run_apt_update)
     )
     return {"detail": "Upgrade started", "server_id": server_id}
 
@@ -226,6 +230,7 @@ async def start_upgrade_all(
     cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = cfg_res.scalar_one_or_none()
     concurrency = cfg.upgrade_concurrency if cfg else 5
+    run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
     srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
     servers = srv_res.scalars().all()
@@ -252,6 +257,7 @@ async def start_upgrade_all(
                     server, session,
                     action=body.action,
                     allow_phased=body.allow_phased,
+                    run_apt_update=run_apt_update,
                 )
 
     asyncio.create_task(asyncio.gather(*[_do(s) for s in to_upgrade]))
@@ -291,6 +297,10 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         action = params.get("action", "upgrade")
         allow_phased = params.get("allow_phased", False)
 
+        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
+
         await websocket.send_json({"type": "status", "data": "connecting"})
 
         async def send_fn(msg: dict):
@@ -305,6 +315,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
                 action=action,
                 allow_phased=allow_phased,
                 send_fn=send_fn,
+                run_apt_update=run_apt_update,
             )
         except WebSocketDisconnect:
             pass
@@ -353,6 +364,10 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
             await websocket.close()
             return
 
+        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
+
         await websocket.send_json({"type": "status", "data": "connecting"})
 
         async def send_fn(msg: dict):
@@ -367,6 +382,7 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
                 packages=packages,
                 allow_phased=allow_phased,
                 send_fn=send_fn,
+                run_apt_update=run_apt_update,
             )
         except WebSocketDisconnect:
             pass
@@ -406,6 +422,7 @@ async def ws_upgrade_all(websocket: WebSocket):
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
         concurrency = cfg.upgrade_concurrency if cfg else 5
+        run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
@@ -440,6 +457,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     action=action,
                     allow_phased=allow_phased,
                     send_fn=send_fn,
+                    run_apt_update=run_apt_update,
                 )
 
     histories: list = []
@@ -461,6 +479,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     allow_phased=allow_phased,
                     send_fn=send_fn,
                     skip_notify=True,  # suppress per-server emails
+                    run_apt_update=run_apt_update,
                 )
                 histories.append((server, h))
 

@@ -202,6 +202,7 @@ class ScheduleConfig(Base):
     log_retention_days: Mapped[int] = mapped_column(Integer, default=90)
     auto_tag_os: Mapped[bool] = mapped_column(Boolean, default=False)
     auto_tag_virt: Mapped[bool] = mapped_column(Boolean, default=False)
+    run_apt_update_before_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AppConfig(Base):

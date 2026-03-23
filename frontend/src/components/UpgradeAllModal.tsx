@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import type { Server } from '@/types'
 import { createUpgradeWebSocket } from '@/api/client'
+import { useJobStore } from '@/hooks/useJobStore'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -26,6 +27,8 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   const [filterServer, setFilterServer] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
+  const { addJob, updateJob } = useJobStore()
+  const pendingRef = useRef(0)
 
   const totalPackages = servers.reduce((sum, s) => sum + (s.latest_check?.packages_available ?? 0), 0)
 
@@ -35,9 +38,20 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
 
   function start() {
     setStarted(true)
+    pendingRef.current = servers.length
     const initial: Record<number, ServerProgress> = {}
     servers.forEach(s => { initial[s.id] = { status: 'pending', lines: [] } })
     setProgress(initial)
+
+    addJob({
+      id: 'upgrade-all',
+      type: 'upgrade-all',
+      label: `Upgrade All (${servers.length} servers)`,
+      status: 'running',
+      link: '/',
+      action: 'restore-upgrade-all',
+      startedAt: Date.now(),
+    })
 
     const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased }, (msg) => {
       const sid = msg.server_id as number
@@ -56,11 +70,19 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
           ...p,
           [sid]: { ...p[sid], status: data.success ? 'done' : 'error', packagesUpgraded: data.packages_upgraded },
         }))
+        pendingRef.current -= 1
+        if (pendingRef.current <= 0) {
+          updateJob('upgrade-all', { status: 'complete', completedAt: Date.now(), action: undefined })
+        }
       } else if (msg.type === 'error') {
         setProgress(p => ({
           ...p,
           [sid]: { ...p[sid], status: 'error', lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
+        pendingRef.current -= 1
+        if (pendingRef.current <= 0) {
+          updateJob('upgrade-all', { status: 'error', completedAt: Date.now(), action: undefined })
+        }
       }
     }, () => setDone(true))
 
