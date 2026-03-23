@@ -37,8 +37,20 @@ def _sudo(server) -> str:
     return "" if server.username == "root" else "sudo "
 
 
-def _build_upgrade_command(server, action: str, allow_phased: bool) -> str:
-    base = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get {action} -y"
+_CONFFILE_OPTS = {
+    # Use the package's declared default answer; fall back to keeping the existing
+    # file if there is no default. This is the safest choice for production servers.
+    "confdef_confold": '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"',
+    # Always keep the locally-installed config file, even if the package ships a newer one.
+    "confold": '-o Dpkg::Options::="--force-confold"',
+    # Always take the new config file from the package, overwriting local changes.
+    "confnew": '-o Dpkg::Options::="--force-confnew"',
+}
+
+
+def _build_upgrade_command(server, action: str, allow_phased: bool, conffile_action: str = "confdef_confold") -> str:
+    dpkg_opts = _CONFFILE_OPTS.get(conffile_action, _CONFFILE_OPTS["confdef_confold"])
+    base = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get {action} -y {dpkg_opts}"
     if allow_phased:
         base += " -o APT::Get::Always-Include-Phased-Updates=true"
     return base
@@ -49,6 +61,7 @@ async def upgrade_server(
     db: AsyncSession,
     action: str = "upgrade",
     allow_phased: bool = False,
+    conffile_action: str = "confdef_confold",
     initiated_by: str = "manual",
     send_fn=None,
     skip_notify: bool = False,
@@ -118,7 +131,7 @@ async def upgrade_server(
                     raise RuntimeError(update_result.stderr or "SSH connection failed")
 
             # Step 2: apt-get upgrade / dist-upgrade
-            upgrade_cmd = _build_upgrade_command(server, action, allow_phased)
+            upgrade_cmd = _build_upgrade_command(server, action, allow_phased, conffile_action)
             if send_fn:
                 await send_fn({"type": "status", "data": "running_upgrade"})
                 upgrade_result = await run_command_stream(server, upgrade_cmd, _send, timeout=3600)

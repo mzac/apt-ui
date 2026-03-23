@@ -25,13 +25,47 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 ## Requirements
 
 - Docker + Docker Compose v2
-- An SSH private key (RSA or Ed25519, no passphrase) that is authorised on all target servers
-- Passwordless sudo configured on target servers for `apt-get`:
+- SSH access to target servers — see [SSH authentication](#ssh-authentication) below
+
+---
+
+## SSH authentication
+
+Two approaches are supported. Pick whichever fits your setup.
+
+### Option A — SSH directly as root (simplest)
+
+If you set a root password during OS installation the root account is active and you can add your public key to it:
+
+```bash
+# Run on each managed server
+sudo mkdir -p /root/.ssh
+sudo cat ~/.ssh/id_ed25519.pub >> /root/.ssh/authorized_keys
+sudo chmod 600 /root/.ssh/authorized_keys
+```
+
+Then set `username = root` when adding each server in the dashboard. No sudo configuration required.
+
+### Option B — Regular user with passwordless sudo for apt-get
 
 ```bash
 # Run on each managed server
 echo "youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/apt-dashboard
 ```
+
+### SSH key options
+
+**Option 1 — Inline key (simpler, key must have no passphrase)**
+
+Set `SSH_PRIVATE_KEY` in your `.env` to the full PEM content of the key.
+
+**Option 2 — SSH agent (key can be passphrase-protected)**
+
+Forward your host SSH agent into the container instead of embedding the key:
+
+1. Ensure your agent is running and has the key loaded (`ssh-add ~/.ssh/id_ed25519`)
+2. In the compose file, comment out `SSH_PRIVATE_KEY` and uncomment the `SSH_AUTH_SOCK` lines
+3. The container will authenticate via the agent — the private key never leaves your host
 
 ---
 
@@ -39,7 +73,7 @@ echo "youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/a
 
 ### 1. Set up your `.env`
 
-Create `.env` in the project root with your SSH private key. The key must be inside double quotes with literal newlines:
+Create `.env` with your SSH private key. The key must be inside double quotes with literal newlines:
 
 ```
 SSH_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
@@ -60,7 +94,17 @@ To populate it from a key file:
 echo "SSH_PRIVATE_KEY=\"$(cat ~/.ssh/id_rsa)\"" > .env
 ```
 
-### 2. Build and run
+### 2a. Run from pre-built image (recommended)
+
+Images are published to the GitHub Container Registry on every release for both `linux/amd64` and `linux/arm64`.
+
+```bash
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+To pin to a specific release instead of `latest`, edit `docker-compose.ghcr.yml` and change the image tag, e.g. `ghcr.io/mzac/apt-ui:1.0.0`.
+
+### 2b. Build from source
 
 ```bash
 ./build-run.sh
@@ -78,11 +122,13 @@ All runtime configuration (SMTP, Telegram, schedules, server list) is managed th
 
 | Variable | Default | Description |
 |---|---|---|
-| `SSH_PRIVATE_KEY` | — | **Required.** Full PEM content of the private key |
+| `SSH_PRIVATE_KEY` | — | Full PEM content of the private key. Required unless using SSH agent. |
+| `SSH_AUTH_SOCK` | — | Path to SSH agent socket inside the container (e.g. `/run/ssh-agent.sock`). Alternative to `SSH_PRIVATE_KEY` — allows passphrase-protected keys. See compose file for socket mount. |
 | `JWT_SECRET` | random | JWT signing secret. Set to persist sessions across restarts |
 | `DATABASE_PATH` | `/data/apt-dashboard.db` | SQLite file path |
 | `TZ` | `America/Montreal` | Timezone for scheduled jobs |
 | `LOG_LEVEL` | `INFO` | Python log level |
+| `ENABLE_TERMINAL` | `false` | Set to `true` to enable the interactive SSH shell terminal in the UI. Only enable if you trust all dashboard users. |
 
 ---
 

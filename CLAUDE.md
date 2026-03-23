@@ -1,4 +1,79 @@
-# Apt Update Dashboard — Claude Code Project Instructions
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Development Commands
+
+### Backend (Python/FastAPI)
+```bash
+# Set up environment (from repo root)
+python -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+
+# Run backend dev server (requires SSH key)
+export SSH_PRIVATE_KEY="$(cat ~/.ssh/id_rsa)"
+export DATABASE_PATH="./data/dev.db"
+export PYTHONPATH=$(pwd)
+uvicorn backend.main:app --reload --port 8000
+
+# CLI tool (inside container or with venv active)
+python -m backend.cli reset-password --username admin --password newpass
+python -m backend.cli create-user --username zac --password mypass
+python -m backend.cli list-users
+```
+
+### Frontend (React/TypeScript)
+```bash
+cd frontend
+npm install        # use npm install (no package-lock.json committed)
+npm run dev        # Vite dev server on :5173, proxies /api/* to :8000
+npm run build      # tsc + vite build → dist/
+```
+
+### Docker
+```bash
+./build-run.sh                    # build + start + tail logs
+docker compose up --build -d      # detached
+docker compose logs -f            # follow logs
+docker exec -it apt-dashboard python -m backend.cli reset-password
+```
+
+### No test framework is configured. Testing is manual (see Testing Notes section below).
+
+---
+
+## Architecture Overview
+
+The app is a **single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files.
+
+**Key data flows:**
+- Dashboard polling: frontend calls `GET /api/servers` every 30s via `usePolling` hook
+- Live upgrade output: WebSocket at `/api/ws/upgrade/{id}` or `/api/ws/upgrade-all`; backend streams SSH stdout/stderr line-by-line over the socket
+- Auth: JWT stored in httpOnly cookie named `apt_dashboard_token`; all `/api/` routes except login use `get_current_user` FastAPI dependency; 401 responses in `api/client.ts` redirect to `/login?expired=1`
+- SSH: no connection pool — fresh connection per command; key loaded from `SSH_PRIVATE_KEY` env var via `asyncssh.import_private_key()`; `known_hosts=None` (trusted network)
+- Scheduling: APScheduler `AsyncIOScheduler` with `CronTrigger`; config stored in `schedule_config` DB table and dynamically reconfigured (no restart needed) when changed via UI
+
+**Implemented beyond original spec:**
+- `backend/routers/tags.py` — server tagging with auto-tag on check (OS + virt type)
+- `backend/routers/templates.py` — package templates for bulk install
+- `backend/routers/config_io.py` — JSON import/export of server config
+- `backend/upgrade_manager.py` — upgrade execution separated from `update_checker.py`
+- `frontend/pages/Templates.tsx` — UI for template management
+- `frontend/components/PackageInstallModal.tsx` — package installation modal
+- `schedule_config` has `auto_tag_os`, `auto_tag_virt`, `run_apt_update_before_upgrade` fields
+
+**Frontend path alias:** `@/` resolves to `frontend/src/` (configured in both `vite.config.ts` and `tsconfig.json`).
+
+**State management:** Zustand stores in `frontend/src/hooks/useAuth.ts` (auth state) and `useJobStore.ts` (active upgrade jobs). Both are read by multiple components.
+
+**Terminal rendering:** `@xterm/xterm` is used for the terminal panel in ServerDetail (not just `ansi-to-html`).
+
+---
+
+# Apt Update Dashboard — Project Specification
 
 ## Project Overview
 

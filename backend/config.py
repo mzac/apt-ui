@@ -4,6 +4,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/apt-dashboard.db")
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
 
 SSH_PRIVATE_KEY = os.getenv("SSH_PRIVATE_KEY", "")
+SSH_AUTH_SOCK = os.getenv("SSH_AUTH_SOCK", "")  # path to SSH agent socket (optional alternative to SSH_PRIVATE_KEY)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"

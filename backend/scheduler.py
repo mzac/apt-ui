@@ -43,16 +43,19 @@ async def _job_check_all():
     from backend.update_checker import check_all_servers
     from sqlalchemy import select
 
-    async with AsyncSessionLocal() as db:
-        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
-        cfg = cfg_res.scalar_one_or_none()
-        concurrency = cfg.upgrade_concurrency if cfg else 5
+    try:
+        async with AsyncSessionLocal() as db:
+            cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+            cfg = cfg_res.scalar_one_or_none()
+            concurrency = cfg.upgrade_concurrency if cfg else 5
 
-        srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
-        servers = srv_res.scalars().all()
-        await check_all_servers(list(servers), db, concurrency)
+            srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+            servers = srv_res.scalars().all()
+            await check_all_servers(list(servers), db, concurrency)
+    except Exception as exc:
+        logger.error("Scheduled check-all failed: %s", exc)
 
-    # Send daily summary after check
+    # Send daily summary regardless of whether the check succeeded
     try:
         await _send_daily_summary()
     except Exception as exc:
@@ -72,6 +75,7 @@ async def _job_auto_upgrade():
         cfg = cfg_res.scalar_one_or_none()
         concurrency = cfg.upgrade_concurrency if cfg else 5
         allow_phased = cfg.allow_phased_on_auto if cfg else False
+        conffile_action = cfg.conffile_action if cfg else "confdef_confold"
 
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
@@ -99,6 +103,7 @@ async def _job_auto_upgrade():
                     server, db2,
                     action="upgrade",
                     allow_phased=allow_phased,
+                    conffile_action=conffile_action,
                     initiated_by="scheduled",
                 )
 

@@ -10,17 +10,27 @@ Design notes:
   trusted private network and managing known_hosts across a dynamic fleet
   would add operational friction without meaningful security benefit in this
   deployment model. The private key provides one-way authentication assurance.
+
+Authentication (in priority order):
+1. SSH agent — set SSH_AUTH_SOCK to the agent socket path. The key never
+   leaves the agent and can remain passphrase-protected.
+2. Inline private key — set SSH_PRIVATE_KEY to the PEM content. The key must
+   have no passphrase. Convenient for container deployments where an agent is
+   not available.
+
+Using root directly (instead of a sudoer account) is fully supported — just
+set the server's username to "root". This avoids the need for passwordless
+sudo configuration entirely.
 """
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import asyncssh
 
-from backend.config import SSH_PRIVATE_KEY
+from backend.config import SSH_PRIVATE_KEY, SSH_AUTH_SOCK
 
 if TYPE_CHECKING:
     from backend.models import Server
@@ -42,9 +52,8 @@ class CommandResult:
 
 
 def _load_private_key() -> asyncssh.SSHKey | None:
-    """Parse the SSH private key from the env var once at call time."""
+    """Parse the SSH private key from the SSH_PRIVATE_KEY env var."""
     if not SSH_PRIVATE_KEY:
-        logger.warning("SSH_PRIVATE_KEY is not set — SSH operations will fail")
         return None
     try:
         return asyncssh.import_private_key(SSH_PRIVATE_KEY)
@@ -54,16 +63,36 @@ def _load_private_key() -> asyncssh.SSHKey | None:
 
 
 def _connect_options(server: "Server") -> dict:
-    """Build asyncssh connection keyword arguments for a server."""
-    key = _load_private_key()
-    return {
+    """
+    Build asyncssh connection keyword arguments for a server.
+
+    Prefers SSH agent (SSH_AUTH_SOCK) over inline key (SSH_PRIVATE_KEY).
+    Logs a warning if neither is configured.
+    """
+    opts: dict = {
         "host": server.hostname,
         "port": server.ssh_port,
         "username": server.username,
-        "client_keys": [key] if key else [],
         "known_hosts": None,  # see module docstring
         "connect_timeout": CONNECT_TIMEOUT,
     }
+
+    if SSH_AUTH_SOCK:
+        # Delegate auth to the SSH agent — key stays protected by the agent.
+        opts["agent_path"] = SSH_AUTH_SOCK
+        opts["client_keys"] = []
+    else:
+        key = _load_private_key()
+        if key:
+            opts["client_keys"] = [key]
+        else:
+            logger.warning(
+                "Neither SSH_AUTH_SOCK nor SSH_PRIVATE_KEY is set — "
+                "SSH connections to %s will fail", server.hostname
+            )
+            opts["client_keys"] = []
+
+    return opts
 
 
 async def run_command(

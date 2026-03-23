@@ -830,6 +830,21 @@ function PreferencesTab() {
         <p className="text-xs text-text-muted pl-6">
           When disabled (default), upgrades only install packages already known from the last "Check". Enabling this fetches the latest package index first, which may pull in updates not yet visible on the dashboard.
         </p>
+        <div className="space-y-1">
+          <label className="text-sm text-text-muted">Config file handling</label>
+          <select
+            className="input w-full"
+            value={form.conffile_action ?? 'confdef_confold'}
+            onChange={e => setForm(f => ({ ...f, conffile_action: e.target.value }))}
+          >
+            <option value="confdef_confold">Keep existing (safe default — use package default, fall back to keep old)</option>
+            <option value="confold">Always keep existing config files</option>
+            <option value="confnew">Always take new config files from package</option>
+          </select>
+          <p className="text-xs text-text-muted">
+            Controls what happens when a package ships a new version of a config file you have modified (e.g. <span className="font-mono">/etc/motd</span>, <span className="font-mono">/etc/ssh/sshd_config</span>). The safe default keeps your existing file.
+          </p>
+        </div>
       </section>
 
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>

@@ -209,6 +209,7 @@ class PackageSearchResult(BaseModel):
 class UpgradeRequest(BaseModel):
     action: str = "upgrade"  # "upgrade" | "dist-upgrade"
     allow_phased: bool = False
+    conffile_action: str = "confdef_confold"  # "confdef_confold" | "confold" | "confnew"
 
 
 class UpdateHistoryOut(BaseModel):
@@ -274,6 +275,7 @@ class ScheduleConfigOut(BaseModel):
     auto_tag_os: bool = False
     auto_tag_virt: bool = False
     run_apt_update_before_upgrade: bool = False
+    conffile_action: str = "confdef_confold"
 
     model_config = {"from_attributes": True}
 
@@ -289,6 +291,7 @@ class ScheduleConfigUpdate(BaseModel):
     auto_tag_os: Optional[bool] = None
     auto_tag_virt: Optional[bool] = None
     run_apt_update_before_upgrade: Optional[bool] = None
+    conffile_action: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

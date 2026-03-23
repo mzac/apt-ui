@@ -216,7 +216,7 @@ async def start_upgrade(
     # Fire and forget — client connects via WebSocket for live output
     asyncio.create_task(
         upgrade_server(server, db, action=body.action, allow_phased=body.allow_phased,
-                       run_apt_update=run_apt_update)
+                       conffile_action=body.conffile_action, run_apt_update=run_apt_update)
     )
     return {"detail": "Upgrade started", "server_id": server_id}
 
@@ -257,6 +257,7 @@ async def start_upgrade_all(
                     server, session,
                     action=body.action,
                     allow_phased=body.allow_phased,
+                    conffile_action=body.conffile_action,
                     run_apt_update=run_apt_update,
                 )
 
@@ -296,6 +297,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
 
         action = params.get("action", "upgrade")
         allow_phased = params.get("allow_phased", False)
+        conffile_action = params.get("conffile_action", "confdef_confold")
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -314,6 +316,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
                 server, db,
                 action=action,
                 allow_phased=allow_phased,
+                conffile_action=conffile_action,
                 send_fn=send_fn,
                 run_apt_update=run_apt_update,
             )
@@ -418,6 +421,7 @@ async def ws_upgrade_all(websocket: WebSocket):
 
         action = params.get("action", "upgrade")
         allow_phased = params.get("allow_phased", False)
+        conffile_action = params.get("conffile_action", "confdef_confold")
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -456,6 +460,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     server, session,
                     action=action,
                     allow_phased=allow_phased,
+                    conffile_action=conffile_action,
                     send_fn=send_fn,
                     run_apt_update=run_apt_update,
                 )
@@ -477,6 +482,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     server, session,
                     action=action,
                     allow_phased=allow_phased,
+                    conffile_action=conffile_action,
                     send_fn=send_fn,
                     skip_notify=True,  # suppress per-server emails
                     run_apt_update=run_apt_update,
