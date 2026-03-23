@@ -56,6 +56,12 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - SSH: no connection pool — fresh connection per command; key loaded from `SSH_PRIVATE_KEY` env var via `asyncssh.import_private_key()`; `known_hosts=None` (trusted network)
 - Scheduling: APScheduler `AsyncIOScheduler` with `CronTrigger`; config stored in `schedule_config` DB table and dynamically reconfigured (no restart needed) when changed via UI
 
+**Per-server SSH keys:**
+- `backend/crypto.py` — Fernet symmetric encryption (AES-128-CBC + HMAC). Key derived via SHA-256 from `ENCRYPTION_KEY` env var, falling back to `JWT_SECRET`. `encrypt()`/`decrypt()` helpers used by the servers router.
+- `Server.ssh_private_key_enc` — encrypted PEM stored in DB; `ssh_key_configured: bool` in `ServerOut` (never returns the key itself).
+- Auth priority in `ssh_manager._connect_options`: per-server key → SSH agent → global `SSH_PRIVATE_KEY`.
+- UI: write-only textarea in add-server form (collapsible) and inline edit row; shows 🔑 badge when key is set; separate Set/Replace/Clear actions.
+
 **Implemented beyond original spec:**
 - `backend/routers/tags.py` — server tagging with auto-tag on check (OS + virt type)
 - `backend/routers/templates.py` — package templates for bulk install

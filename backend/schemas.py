@@ -102,6 +102,7 @@ class ServerCreate(BaseModel):
     tags: list[str] = []
     tag_ids: list[int] = []
     tag_names: list[str] = []
+    ssh_private_key: Optional[str] = None  # write-only; stored encrypted
 
 
 class ServerUpdate(BaseModel):
@@ -115,6 +116,7 @@ class ServerUpdate(BaseModel):
     tags: Optional[list[str]] = None
     tag_ids: Optional[list[int]] = None
     tag_names: Optional[list[str]] = None
+    ssh_private_key: Optional[str] = None  # write-only; stored encrypted
 
 
 class LatestCheckOut(BaseModel):
@@ -144,6 +146,7 @@ class ServerOut(BaseModel):
     os_info: Optional[str] = None
     tags: list[TagOut] = []
     is_enabled: bool
+    ssh_key_configured: bool = False  # true if a per-server encrypted key is stored
     created_at: datetime
     updated_at: datetime
     latest_check: Optional[LatestCheckOut] = None

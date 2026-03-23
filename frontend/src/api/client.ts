@@ -82,12 +82,15 @@ export const servers = {
     group_ids?: number[]
     tag_ids?: number[]
     tag_names?: string[]
+    ssh_private_key?: string
   }) => post<Server>('/api/servers', data),
   update: (id: number, data: Partial<Server> & {
     tag_ids?: number[]
     tag_names?: string[]
     group_ids?: number[]
+    ssh_private_key?: string
   }) => put<Server>(`/api/servers/${id}`, data),
+  clearSshKey: (id: number) => del(`/api/servers/${id}/ssh-key`),
   remove: (id: number) => del(`/api/servers/${id}`),
   reboot: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/reboot`),
   test: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/test`),

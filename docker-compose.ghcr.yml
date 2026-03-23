@@ -11,6 +11,7 @@ services:
       - TZ=America/Montreal
       # Optional overrides:
       # - JWT_SECRET=change-me-to-a-random-string
+      # - ENCRYPTION_KEY=change-me-to-a-random-string  # encrypts per-server SSH keys in the DB (falls back to JWT_SECRET)
       # - LOG_LEVEL=INFO
     volumes:
       - apt-dashboard-data:/data

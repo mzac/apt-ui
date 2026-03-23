@@ -66,7 +66,8 @@ function ServersTab() {
   const [showAddServer, setShowAddServer] = useState(false)
   const [showAddGroup, setShowAddGroup] = useState(false)
   const [showAddTag, setShowAddTag] = useState(false)
-  const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[] })
+  const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[], ssh_private_key: '' })
+  const [showAddSshKey, setShowAddSshKey] = useState(false)
   const [groupForm, setGroupForm] = useState({ name: '', color: '#3b82f6' })
   const [tagForm, setTagForm] = useState({ name: '', color: '#6366f1' })
   const [formError, setFormError] = useState('')
@@ -86,6 +87,8 @@ function ServersTab() {
   })
   const [editTagDropdown, setEditTagDropdown] = useState(false)
   const [editError, setEditError] = useState('')
+  const [showSshKeyInput, setShowSshKeyInput] = useState(false)
+  const [editSshKey, setEditSshKey] = useState('')
   const [editingGroup, setEditingGroup] = useState<number | null>(null)
   const [editGroupForm, setEditGroupForm] = useState({ name: '', color: '#3b82f6' })
   const [editingTag, setEditingTag] = useState<number | null>(null)
@@ -115,6 +118,8 @@ function ServersTab() {
     })
     setEditTagDropdown(false)
     setEditError('')
+    setShowSshKeyInput(false)
+    setEditSshKey('')
   }
 
   async function handleSaveServer() {
@@ -132,6 +137,29 @@ function ServersTab() {
         tag_ids: editForm.tagIds,
       })
       setEditingServer(null)
+      load()
+    } catch (err: unknown) {
+      setEditError((err as Error).message)
+    }
+  }
+
+  async function handleSetSshKey(serverId: number) {
+    if (!editSshKey.trim()) return
+    setEditError('')
+    try {
+      await serversApi.update(serverId, { ssh_private_key: editSshKey.trim() })
+      setShowSshKeyInput(false)
+      setEditSshKey('')
+      load()
+    } catch (err: unknown) {
+      setEditError((err as Error).message)
+    }
+  }
+
+  async function handleClearSshKey(serverId: number) {
+    setEditError('')
+    try {
+      await serversApi.clearSshKey(serverId)
       load()
     } catch (err: unknown) {
       setEditError((err as Error).message)
@@ -166,8 +194,10 @@ function ServersTab() {
         group_id: form.groupIds[0] ?? undefined,
         group_ids: form.groupIds,
         tag_ids: form.tagIds,
+        ssh_private_key: form.ssh_private_key.trim() || undefined,
       })
-      setForm({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [], tagIds: [] })
+      setForm({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [], tagIds: [], ssh_private_key: '' })
+      setShowAddSshKey(false)
       setShowAddServer(false)
       load()
     } catch (err: unknown) {
@@ -509,6 +539,22 @@ function ServersTab() {
                 {tagList.length === 0 && <span className="text-xs text-text-muted">No tags yet — create them in the Tags section above</span>}
               </div>
             </div>
+            <div className="col-span-full">
+              <button type="button" className="text-xs text-text-muted hover:text-text-primary" onClick={() => setShowAddSshKey(v => !v)}>
+                {showAddSshKey ? '▾' : '▸'} Per-server SSH key <span className="opacity-60">(optional — overrides global key)</span>
+              </button>
+              {showAddSshKey && (
+                <div className="mt-2 space-y-1">
+                  <textarea
+                    className="input w-full font-mono text-xs h-28 resize-y"
+                    placeholder="-----BEGIN ... PRIVATE KEY-----&#10;...&#10;-----END ... PRIVATE KEY-----"
+                    value={form.ssh_private_key}
+                    onChange={e => setForm(f => ({ ...f, ssh_private_key: e.target.value }))}
+                  />
+                  <p className="text-xs text-text-muted">Stored encrypted at rest. Leave empty to use the global <span className="font-mono">SSH_PRIVATE_KEY</span>.</p>
+                </div>
+              )}
+            </div>
             {formError && <p className="col-span-full text-red text-sm">{formError}</p>}
             <div className="col-span-full flex gap-2">
               <button type="submit" className="btn-primary">Add Server</button>
@@ -624,6 +670,34 @@ function ServersTab() {
                         <button onClick={handleSaveServer} className="btn-primary text-xs py-0.5">Save</button>
                         <button onClick={() => setEditingServer(null)} className="btn-secondary text-xs py-0.5">Cancel</button>
                       </div>
+                      {/* Per-server SSH key management */}
+                      {!showSshKeyInput ? (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {s.ssh_key_configured && (
+                            <span className="text-xs text-green font-mono">🔑 key set</span>
+                          )}
+                          <button type="button" className="text-xs text-text-muted hover:text-text-primary" onClick={() => setShowSshKeyInput(true)}>
+                            {s.ssh_key_configured ? 'replace' : '+ set key'}
+                          </button>
+                          {s.ssh_key_configured && (
+                            <button type="button" className="text-xs text-text-muted hover:text-red" onClick={() => handleClearSshKey(s.id)}>clear</button>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-1 pt-1">
+                          <textarea
+                            className="input w-full font-mono text-xs py-1 h-20 resize-y"
+                            placeholder="-----BEGIN ... PRIVATE KEY-----"
+                            value={editSshKey}
+                            onChange={e => setEditSshKey(e.target.value)}
+                            autoFocus
+                          />
+                          <div className="flex gap-1">
+                            <button type="button" className="btn-primary text-xs py-0.5" onClick={() => handleSetSshKey(s.id)}>Set Key</button>
+                            <button type="button" className="btn-secondary text-xs py-0.5" onClick={() => { setShowSshKeyInput(false); setEditSshKey('') }}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
                       {editError && <span className="text-red text-xs">{editError}</span>}
                     </div>
                   </td>
@@ -633,7 +707,10 @@ function ServersTab() {
                 <tr key={s.id} className={`border-b border-border/50 ${i % 2 === 0 ? '' : 'bg-surface-2/30'}`}>
                   <td className="px-3 py-2 font-mono">{s.name}</td>
                   <td className="px-3 py-2 font-mono text-text-muted">{s.hostname}</td>
-                  <td className="px-3 py-2 font-mono text-text-muted text-xs">{s.username} :{s.ssh_port}</td>
+                  <td className="px-3 py-2 font-mono text-text-muted text-xs">
+                    <div>{s.username} :{s.ssh_port}</div>
+                    {s.ssh_key_configured && <span className="text-xs text-green" title="Per-server SSH key configured">🔑</span>}
+                  </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1">
                       {(s.groups ?? []).length > 0

@@ -54,6 +54,7 @@ export interface Server {
   os_info: string | null
   tags: Tag[]
   is_enabled: boolean
+  ssh_key_configured: boolean
   created_at: string
   updated_at: string
   latest_check: LatestCheck | null

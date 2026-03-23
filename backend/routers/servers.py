@@ -142,6 +142,7 @@ async def _build_server_out(
         os_info=server.os_info,
         tags=tags,
         is_enabled=server.is_enabled,
+        ssh_key_configured=bool(server.ssh_private_key_enc),
         created_at=server.created_at,
         updated_at=server.updated_at,
         latest_check=latest,
@@ -292,12 +293,18 @@ async def create_server(
         if group is None:
             raise HTTPException(status_code=400, detail="Group not found")
 
+    ssh_key_enc = None
+    if body.ssh_private_key and body.ssh_private_key.strip():
+        from backend.crypto import encrypt
+        ssh_key_enc = encrypt(body.ssh_private_key.strip())
+
     server = Server(
         name=body.name,
         hostname=body.hostname,
         username=body.username,
         ssh_port=body.ssh_port,
         group_id=body.group_id,
+        ssh_private_key_enc=ssh_key_enc,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -387,6 +394,12 @@ async def update_server(
         server.group_id = None
     if body.is_enabled is not None:
         server.is_enabled = body.is_enabled
+    if body.ssh_private_key is not None:
+        if body.ssh_private_key.strip():
+            from backend.crypto import encrypt
+            server.ssh_private_key_enc = encrypt(body.ssh_private_key.strip())
+        else:
+            server.ssh_private_key_enc = None  # empty string = clear the key
 
     # Handle tags
     if body.tag_ids is not None or body.tag_names is not None or body.tags is not None:
@@ -440,6 +453,19 @@ async def delete_server(
 ):
     server = await _get_server_or_404(server_id, db)
     await db.delete(server)
+    await db.commit()
+
+
+@router.delete("/{server_id}/ssh-key", status_code=204)
+async def clear_server_ssh_key(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Remove the per-server SSH key; the server will fall back to the global key."""
+    server = await _get_server_or_404(server_id, db)
+    server.ssh_private_key_enc = None
+    server.updated_at = datetime.utcnow()
     await db.commit()
 
 

@@ -66,8 +66,10 @@ def _connect_options(server: "Server") -> dict:
     """
     Build asyncssh connection keyword arguments for a server.
 
-    Prefers SSH agent (SSH_AUTH_SOCK) over inline key (SSH_PRIVATE_KEY).
-    Logs a warning if neither is configured.
+    Auth priority:
+      1. Per-server encrypted key (ssh_private_key_enc column) — overrides everything.
+      2. SSH agent (SSH_AUTH_SOCK env var).
+      3. Global inline key (SSH_PRIVATE_KEY env var).
     """
     opts: dict = {
         "host": server.hostname,
@@ -77,20 +79,35 @@ def _connect_options(server: "Server") -> dict:
         "connect_timeout": CONNECT_TIMEOUT,
     }
 
+    # 1. Per-server key stored encrypted in the DB
+    if getattr(server, "ssh_private_key_enc", None):
+        try:
+            from backend.crypto import decrypt
+            pem = decrypt(server.ssh_private_key_enc)
+            key = asyncssh.import_private_key(pem)
+            opts["client_keys"] = [key]
+            return opts
+        except Exception as exc:
+            logger.error(
+                "Failed to load per-server SSH key for %s: %s — falling back to global auth",
+                server.hostname, exc,
+            )
+
+    # 2. SSH agent
     if SSH_AUTH_SOCK:
-        # Delegate auth to the SSH agent — key stays protected by the agent.
         opts["agent_path"] = SSH_AUTH_SOCK
         opts["client_keys"] = []
+        return opts
+
+    # 3. Global inline key
+    key = _load_private_key()
+    if key:
+        opts["client_keys"] = [key]
     else:
-        key = _load_private_key()
-        if key:
-            opts["client_keys"] = [key]
-        else:
-            logger.warning(
-                "Neither SSH_AUTH_SOCK nor SSH_PRIVATE_KEY is set — "
-                "SSH connections to %s will fail", server.hostname
-            )
-            opts["client_keys"] = []
+        logger.warning(
+            "No SSH auth configured for %s — connection will fail", server.hostname
+        )
+        opts["client_keys"] = []
 
     return opts
 
