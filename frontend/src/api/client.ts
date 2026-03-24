@@ -204,6 +204,10 @@ export const config = {
   },
 }
 
+export const tailscale = {
+  status: () => get<import('@/types').TailscaleStatus>('/api/tailscale/status'),
+}
+
 export const aptcache = {
   list:       () => get<import('@/types').AptCacheServer[]>('/api/aptcache'),
   add:        (data: { label: string; host: string; port: number }) =>

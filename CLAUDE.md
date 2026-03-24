@@ -28,7 +28,7 @@ python -m backend.cli list-users
 ### Frontend (React/TypeScript)
 ```bash
 cd frontend
-npm install        # use npm install (no package-lock.json committed)
+npm ci             # package-lock.json is committed; use npm ci for reproducible installs
 npm run dev        # Vite dev server on :5173, proxies /api/* to :8000
 npm run build      # tsc + vite build → dist/
 ```
@@ -39,6 +39,18 @@ npm run build      # tsc + vite build → dist/
 docker compose up --build -d      # detached
 docker compose logs -f            # follow logs
 docker exec -it apt-dashboard python -m backend.cli reset-password
+```
+
+### Docker with Tailscale (production overlay)
+```bash
+# Requires TS_AUTHKEY (and optionally TS_HOSTNAME) in .env
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up --build -d
+```
+
+### Local dev with Tailscale (git-ignored)
+```bash
+# Requires TS_AUTHKEY in .env.local — see .env.local for full template
+./build-run-local.sh   # builds app + starts tailscale sidecar, follows logs
 ```
 
 ### No test framework is configured. Testing is manual (see Testing Notes section below).
@@ -94,7 +106,8 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - `backend/upgrade_manager.py` — upgrade execution separated from `update_checker.py`
 - `frontend/pages/Templates.tsx` — UI for template management
 - `frontend/components/PackageInstallModal.tsx` — package installation modal (rendered via `createPortal` to avoid click-event bubbling from server cards)
-- `schedule_config` has `auto_tag_os`, `auto_tag_virt`, `run_apt_update_before_upgrade`, `conffile_action` fields
+- `schedule_config` has `auto_tag_os`, `auto_tag_virt`, `run_apt_update_before_upgrade`, `conffile_action`, `reachability_ttl_minutes` fields
+- `reachability_ttl_minutes` — when a server fails to connect during check-all, it is skipped for subsequent check-all runs until the TTL expires, preventing SSH timeout delays from slowing the whole fleet check
 - `AptCacheServer` model / `apt_cache_servers` table — new table, created automatically by `Base.metadata.create_all()` on startup (no ALTER TABLE migration needed for new tables, only for new columns on existing tables)
 - Package descriptions stored in `packages_json` — `_parse_apt_cache_show()` in `update_checker.py` runs `apt-cache show --no-all-versions` for all upgradable packages during each check and stores short descriptions
 - `likelyRequiresReboot()` in `ServerDetail.tsx` — client-side heuristic matching package names against patterns (linux-image*, libc6, libssl*, systemd, udev, etc.)
@@ -106,6 +119,17 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - Server card two-column layout: left=identity (name, hostname, OS), right=group badges + update count + hardware stats; security update count shown large/bold in red when present (takes priority over total update count)
 - Background job bell: all jobs (check-all, upgrade-all, single-host check, single-host upgrade) show in bell while running and auto-remove 3 s after completing; no persistent amber dot; page reload clears all stale jobs
 - Terminal `\r` (carriage return) handling: `applyChunk()` helper in `ServerDetail.tsx` applies carriage-return semantics so apt progress lines (e.g. "Reading database ... 5% ... 100%") update in place instead of concatenating
+- `autoremove_count` / `autoremove_packages` on `update_checks` — detected during check via `apt-get autoremove --dry-run`; shown in dashboard and server detail
+- `frontend/pages/History.tsx` — fleet-wide upgrade history view accessible from nav; shows history across all servers
+- Per-channel notification toggles in `notification_config` — individual email/Telegram toggles for each event type (daily summary, upgrade complete, error), allowing e.g. email-only for summaries and Telegram-only for errors
+- **Tailscale sidecar** — opt-in via compose overlay; NOT embedded in the app image (updates independently via `docker compose pull`):
+  - `docker-compose.tailscale.yml` — production overlay; adds `tailscale/tailscale:latest` sidecar; app uses `network_mode: service:tailscale` to share the tailnet interface
+  - `docker-compose.local.yml` + `build-run-local.sh` — git-ignored local dev equivalents; uses separate `tailscale-state-local` / `tailscale-socket-local` volumes to avoid conflicting with production
+  - `tailscale-serve.json` — `TS_SERVE_CONFIG` template; proxies HTTPS `:443` → app `:8000`; uses `${TS_CERT_DOMAIN}` placeholder resolved at runtime to the node's tailnet DNS name
+  - `backend/routers/tailscale.py` — `GET /api/tailscale/status`; connects to the daemon via httpx `AsyncHTTPTransport(uds=...)` against `/var/run/tailscale/tailscaled.sock` (shared named volume); returns available/backend_state/IPs/hostname/dns_name/online
+  - Socket volume must NOT be mounted `:ro` — connecting to a Unix socket requires write permission even for read-only queries
+  - Status widget in Settings → Infrastructure tab polls every 30 s; shows inline enable command when sidecar is absent
+  - `k8s/deployment.yaml` has a ready-to-uncomment sidecar block (k8s pods share network namespace natively, no `network_mode` needed)
 
 **Frontend path alias:** `@/` resolves to `frontend/src/` (configured in both `vite.config.ts` and `tsconfig.json`).
 
@@ -275,6 +299,8 @@ On first startup, if the `users` table is empty, create a default admin account:
 | held_packages | INTEGER | count of packages held via apt-mark |
 | held_packages_list | TEXT | JSON list of held package names |
 | reboot_required | BOOLEAN | from /var/run/reboot-required |
+| autoremove_count | INTEGER DEFAULT 0 | count of packages removable via apt autoremove |
+| autoremove_packages | TEXT | JSON list of autoremovable package names |
 | raw_output | TEXT | full `apt list --upgradable` output |
 | packages_json | TEXT | JSON array of parsed packages with details (see below) |
 
@@ -286,7 +312,8 @@ The `packages_json` field stores a JSON array where each entry is:
   "available_version": "3.0.2-0ubuntu1.14",
   "repository": "jammy-security",
   "is_security": true,
-  "is_phased": false
+  "is_phased": false,
+  "description": "Secure Sockets Layer toolkit - shared libraries"
 }
 ```
 This avoids re-parsing the raw apt output every time the frontend requests the package list.
@@ -316,6 +343,8 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 | disk_usage_percent | FLOAT | root partition usage |
 | last_apt_update | DATETIME | stat /var/cache/apt/pkgcache.bin |
 | total_packages | INTEGER | dpkg --list count |
+| virt_type | TEXT | detected virtualization type (kvm, lxc, docker, proxmox, etc.) |
+| auto_security_updates | TEXT | `not_installed` / `disabled` / `enabled` — unattended-upgrades state |
 
 ### `notification_config` table (single row, app-wide settings)
 | Column | Type | Notes |
@@ -336,6 +365,12 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 | daily_summary_time | TEXT DEFAULT '07:00' | 24h format, local time (server timezone) |
 | notify_on_upgrade_complete | BOOLEAN DEFAULT true | send notification after each upgrade |
 | notify_on_error | BOOLEAN DEFAULT true | send notification on check/upgrade failures |
+| daily_summary_email | BOOLEAN DEFAULT true | send daily summary via email |
+| daily_summary_telegram | BOOLEAN DEFAULT true | send daily summary via Telegram |
+| notify_upgrade_email | BOOLEAN DEFAULT true | send upgrade notifications via email |
+| notify_upgrade_telegram | BOOLEAN DEFAULT true | send upgrade notifications via Telegram |
+| notify_error_email | BOOLEAN DEFAULT true | send error notifications via email |
+| notify_error_telegram | BOOLEAN DEFAULT true | send error notifications via Telegram |
 
 ### `schedule_config` table (single row, scheduling settings)
 | Column | Type | Notes |
@@ -351,6 +386,8 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 | auto_tag_os | BOOLEAN DEFAULT false | auto-create and assign OS tags on Check All |
 | auto_tag_virt | BOOLEAN DEFAULT false | auto-create and assign virt-type tags on Check All |
 | run_apt_update_before_upgrade | BOOLEAN DEFAULT false | run `apt-get update -q` before upgrading (disabled by default to avoid pulling in unreviewed updates) |
+| conffile_action | TEXT DEFAULT 'confdef_confold' | how apt handles modified config files during upgrade: `confdef_confold` (keep old), `confold` (always old), `confnew` (always new) |
+| reachability_ttl_minutes | INTEGER DEFAULT 5 | skip recently-unreachable servers in check-all for this many minutes to avoid SSH timeout delays |
 
 ---
 
@@ -358,11 +395,14 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 
 | Variable | Required | Description |
 |---|---|---|
-| `SSH_PRIVATE_KEY` | Yes | PEM-encoded SSH private key (the full key content, not a path) |
+| `SSH_PRIVATE_KEY` | Yes* | PEM-encoded SSH private key (the full key content, not a path). Required unless `SSH_AUTH_SOCK` is set. |
+| `SSH_AUTH_SOCK` | No | Path to SSH agent socket — alternative to `SSH_PRIVATE_KEY`. One of the two must be set. |
+| `ENCRYPTION_KEY` | No | Master key for Fernet-encrypting per-server SSH keys stored in the DB. Falls back to `JWT_SECRET` if not set. |
 | `JWT_SECRET` | No | Secret key for signing JWT tokens. If not set, a random secret is generated at startup (tokens will invalidate on restart — fine for single-container deployments). |
 | `DATABASE_PATH` | No | Default: `/data/apt-dashboard.db` |
 | `LOG_LEVEL` | No | Default: `INFO` |
 | `TZ` | No | Timezone for scheduled jobs. Default: `America/Montreal` |
+| `ENABLE_TERMINAL` | No | Set to `true` to enable the interactive SSH shell terminal tab in the UI. Default: `false`. Only enable if all dashboard users are trusted. |
 
 Note: Notification settings (SMTP, Telegram), schedule configuration, and user accounts are managed entirely through the GUI and stored in the database, not in environment variables. This keeps the container config simple and lets you change settings without redeploying.
 
@@ -672,7 +712,7 @@ Use a multi-stage build:
 1. **Stage 1 — Frontend build:**
    - `node:20-alpine`
    - Copy `frontend/package.json`, run `npm install && npm run build`
-   - **Note:** uses `npm install` (not `npm ci`) because no `package-lock.json` is committed. If you commit a lock file, switch back to `npm ci` for reproducible builds.
+   - Uses `npm ci` because `package-lock.json` is committed in `frontend/`.
    - Output goes to `/app/frontend/dist/`
 
 2. **Stage 2 — Python runtime:**

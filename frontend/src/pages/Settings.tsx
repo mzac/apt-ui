@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi } from '@/api/client'
-import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer } from '@/types'
+import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi } from '@/api/client'
+import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
 const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Account', 'Backup'] as const
@@ -1356,20 +1356,35 @@ function CsvImport() {
 }
 
 // ---------------------------------------------------------------------------
-// Infrastructure tab — apt-cacher-ng
+// Infrastructure tab — Tailscale + apt-cacher-ng
 // ---------------------------------------------------------------------------
 function InfrastructureTab() {
   const [servers, setServers] = useState<AptCacheServer[]>([])
   const [form, setForm] = useState({ label: '', host: '', port: '3142' })
   const [formError, setFormError] = useState('')
   const [adding, setAdding] = useState(false)
+  const [tsStatus, setTsStatus] = useState<TailscaleStatus | null>(null)
 
   const load = useCallback(async () => {
     const data = await aptcacheApi.list()
     setServers(data)
   }, [])
 
+  const loadTs = useCallback(async () => {
+    try {
+      const s = await tailscaleApi.status()
+      setTsStatus(s)
+    } catch {
+      setTsStatus({ available: false })
+    }
+  }, [])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    loadTs()
+    const id = setInterval(loadTs, 30_000)
+    return () => clearInterval(id)
+  }, [loadTs])
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -1401,6 +1416,84 @@ function InfrastructureTab() {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* Tailscale status */}
+      <section className="card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-medium text-text-primary">Tailscale</h2>
+            <p className="text-xs text-text-muted mt-0.5">
+              Tailscale VPN sidecar status. Enable via{' '}
+              <span className="font-mono">docker-compose.tailscale.yml</span> overlay.
+            </p>
+          </div>
+          {tsStatus?.available && (
+            <button onClick={loadTs} className="btn-secondary text-xs">Refresh</button>
+          )}
+        </div>
+
+        {!tsStatus && (
+          <p className="text-xs text-text-muted">Loading…</p>
+        )}
+
+        {tsStatus && !tsStatus.available && (
+          <div className="text-xs text-text-muted space-y-1">
+            <p>Tailscale is not running. To enable it:</p>
+            <pre className="bg-bg-tertiary rounded p-2 text-[11px] leading-5 overflow-x-auto">{
+`docker compose -f docker-compose.yml \\
+  -f docker-compose.tailscale.yml up -d`
+            }</pre>
+          </div>
+        )}
+
+        {tsStatus?.available && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-text-muted">State</span>
+              <span className={`flex items-center gap-1 font-medium ${tsStatus.online ? 'text-green' : 'text-amber'}`}>
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${tsStatus.online ? 'bg-green' : 'bg-amber'}`} />
+                {tsStatus.backend_state ?? (tsStatus.online ? 'Running' : 'Offline')}
+              </span>
+            </div>
+
+            {tsStatus.hostname && (
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted">Hostname</span>
+                <span className="font-mono text-text-primary">{tsStatus.hostname}</span>
+              </div>
+            )}
+
+            {tsStatus.ipv4 && (
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted">IPv4</span>
+                <span className="font-mono text-text-primary">{tsStatus.ipv4}</span>
+              </div>
+            )}
+
+            {tsStatus.ipv6 && (
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted">IPv6</span>
+                <span className="font-mono text-text-primary truncate">{tsStatus.ipv6}</span>
+              </div>
+            )}
+
+            {tsStatus.dns_name && (
+              <div className="col-span-2 flex items-center gap-2">
+                <span className="text-text-muted">DNS name</span>
+                <a
+                  href={`https://${tsStatus.dns_name}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-text-primary hover:text-green transition-colors"
+                >
+                  {tsStatus.dns_name}
+                </a>
+                <span className="text-text-muted">(HTTPS if tailscale serve is enabled)</span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       <section className="card p-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>

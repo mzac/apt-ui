@@ -2,7 +2,8 @@
 # Secret — create once with:
 #   kubectl create secret generic apt-dashboard-secrets \
 #     --from-literal=ssh-private-key="$(cat ~/.ssh/id_ed25519)" \
-#     --from-literal=jwt-secret="$(openssl rand -hex 32)"
+#     --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#     --from-literal=ts-authkey="tskey-client-..."  # optional, for Tailscale
 apiVersion: v1
 kind: Secret
 metadata:
@@ -12,6 +13,7 @@ type: Opaque
 stringData:
   ssh-private-key: ""   # fill in or use kubectl create secret
   jwt-secret: ""        # fill in or use kubectl create secret
+  ts-authkey: ""        # Tailscale auth key — only needed if using Tailscale sidecar
 
 ---
 apiVersion: v1
@@ -70,6 +72,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            # Uncomment when using the Tailscale sidecar:
+            # - name: tailscale-socket
+            #   mountPath: /var/run/tailscale
           resources:
             requests:
               memory: "128Mi"
@@ -93,10 +98,72 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+
+        # ---------------------------------------------------------------------------
+        # Tailscale sidecar (optional) — uncomment to join the pod to your tailnet.
+        #
+        # In Kubernetes all containers in a pod share the same network namespace,
+        # so Tailscale handles ingress for the whole pod automatically.
+        # No network_mode override is needed (unlike Docker Compose).
+        #
+        # tailscale-state PVC keeps the node identity across pod restarts so the
+        # same tailnet hostname/IP is preserved. Without it the pod re-registers
+        # as a new node on every restart.
+        # ---------------------------------------------------------------------------
+        # - name: tailscale
+        #   image: tailscale/tailscale:latest
+        #   env:
+        #     - name: TS_AUTHKEY
+        #       valueFrom:
+        #         secretKeyRef:
+        #           name: apt-dashboard-secrets
+        #           key: ts-authkey
+        #     - name: TS_STATE_DIR
+        #       value: /var/lib/tailscale
+        #     - name: TS_HOSTNAME
+        #       value: apt-dashboard
+        #     - name: TS_USERSPACE
+        #       value: "false"
+        #     - name: TS_ACCEPT_DNS
+        #       value: "false"
+        #     # Uncomment to enable tailscale serve (HTTPS on tailnet):
+        #     # - name: TS_SERVE_CONFIG
+        #     #   value: /serve-config.json
+        #   volumeMounts:
+        #     - name: tailscale-state
+        #       mountPath: /var/lib/tailscale
+        #     - name: tailscale-socket
+        #       mountPath: /var/run/tailscale
+        #     # Uncomment to enable tailscale serve (mount the config from a ConfigMap):
+        #     # - name: tailscale-serve-config
+        #     #   mountPath: /serve-config.json
+        #     #   subPath: tailscale-serve.json
+        #   securityContext:
+        #     capabilities:
+        #       add:
+        #         - NET_ADMIN
+        #         - SYS_MODULE
+        #   resources:
+        #     requests:
+        #       memory: "64Mi"
+        #       cpu: "50m"
+        #     limits:
+        #       memory: "128Mi"
+        #       cpu: "100m"
+
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: apt-dashboard-data
+        # Uncomment when using the Tailscale sidecar:
+        # - name: tailscale-state
+        #   persistentVolumeClaim:
+        #     claimName: apt-dashboard-tailscale-state  # create separately, 100Mi is plenty
+        # - name: tailscale-socket
+        #   emptyDir: {}
+        # - name: tailscale-serve-config
+        #   configMap:
+        #     name: apt-dashboard-tailscale-serve  # kubectl create configmap ... --from-file=tailscale-serve.json
 
 ---
 apiVersion: v1

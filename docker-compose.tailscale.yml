@@ -1,0 +1,78 @@
+# Tailscale sidecar overlay for apt-dashboard.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+#
+# Add to .env:
+#   TS_AUTHKEY=tskey-client-...          # from tailscale.com/settings/keys
+#   TS_HOSTNAME=apt-dashboard            # hostname on your tailnet (optional)
+#   TS_EXTRA_ARGS=--advertise-tags=tag:container  # optional extra flags
+#
+# How updates work:
+#   Tailscale is NOT baked into the app image — it runs as a separate container
+#   using tailscale/tailscale:latest. Running `docker compose pull` fetches the
+#   latest Tailscale release independently of the app image.
+#
+# Tailscale serve (HTTPS on tailnet with a Let's Encrypt certificate):
+#   1. Uncomment the TS_SERVE_CONFIG line and the serve-config volume below.
+#   2. The bundled tailscale-serve.json proxies HTTPS :443 → app :8000.
+#      ${TS_CERT_DOMAIN} is resolved at runtime to your node's tailnet DNS name
+#      (e.g. apt-dashboard.your-tailnet.ts.net).
+#
+# Networking:
+#   apt-dashboard joins tailscale's network namespace so traffic flows through
+#   the tailnet. The base compose ports (8111:8000) are cleared below.
+#   To also expose the app on the host IP (bypassing tailscale), uncomment the
+#   ports block on the tailscale service.
+#
+# Userspace networking (no /dev/net/tun required):
+#   Set TS_USERSPACE=true and remove the `devices` and `cap_add` blocks.
+#   Kernel networking (default here) gives better performance and is needed
+#   for subnet routing or exit-node functionality.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: apt-dashboard-tailscale
+    hostname: ${TS_HOSTNAME:-apt-dashboard}
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_HOSTNAME=${TS_HOSTNAME:-apt-dashboard}
+      - TS_USERSPACE=${TS_USERSPACE:-false}
+      - TS_ACCEPT_DNS=${TS_ACCEPT_DNS:-false}
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+      # Uncomment to enable tailscale serve (HTTPS on tailnet):
+      # - TS_SERVE_CONFIG=/serve-config.json
+      - TS_SOCKET=/var/run/tailscale/tailscaled.sock
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - tailscale-socket:/var/run/tailscale
+      # Uncomment to enable tailscale serve:
+      # - ./tailscale-serve.json:/serve-config.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - sys_module
+    restart: unless-stopped
+    # Uncomment to also expose the app on the host IP (in addition to tailnet):
+    # ports:
+    #   - "8111:8000"
+
+  apt-dashboard:
+    # Share tailscale's network namespace — the app is reachable via tailnet.
+    network_mode: service:tailscale
+    # Clear the ports from the base compose file (requires Docker Compose >= 2.22).
+    # If you see a YAML error here, comment out `ports` in docker-compose.yml instead.
+    ports: !reset []
+    # Mount the tailscale socket so the app can display tailscale status in the UI.
+    # Note: must NOT be :ro — connecting to a Unix socket requires write permission.
+    volumes:
+      - tailscale-socket:/var/run/tailscale
+    depends_on:
+      - tailscale
+
+volumes:
+  tailscale-state:
+  tailscale-socket:

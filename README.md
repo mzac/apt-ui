@@ -20,6 +20,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **OS & virt detection** — detects Proxmox VE (via `pveversion`), Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
 - **Auto security updates** — per-server toggle to enable/disable `unattended-upgrades`; current state detected on every check and shown as a shield badge on each server card (green=on, amber=off/not installed); enable/disable streams live SSH output to an inline terminal in the server edit form; fleet summary bar includes a "Sec off" filter to quickly find unprotected hosts
 - **apt-cacher-ng monitoring** — add your local apt cache server(s) in Settings → Infrastructure; compact cards in the fleet summary bar show hit rate %, mini hit bar, hits/misses counts, and data served
+- **Tailscale integration** — optional sidecar that joins the container to your tailnet; supports `tailscale serve` for automatic HTTPS with a Let's Encrypt cert; connection status (IP, hostname, DNS name) visible in Settings → Infrastructure
 - **Background job indicator** — bell icon in the top nav shows running/completed jobs (upgrades, checks) with a spinner; jobs auto-dismiss a few seconds after completion; click to return to a running job
 - **Dark industrial UI** — dense, information-rich dashboard designed for ops use
 
@@ -152,6 +153,59 @@ docker compose exec apt-dashboard python -m backend.cli create-user --username z
 
 # List all users
 docker compose exec apt-dashboard python -m backend.cli list-users
+```
+
+---
+
+## Tailscale
+
+The dashboard can join your [Tailscale](https://tailscale.com) tailnet via an optional sidecar container. This gives you:
+
+- Secure remote access without exposing a port to the internet
+- Automatic HTTPS with a Let's Encrypt certificate via `tailscale serve`
+- Connection status (tailnet IP, hostname, DNS name) visible in Settings → Infrastructure
+- Works great in Kubernetes — the sidecar joins the pod to the tailnet
+
+### Enable Tailscale (Docker Compose)
+
+Add to your `.env`:
+
+```
+TS_AUTHKEY=tskey-client-...   # generate at tailscale.com/settings/keys
+TS_HOSTNAME=apt-dashboard     # how it appears on your tailnet
+```
+
+Then run with the overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+```
+
+**How updates work:** Tailscale is NOT baked into the app image. It runs as a separate `tailscale/tailscale:latest` container. Running `docker compose pull` updates it independently of the app — no rebuild needed.
+
+### Enable tailscale serve (HTTPS on your tailnet)
+
+`tailscale serve` proxies HTTPS `:443` → app `:8000` and provisions a Let's Encrypt cert automatically for your node's DNS name (e.g. `apt-dashboard.your-tailnet.ts.net`).
+
+In `docker-compose.tailscale.yml`, uncomment these two lines under the `tailscale` service:
+
+```yaml
+- TS_SERVE_CONFIG=/serve-config.json
+- ./tailscale-serve.json:/serve-config.json:ro
+```
+
+The bundled `tailscale-serve.json` uses `${TS_CERT_DOMAIN}` which the Tailscale container resolves to your node's DNS name at runtime. No manual hostname configuration needed.
+
+### Kubernetes sidecar
+
+The manifest at [`k8s/deployment.yaml`](k8s/deployment.yaml) contains a ready-to-uncomment Tailscale sidecar block. In Kubernetes all containers in a pod share the same network namespace, so no `network_mode` tricks are needed — just uncomment the sidecar container and the associated volumes.
+
+```bash
+# Add the auth key to your existing secret
+kubectl create secret generic apt-dashboard-secrets \
+  --from-literal=ssh-private-key="$(cat ~/.ssh/id_rsa)" \
+  --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+  --from-literal=ts-authkey="tskey-client-..."
 ```
 
 ---

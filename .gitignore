@@ -11,3 +11,5 @@ frontend/node_modules/
 frontend/dist/
 .env
 .env.local
+docker-compose.local.yml
+build-run-local.sh

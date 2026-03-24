@@ -211,3 +211,14 @@ export interface AptCacheStats extends AptCacheServer {
   data_served_recent: string
   daily: AptCacheDailyRow[]
 }
+
+export interface TailscaleStatus {
+  available: boolean
+  backend_state?: string
+  tailscale_ips?: string[]
+  ipv4?: string | null
+  ipv6?: string | null
+  hostname?: string
+  dns_name?: string
+  online?: boolean
+}
