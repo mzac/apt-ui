@@ -67,7 +67,7 @@ function ServersTab() {
   const [showAddServer, setShowAddServer] = useState(false)
   const [showAddGroup, setShowAddGroup] = useState(false)
   const [showAddTag, setShowAddTag] = useState(false)
-  const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[], ssh_private_key: '' })
+  const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[], ssh_private_key: '', notes: '' })
   const [showAddSshKey, setShowAddSshKey] = useState(false)
   const [groupForm, setGroupForm] = useState({ name: '', color: '#3b82f6' })
   const [tagForm, setTagForm] = useState({ name: '', color: '#6366f1' })
@@ -85,6 +85,7 @@ function ServersTab() {
     is_enabled: true,
     tagIds: [] as number[],
     tagInput: '',
+    notes: '',
   })
   const [editTagDropdown, setEditTagDropdown] = useState(false)
   const [editError, setEditError] = useState('')
@@ -116,6 +117,7 @@ function ServersTab() {
       is_enabled: s.is_enabled,
       tagIds: (s.tags ?? []).map(t => t.id),
       tagInput: '',
+      notes: s.notes ?? '',
     })
     setEditTagDropdown(false)
     setEditError('')
@@ -136,6 +138,7 @@ function ServersTab() {
         group_ids: editForm.group_ids,
         is_enabled: editForm.is_enabled,
         tag_ids: editForm.tagIds,
+        notes: editForm.notes.trim() || undefined,
       })
       setEditingServer(null)
       load()
@@ -196,8 +199,9 @@ function ServersTab() {
         group_ids: form.groupIds,
         tag_ids: form.tagIds,
         ssh_private_key: form.ssh_private_key.trim() || undefined,
+        notes: form.notes.trim() || undefined,
       })
-      setForm({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [], tagIds: [], ssh_private_key: '' })
+      setForm({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [], tagIds: [], ssh_private_key: '', notes: '' })
       setShowAddSshKey(false)
       setShowAddServer(false)
       load()
@@ -556,6 +560,15 @@ function ServersTab() {
                 </div>
               )}
             </div>
+            <div className="col-span-full">
+              <label className="label">Notes <span className="text-text-muted font-normal">(optional)</span></label>
+              <textarea
+                className="input w-full text-xs h-16 resize-y"
+                placeholder="Free-text notes about this server…"
+                value={form.notes}
+                onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              />
+            </div>
             {formError && <p className="col-span-full text-red text-sm">{formError}</p>}
             <div className="col-span-full flex gap-2">
               <button type="submit" className="btn-primary">Add Server</button>
@@ -700,6 +713,15 @@ function ServersTab() {
                         </div>
                       )}
                       {editError && <span className="text-red text-xs">{editError}</span>}
+                      <div className="pt-1">
+                        <label className="text-xs text-text-muted">Notes</label>
+                        <textarea
+                          className="input w-full text-xs py-1 h-14 resize-y mt-0.5"
+                          placeholder="Free-text notes…"
+                          value={editForm.notes}
+                          onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+                        />
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -775,6 +797,75 @@ const CRON_PRESETS = [
   { label: 'Weekly Mon 6 AM', value: '0 6 * * 1' },
 ]
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function describeCronField(val: string, singular: string, plural: string, names?: string[]): string {
+  if (val === '*') return `every ${singular}`
+  if (val.startsWith('*/')) {
+    const n = parseInt(val.slice(2))
+    return `every ${n} ${n === 1 ? singular : plural}`
+  }
+  const parts = val.split(',').map(p => {
+    if (p.includes('-')) return p
+    const n = parseInt(p)
+    return names ? (names[n] ?? p) : p
+  })
+  return parts.join(', ')
+}
+
+function describeCron(expr: string): string | null {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return null
+  const [min, hour, dom, month, dow] = parts
+  const validPart = (v: string) => /^(\*|(\*\/\d+)|\d+(,\d+)*(-\d+)?)$/.test(v)
+  if (!parts.every(validPart)) return null
+
+  const minuteDesc = describeCronField(min, 'minute', 'minutes')
+  const hourDesc = describeCronField(hour, 'hour', 'hours')
+  const domDesc = describeCronField(dom, 'day', 'days')
+  const monthDesc = describeCronField(month, 'month', 'months', MONTHS)
+  const dowDesc = describeCronField(dow, 'day', 'days', WEEKDAYS)
+
+  if (min !== '*' && hour !== '*' && dom === '*' && month === '*' && dow === '*') {
+    const h = parseInt(hour)
+    const m = parseInt(min)
+    if (!isNaN(h) && !isNaN(m)) {
+      return `Daily at ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+    }
+  }
+  if (min !== '*' && hour !== '*' && dom === '*' && month === '*' && dow !== '*') {
+    const h = parseInt(hour)
+    const m = parseInt(min)
+    if (!isNaN(h) && !isNaN(m)) {
+      return `Every ${dowDesc} at ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+    }
+  }
+  if (hour.startsWith('*/') && min !== '*' && dom === '*' && month === '*' && dow === '*') {
+    return `Every ${describeCronField(hour, 'hour', 'hours')} at minute ${min}`
+  }
+
+  return `At ${minuteDesc} past ${hourDesc}, ${domDesc} of ${monthDesc}, ${dowDesc}`
+}
+
+function CronInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const desc = describeCron(value)
+  const invalid = value.trim() !== '' && desc === null
+  return (
+    <div className="space-y-1">
+      <input
+        className={`input mb-0 ${invalid ? 'border-red/60 focus:border-red' : ''}`}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="0 6 * * *"
+        spellCheck={false}
+      />
+      {invalid && <p className="text-xs text-red">Invalid cron expression — must be 5 fields (min hour dom month dow)</p>}
+      {desc && <p className="text-xs text-green font-mono">{desc}</p>}
+    </div>
+  )
+}
+
 function ScheduleTab() {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const [form, setForm] = useState<Partial<ScheduleConfig>>({})
@@ -804,8 +895,8 @@ function ScheduleTab() {
         </div>
         <div>
           <label className="label">Cron expression</label>
-          <input className="input mb-2" value={form.check_cron ?? ''} onChange={e => setForm(f => ({ ...f, check_cron: e.target.value }))} />
-          <div className="flex flex-wrap gap-1">
+          <CronInput value={form.check_cron ?? ''} onChange={v => setForm(f => ({ ...f, check_cron: v }))} />
+          <div className="flex flex-wrap gap-1 mt-2">
             {CRON_PRESETS.map(p => (
               <button key={p.value} type="button" className="btn-secondary text-xs py-0.5" onClick={() => setForm(f => ({ ...f, check_cron: p.value }))}>{p.label}</button>
             ))}
@@ -876,7 +967,7 @@ function PreferencesTab() {
           <div className="pl-6 space-y-3">
             <div>
               <label className="label">Auto-upgrade cron</label>
-              <input className="input" value={form.auto_upgrade_cron ?? ''} onChange={e => setForm(f => ({ ...f, auto_upgrade_cron: e.target.value }))} />
+              <CronInput value={form.auto_upgrade_cron ?? ''} onChange={v => setForm(f => ({ ...f, auto_upgrade_cron: v }))} />
             </div>
             <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
               <input type="checkbox" checked={form.allow_phased_on_auto ?? false} onChange={e => setForm(f => ({ ...f, allow_phased_on_auto: e.target.checked }))} className="w-4 h-4 accent-amber" />
@@ -1052,6 +1143,31 @@ function NotificationsTab() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+      </section>
+
+      {/* Webhook */}
+      <section className="card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-text-primary">Outbound Webhook</h2>
+          <input type="checkbox" checked={form.webhook_enabled ?? false} onChange={e => setForm(f => ({ ...f, webhook_enabled: e.target.checked }))} className="w-4 h-4 accent-green" />
+        </div>
+        {form.webhook_enabled && (
+          <div className="space-y-3">
+            <p className="text-xs text-text-muted">
+              POST JSON to a URL for each event (daily summary, upgrade complete, errors).
+              Events: <span className="font-mono text-cyan">daily_summary</span>, <span className="font-mono text-cyan">upgrade_complete</span>, <span className="font-mono text-cyan">upgrade_failed</span>, <span className="font-mono text-cyan">upgrade_all_complete</span>.
+            </p>
+            <div>
+              <label className="label">Webhook URL</label>
+              <input className="input" type="url" placeholder="https://…" value={form.webhook_url ?? ''} onChange={e => setForm(f => ({ ...f, webhook_url: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">Secret (optional — HMAC-SHA256 signing)</label>
+              <input type="password" className="input" placeholder="unchanged" value={form.webhook_secret ?? ''} onChange={e => setForm(f => ({ ...f, webhook_secret: e.target.value }))} />
+              <p className="text-xs text-text-muted mt-1">If set, each request includes an <span className="font-mono">X-Hub-Signature-256</span> header.</p>
+            </div>
           </div>
         )}
       </section>

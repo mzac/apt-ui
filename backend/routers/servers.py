@@ -160,6 +160,11 @@ async def _build_server_out(
         uptime_seconds=stats_row.uptime_seconds if stats_row else None,
         virt_type=stats_row.virt_type if stats_row else None,
         auto_security_updates=stats_row.auto_security_updates if stats_row else None,
+        eeprom_update_available=stats_row.eeprom_update_available if stats_row else None,
+        eeprom_current_version=stats_row.eeprom_current_version if stats_row else None,
+        eeprom_latest_version=stats_row.eeprom_latest_version if stats_row else None,
+        last_apt_update=stats_row.last_apt_update if stats_row else None,
+        notes=server.notes,
     )
 
 
@@ -314,6 +319,7 @@ async def create_server(
         ssh_port=body.ssh_port,
         group_id=body.group_id,
         ssh_private_key_enc=ssh_key_enc,
+        notes=body.notes,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -403,6 +409,8 @@ async def update_server(
         server.group_id = None
     if body.is_enabled is not None:
         server.is_enabled = body.is_enabled
+    if "notes" in body.model_fields_set:
+        server.notes = body.notes
     if body.ssh_private_key is not None:
         if body.ssh_private_key.strip():
             from backend.crypto import encrypt

@@ -64,6 +64,11 @@ export interface Server {
   uptime_seconds: number | null
   virt_type: string | null
   auto_security_updates: string | null  // not_installed / disabled / enabled
+  eeprom_update_available: string | null  // up_to_date / update_available / update_staged / error / frozen
+  eeprom_current_version: string | null   // unix timestamp string
+  eeprom_latest_version: string | null    // unix timestamp string
+  last_apt_update: string | null          // ISO datetime when apt cache was last refreshed on the server
+  notes: string | null                    // free-text admin notes
 }
 
 export interface PackageInfo {
@@ -154,6 +159,9 @@ export interface NotificationConfig {
   notify_upgrade_telegram: boolean
   notify_error_email: boolean
   notify_error_telegram: boolean
+  webhook_enabled: boolean
+  webhook_url: string | null
+  webhook_secret: string | null
 }
 
 export interface TemplatePackage {

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useTheme } from '@/hooks/useTheme'
 import { servers as serversApi } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
 
@@ -58,6 +59,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuthStore()
   const { pathname } = useLocation()
   const { jobs, unseenCount, markSeen, updateJob } = useJobStore()
+  const { theme, toggle: toggleTheme } = useTheme()
   const [bellOpen, setBellOpen] = useState(false)
   const bellRef = useRef<HTMLDivElement>(null)
   const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -185,6 +187,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </div>
           )}
         </div>
+
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors rounded shrink-0"
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
 
         {user && (
           <div className="flex items-center gap-2 text-sm shrink-0">

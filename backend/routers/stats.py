@@ -80,6 +80,8 @@ async def fleet_overview(
 async def global_history(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=200),
+    server_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -87,15 +89,21 @@ async def global_history(
     from backend.models import Server
 
     offset = (page - 1) * per_page
+    base_q = select(UpdateHistory)
+    count_q = select(func.count()).select_from(UpdateHistory)
+    if server_id is not None:
+        base_q = base_q.where(UpdateHistory.server_id == server_id)
+        count_q = count_q.where(UpdateHistory.server_id == server_id)
+    if status is not None:
+        base_q = base_q.where(UpdateHistory.status == status)
+        count_q = count_q.where(UpdateHistory.status == status)
+
     result = await db.execute(
-        select(UpdateHistory)
-        .order_by(UpdateHistory.started_at.desc())
-        .offset(offset)
-        .limit(per_page)
+        base_q.order_by(UpdateHistory.started_at.desc()).offset(offset).limit(per_page)
     )
     rows = result.scalars().all()
 
-    total_result = await db.execute(select(func.count()).select_from(UpdateHistory))
+    total_result = await db.execute(count_q)
     total = total_result.scalar_one()
 
     # Build server name map

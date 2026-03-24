@@ -130,6 +130,25 @@ async def _gather_stats(server: Server) -> dict:
             "  echo disabled; "
             "fi"
         ),
+        # EEPROM firmware check (Raspberry Pi 4 / Pi 400 / CM4 / Pi 5 only).
+        # Reads the model string from the device tree (strips NUL bytes) or cpuinfo,
+        # then only runs rpi-eeprom-update on EEPROM-capable models.
+        # Outputs the full rpi-eeprom-update text followed by EEPROM_EXIT:<code>.
+        # Exit codes: 0=up_to_date  1=update_available  2=error  3=frozen
+        "eeprom": (
+            "model=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\\0' || "
+            "  grep '^Model' /proc/cpuinfo 2>/dev/null | sed 's/.*: //'); "
+            "if echo \"$model\" | grep -qE 'Raspberry Pi (4|400|5)|Compute Module 4'; then "
+            "  if command -v rpi-eeprom-update > /dev/null 2>&1; then "
+            "    sudo rpi-eeprom-update 2>&1; "
+            "    echo \"EEPROM_EXIT:$?\"; "
+            "  else "
+            "    echo 'EEPROM_EXIT:not_available'; "
+            "  fi; "
+            "else "
+            "  echo 'EEPROM_EXIT:not_applicable'; "
+            "fi"
+        ),
     }
     tasks = {k: run_command(server, v, timeout=30) for k, v in commands.items()}
     results = {k: await t for k, t in tasks.items()}
@@ -203,6 +222,25 @@ async def _gather_stats(server: Server) -> dict:
     auto_sec_raw = results["auto_sec"].stdout.strip().splitlines()[0].lower() if results.get("auto_sec") and results["auto_sec"].stdout.strip() else ""
     auto_security_updates = auto_sec_raw if auto_sec_raw in ("not_installed", "disabled", "enabled") else None
 
+    # EEPROM firmware check (Pi 4 / Pi 400 / CM4 / Pi 5 only)
+    eeprom_update_available = None
+    eeprom_current_version = None
+    eeprom_latest_version = None
+    eeprom_raw = results.get("eeprom")
+    if eeprom_raw and eeprom_raw.stdout:
+        output = eeprom_raw.stdout
+        exit_match = re.search(r'EEPROM_EXIT:(\S+)', output)
+        exit_val = exit_match.group(1) if exit_match else None
+        _exit_map = {"0": "up_to_date", "1": "update_available", "2": "error", "3": "frozen"}
+        eeprom_update_available = _exit_map.get(exit_val)  # None if not_applicable / not_available
+        if eeprom_update_available in ("up_to_date", "update_available", "frozen"):
+            cur = re.search(r'CURRENT:.*?\((\d+)\)', output)
+            lat = re.search(r'LATEST:.*?\((\d+)\)', output)
+            if cur:
+                eeprom_current_version = cur.group(1)
+            if lat:
+                eeprom_latest_version = lat.group(1)
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -214,6 +252,9 @@ async def _gather_stats(server: Server) -> dict:
         "mem_total_mb": mem_total_mb,
         "virt_type": virt_type,
         "auto_security_updates": auto_security_updates,
+        "eeprom_update_available": eeprom_update_available,
+        "eeprom_current_version": eeprom_current_version,
+        "eeprom_latest_version": eeprom_latest_version,
     }
 
 
@@ -318,6 +359,9 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         mem_total_mb=stats.get("mem_total_mb"),
         virt_type=stats.get("virt_type"),
         auto_security_updates=stats.get("auto_security_updates"),
+        eeprom_update_available=stats.get("eeprom_update_available"),
+        eeprom_current_version=stats.get("eeprom_current_version"),
+        eeprom_latest_version=stats.get("eeprom_latest_version"),
     )
     db.add(stat_row)
 

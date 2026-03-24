@@ -16,14 +16,19 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Templates** — define named package sets and apply them to one or more hosts at once (useful for provisioning)
 - **Scheduled checks** — configurable cron schedule for automatic update checks
 - **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
-- **Notifications** — daily summary + per-event alerts via email (SMTP) and Telegram, with per-channel toggles
+- **Notifications** — daily summary + per-event alerts via email (SMTP), Telegram, and outbound webhooks (HMAC-SHA256 signed), with per-channel toggles
 - **Server groups** — colour-coded grouping; servers can belong to multiple groups
 - **Tags** — freeform colour-coded tags per server; auto-tagging by OS and machine type supported
 - **OS & virt detection** — detects Proxmox VE (via `pveversion`), Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
 - **Auto security updates** — per-server toggle to enable/disable `unattended-upgrades`; current state detected on every check and shown as a shield badge on each server card (green=on, amber=off/not installed); enable/disable streams live SSH output to an inline terminal in the server edit form; fleet summary bar includes a "Sec off" filter to quickly find unprotected hosts
+- **Raspberry Pi EEPROM firmware** — detects EEPROM firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5 during every check; amber badge on dashboard cards when update available; apply with one click from the server edit form (streams live output, stages update for next reboot)
 - **apt-cacher-ng monitoring** — add your local apt cache server(s) in Settings → Infrastructure; compact cards in the fleet summary bar show hit rate %, mini hit bar, hits/misses counts, and data served
 - **Tailscale integration** — optional sidecar that joins the container to your tailnet; supports `tailscale serve` for automatic HTTPS with a Let's Encrypt cert; connection status (IP, hostname, DNS name) visible in Settings → Infrastructure
 - **Background job indicator** — bell icon in the top nav shows running/completed jobs (upgrades, checks) with a spinner; jobs auto-dismiss a few seconds after completion; click to return to a running job
+- **Upgrade dry-run preview** — preview what `apt-get upgrade` would do (packages, version deltas) before committing, via a collapsible panel in the upgrade UI
+- **Server notes** — free-text notes field per server, visible in the server detail header
+- **History filtering** — filter the fleet-wide upgrade history by server and/or status
+- **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
 - **Dark industrial UI** — dense, information-rich dashboard designed for ops use
 
 ---

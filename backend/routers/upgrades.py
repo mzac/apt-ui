@@ -282,6 +282,134 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# EEPROM firmware update (Raspberry Pi 4 / Pi 400 / CM4 / Pi 5)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/eeprom-update/{server_id}")
+async def ws_eeprom_update(websocket: WebSocket, server_id: int):
+    """Stage an EEPROM firmware update via `rpi-eeprom-update -a`.
+    The update is applied on next reboot — no immediate system change.
+    """
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        sudo = "" if server.username == "root" else "sudo "
+        cmd = f"{sudo}rpi-eeprom-update -a"
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            from backend.ssh_manager import run_command_stream
+            await send_fn({"type": "status", "data": "connecting"})
+            result = await run_command_stream(server, cmd, send_fn)
+            success = result.exit_code == 0
+
+            if success:
+                # Mark the update as staged in the latest stats row.
+                # The EEPROM is not actually updated until the Pi reboots.
+                from backend.models import ServerStats
+                from sqlalchemy import select as _sel
+                stats_res = await db.execute(
+                    _sel(ServerStats)
+                    .where(ServerStats.server_id == server_id)
+                    .order_by(ServerStats.recorded_at.desc())
+                    .limit(1)
+                )
+                stats_row = stats_res.scalar_one_or_none()
+                if stats_row:
+                    stats_row.eeprom_update_available = "update_staged"
+                    await db.commit()
+
+            await send_fn({"type": "complete", "data": {"success": success}})
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Dry-run preview — shows what would be upgraded without actually upgrading
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/dry-run/{server_id}")
+async def ws_dry_run(websocket: WebSocket, server_id: int):
+    """Run apt-get upgrade/dist-upgrade --dry-run and stream the output."""
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+    try:
+        params = await websocket.receive_json()
+    except Exception:
+        await websocket.close()
+        return
+
+    action = params.get("action", "upgrade")
+    if action not in ("upgrade", "dist-upgrade"):
+        action = "upgrade"
+
+    allow_phased = params.get("allow_phased", False)
+    phased_flag = " -o APT::Get::Always-Include-Phased-Updates=true" if allow_phased else ""
+    sudo = "" if server.username == "root" else "sudo "
+    cmd = f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get {action} --dry-run{phased_flag} 2>&1"
+
+    async def send_fn(msg: dict):
+        try:
+            await websocket.send_json(msg)
+        except Exception:
+            pass
+
+    try:
+        from backend.ssh_manager import run_command_stream
+        await send_fn({"type": "status", "data": "running_dry_run"})
+        result = await run_command_stream(server, cmd, send_fn)
+        await send_fn({"type": "complete", "data": {"success": result.exit_code == 0}})
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        await send_fn({"type": "error", "data": str(exc)})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # REST trigger endpoints (return immediately, upgrade runs in background)
 # ---------------------------------------------------------------------------
 

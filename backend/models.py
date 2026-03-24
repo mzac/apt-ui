@@ -84,6 +84,7 @@ class Server(Base):
     os_info: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of tag strings (legacy)
     ssh_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted PEM key
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text admin notes
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
@@ -160,6 +161,9 @@ class ServerStats(Base):
     mem_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     virt_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     auto_security_updates: Mapped[str | None] = mapped_column(Text, nullable=True)  # not_installed / disabled / enabled
+    eeprom_update_available: Mapped[str | None] = mapped_column(Text, nullable=True)  # up_to_date / update_available / update_staged / error / frozen
+    eeprom_current_version: Mapped[str | None] = mapped_column(Text, nullable=True)  # unix timestamp string of current bootloader version
+    eeprom_latest_version: Mapped[str | None] = mapped_column(Text, nullable=True)   # unix timestamp string of latest available version
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 
@@ -189,6 +193,9 @@ class NotificationConfig(Base):
     notify_upgrade_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_error_email: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_error_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # optional HMAC-SHA256 secret
 
 
 class ScheduleConfig(Base):

@@ -83,12 +83,14 @@ export const servers = {
     tag_ids?: number[]
     tag_names?: string[]
     ssh_private_key?: string
+    notes?: string
   }) => post<Server>('/api/servers', data),
   update: (id: number, data: Partial<Server> & {
     tag_ids?: number[]
     tag_names?: string[]
     group_ids?: number[]
     ssh_private_key?: string
+    notes?: string
   }) => put<Server>(`/api/servers/${id}`, data),
   clearSshKey: (id: number) => del(`/api/servers/${id}/ssh-key`),
   remove: (id: number) => del(`/api/servers/${id}`),
@@ -159,8 +161,12 @@ export const templates = {
 
 export const stats = {
   overview: () => get<FleetOverview>('/api/stats/overview'),
-  globalHistory: (page = 1) =>
-    get<{ total: number; page: number; per_page: number; items: (UpdateHistory & { server_name: string })[] }>(`/api/history?page=${page}`),
+  globalHistory: (page = 1, serverId?: number, status?: string) => {
+    const params = new URLSearchParams({ page: String(page) })
+    if (serverId !== undefined) params.set('server_id', String(serverId))
+    if (status) params.set('status', status)
+    return get<{ total: number; page: number; per_page: number; items: (UpdateHistory & { server_name: string })[] }>(`/api/history?${params}`)
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +305,32 @@ export function createInstallWebSocket(
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify({ packages })) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createDryRunWebSocket(
+  serverId: number,
+  params: { action: string; allow_phased: boolean },
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/dry-run/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params)) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createEepromUpdateWebSocket(
+  serverId: number,
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/eeprom-update/${serverId}`
+  const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()
   return ws

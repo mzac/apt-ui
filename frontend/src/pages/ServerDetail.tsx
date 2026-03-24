@@ -3,7 +3,7 @@ import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket } from '@/api/client'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket } from '@/api/client'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
@@ -181,6 +181,16 @@ export default function ServerDetail() {
           {c.held_packages > 0 && <span className="text-blue">{c.held_packages} held packages</span>}
           {c.autoremove_count > 0 && <span className="text-amber">{c.autoremove_count} auto-removable</span>}
           {c.checked_at && <span>checked {new Date(c.checked_at).toLocaleString()}</span>}
+          {server.last_apt_update && (
+            <span title="Last time apt-get update was run on this server">
+              apt index: {new Date(server.last_apt_update).toLocaleString()}
+            </span>
+          )}
+        </div>
+      )}
+      {server.notes && (
+        <div className="text-xs text-text-muted font-mono bg-surface-2 border border-border rounded px-3 py-2 whitespace-pre-wrap">
+          📝 {server.notes}
         </div>
       )}
 
@@ -236,12 +246,18 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
     is_enabled: server.is_enabled,
     group_ids: (server.groups || []).map(g => g.id),
     tag_ids: (server.tags || []).map(t => t.id),
+    notes: server.notes ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [autoSecState, setAutoSecState] = useState(server.auto_security_updates)
   const [autoSecLines, setAutoSecLines] = useState<string[]>([])
   const [autoSecRunning, setAutoSecRunning] = useState(false)
+  const [eepromState, setEepromState] = useState(server.eeprom_update_available)
+  const [eepromLines, setEepromLines] = useState<string[]>([])
+  const [eepromRunning, setEepromRunning] = useState(false)
+  const eepromWsRef = useRef<WebSocket | null>(null)
+  const eepromTermRef = useRef<HTMLDivElement | null>(null)
   const autoSecTermRef = useRef<HTMLDivElement>(null)
   const autoSecWsRef = useRef<WebSocket | null>(null)
 
@@ -258,6 +274,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       is_enabled: server.is_enabled,
       group_ids: (server.groups || []).map(g => g.id),
       tag_ids: (server.tags || []).map(t => t.id),
+      notes: server.notes ?? '',
     })
     setAutoSecState(server.auto_security_updates)
   }, [server])
@@ -289,6 +306,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         group_ids: editForm.group_ids,
         is_enabled: editForm.is_enabled,
         tag_ids: editForm.tag_ids,
+        notes: editForm.notes || undefined,
       })
       onSaved()
     } catch (err: unknown) {
@@ -319,6 +337,29 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       }, 0)
     }, () => setAutoSecRunning(false))
     autoSecWsRef.current = ws
+  }
+
+  function handleEepromUpdate() {
+    setEepromLines([])
+    setEepromRunning(true)
+    eepromWsRef.current?.close()
+    const ws = createEepromUpdateWebSocket(server.id, (msg) => {
+      if (msg.type === 'output') {
+        setEepromLines(l => applyChunk(l, msg.data as string))
+      } else if (msg.type === 'status') {
+        setEepromLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+      } else if (msg.type === 'error') {
+        setEepromLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+      } else if (msg.type === 'complete') {
+        const d = msg.data as { success: boolean }
+        if (d.success) setEepromState('update_staged')
+        setEepromLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Update staged — reboot to apply' : '✗ Failed'}\x1b[0m\n`])
+      }
+      setTimeout(() => {
+        if (eepromTermRef.current) eepromTermRef.current.scrollTop = eepromTermRef.current.scrollHeight
+      }, 0)
+    }, () => setEepromRunning(false))
+    eepromWsRef.current = ws
   }
 
   return (
@@ -404,6 +445,17 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         </label>
       </div>
 
+      <div>
+        <label className="label">Notes</label>
+        <textarea
+          className="input w-full text-sm resize-y"
+          rows={2}
+          placeholder="Optional notes about this server…"
+          value={editForm.notes}
+          onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+        />
+      </div>
+
       {/* Auto security updates */}
       {autoSecState !== null && (
         <div className="border border-border rounded p-3 space-y-2">
@@ -439,6 +491,52 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
                 <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
               ))}
               {autoSecRunning && <span className="text-cyan animate-pulse">▋</span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* EEPROM firmware update (Raspberry Pi 4/400/CM4/5 only) */}
+      {eepromState !== null && (
+        <div className="border border-border rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-xs text-text-muted uppercase tracking-wide">EEPROM Firmware</span>
+              <div className="flex items-center gap-2 mt-0.5">
+                {eepromState === 'up_to_date' && <span className="text-xs text-green font-mono">✓ up to date</span>}
+                {eepromState === 'update_available' && <span className="text-xs text-amber font-mono">⬆ update available</span>}
+                {eepromState === 'update_staged' && <span className="text-xs text-blue font-mono">⬆ staged — reboot to apply</span>}
+                {eepromState === 'frozen' && <span className="text-xs text-text-muted font-mono">frozen</span>}
+                {eepromState === 'error' && <span className="text-xs text-red font-mono">error</span>}
+                {server.eeprom_current_version && (
+                  <span className="text-xs text-text-muted font-mono">
+                    current: {new Date(parseInt(server.eeprom_current_version) * 1000).toLocaleDateString()}
+                    {server.eeprom_latest_version && server.eeprom_latest_version !== server.eeprom_current_version && (
+                      <> → latest: {new Date(parseInt(server.eeprom_latest_version) * 1000).toLocaleDateString()}</>
+                    )}
+                  </span>
+                )}
+              </div>
+            </div>
+            {eepromState === 'update_available' && (
+              <button onClick={handleEepromUpdate} disabled={eepromRunning} className="btn-primary text-xs py-0.5">
+                {eepromRunning ? '…' : 'Apply Update'}
+              </button>
+            )}
+          </div>
+          {eepromState === 'update_staged' && (
+            <p className="text-xs text-blue font-mono">Reboot required to complete firmware update.</p>
+          )}
+          {eepromLines.length > 0 && (
+            <div
+              ref={eepromTermRef}
+              className="bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary overflow-y-auto"
+              style={{ maxHeight: '200px' }}
+            >
+              {eepromLines.map((line, i) => (
+                <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+              ))}
+              {eepromRunning && <span className="text-cyan animate-pulse">▋</span>}
             </div>
           )}
         </div>
@@ -955,14 +1053,36 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [lines, setLines] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [done, setDone] = useState(false)
+  const [dryRunLines, setDryRunLines] = useState<string[]>([])
+  const [dryRunning, setDryRunning] = useState(false)
+  const [showDryRun, setShowDryRun] = useState(false)
+  const dryWsRef = useRef<WebSocket | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
+  const dryTermRef = useRef<HTMLDivElement>(null)
   const { addJob, updateJob } = useJobStore()
 
-  useEffect(() => () => { wsRef.current?.close() }, [])
+  useEffect(() => () => { wsRef.current?.close(); dryWsRef.current?.close() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [lines])
+  useEffect(() => {
+    if (dryTermRef.current) dryTermRef.current.scrollTop = dryTermRef.current.scrollHeight
+  }, [dryRunLines])
+
+  function runDryRun() {
+    setDryRunLines([])
+    setDryRunning(true)
+    setShowDryRun(true)
+    dryWsRef.current?.close()
+    const ws = createDryRunWebSocket(serverId, { action, allow_phased: allowPhased }, (msg) => {
+      if (msg.type === 'output') setDryRunLines(l => applyChunk(l, msg.data as string))
+      else if (msg.type === 'status') setDryRunLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+      else if (msg.type === 'error') setDryRunLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+      else if (msg.type === 'complete') setDryRunLines(l => [...l, `\x1b[32m\n[dry-run complete]\x1b[0m\n`])
+    }, () => setDryRunning(false))
+    dryWsRef.current = ws
+  }
 
   function runAptUpdate() {
     setLines([])
@@ -1048,6 +1168,14 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               apt-get update
             </button>
             <button
+              onClick={runDryRun}
+              disabled={dryRunning || !hasUpdates}
+              className="btn-secondary"
+              title="Preview what would be upgraded without making any changes"
+            >
+              {dryRunning ? 'Previewing…' : 'Preview'}
+            </button>
+            <button
               onClick={startUpgrade}
               disabled={!hasUpdates}
               className="btn-amber"
@@ -1055,6 +1183,26 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
             >
               Run Upgrade
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Dry-run output */}
+      {showDryRun && dryRunLines.length > 0 && (
+        <div className="card p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-text-muted uppercase tracking-wide">Dry-run preview</span>
+            <button onClick={() => setShowDryRun(false)} className="text-text-muted hover:text-text-primary text-xs">✕ close</button>
+          </div>
+          <div
+            ref={dryTermRef}
+            className="bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary overflow-y-auto"
+            style={{ maxHeight: '300px' }}
+          >
+            {dryRunLines.map((line, i) => (
+              <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+            ))}
+            {dryRunning && <span className="text-cyan animate-pulse">▋</span>}
           </div>
         </div>
       )}

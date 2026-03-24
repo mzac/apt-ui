@@ -75,6 +75,9 @@ Examples from the codebase:
 "ALTER TABLE schedule_config ADD COLUMN conffile_action TEXT DEFAULT 'confdef_confold'",
 "ALTER TABLE server_stats ADD COLUMN auto_security_updates TEXT",
 "ALTER TABLE schedule_config ADD COLUMN run_apt_update_before_upgrade BOOLEAN DEFAULT 0",
+"ALTER TABLE server_stats ADD COLUMN eeprom_update_available TEXT",
+"ALTER TABLE server_stats ADD COLUMN eeprom_current_version TEXT",
+"ALTER TABLE server_stats ADD COLUMN eeprom_latest_version TEXT",
 ```
 
 Nullable columns with no default use just the type (e.g. `TEXT`, `INTEGER`) with no `DEFAULT` clause — SQLite will fill existing rows with `NULL`.
@@ -115,19 +118,31 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - `virt_type` stored in `server_stats`; OS detection uses `pveversion` (not `/etc/pve/pve-release`) for Proxmox VE detection since that file doesn't exist on modern PVE
 - `.github/workflows/release.yml` — publishes multi-arch Docker image (`linux/amd64`, `linux/arm64`) to `ghcr.io/mzac/apt-ui` on GitHub release
 - Per-server auto security updates: `server_stats.auto_security_updates` stores `not_installed`/`disabled`/`enabled`; detected during check via `unattended-upgrades` package state; enable/disable via WebSocket (`/api/ws/auto-security-updates/{id}`) which streams SSH output to an inline terminal in the server edit form; shield badge on dashboard cards (green=enabled, amber=disabled/not_installed); `sec_disabled` filter in fleet summary bar counts and filters servers without auto-sec
+- **Raspberry Pi EEPROM firmware updates**: detected during check for Pi 4 / Pi 400 / Compute Module 4 / Pi 5 only (model gated via `/proc/device-tree/model`); `server_stats.eeprom_update_available` stores `up_to_date`/`update_available`/`update_staged`/`frozen`/`error`; `eeprom_current_version` and `eeprom_latest_version` are Unix timestamp strings from `rpi-eeprom-update` output; apply via WebSocket `/api/ws/eeprom-update/{id}` which runs `sudo rpi-eeprom-update -a` (stages update for next reboot); amber badge on dashboard cards when update available, blue badge when staged; EEPROM section in server edit form shows version dates and Apply Update button; Pi 3 explicitly excluded (command exists but doesn't work)
 - apt-cacher-ng compact cards in fleet summary bar (right of Autoremove widget) showing hit rate %, mini hit bar, hits/misses counts, and data served; wider cards (~140px min)
 - Server card two-column layout: left=identity (name, hostname, OS), right=group badges + update count + hardware stats; security update count shown large/bold in red when present (takes priority over total update count)
 - Background job bell: all jobs (check-all, upgrade-all, single-host check, single-host upgrade) show in bell while running and auto-remove 3 s after completing; no persistent amber dot; page reload clears all stale jobs
 - Terminal `\r` (carriage return) handling: `applyChunk()` helper in `ServerDetail.tsx` applies carriage-return semantics so apt progress lines (e.g. "Reading database ... 5% ... 100%") update in place instead of concatenating
 - `autoremove_count` / `autoremove_packages` on `update_checks` — detected during check via `apt-get autoremove --dry-run`; shown in dashboard and server detail
-- `frontend/pages/History.tsx` — fleet-wide upgrade history view accessible from nav; shows history across all servers
+- `frontend/pages/History.tsx` — fleet-wide upgrade history view; server dropdown + status dropdown filters pass `server_id`/`status` query params to `GET /api/history`; resets to page 1 on filter change
 - Per-channel notification toggles in `notification_config` — individual email/Telegram toggles for each event type (daily summary, upgrade complete, error), allowing e.g. email-only for summaries and Telegram-only for errors
+- **Outbound webhooks**: `notification_config.webhook_enabled`/`webhook_url`/`webhook_secret`; `_send_webhook()` in `notifier.py` POSTs JSON with optional HMAC-SHA256 `X-Hub-Signature-256` header; events: `daily_summary`, `upgrade_complete`, `upgrade_failed`, `upgrade_all_complete`; UI in Settings → Notifications
+- **Dark/light theme toggle**: CSS custom properties in `index.css` (`:root` dark, `html.light` light); Tailwind colors reference `var(--color-*)` via `tailwind.config.js`; `useTheme` hook in `frontend/src/hooks/useTheme.ts` persists to `localStorage` key `apt:theme`; toggle button (☀/☾) in `Layout.tsx` header
+- **Dashboard staleness indicator**: `isStale(iso, hours)` helper in `Dashboard.tsx`; server card timestamp turns amber with ⚠ when last check > 12 h old, deeper amber > 24 h
+- **Fleet summary EEPROM counter**: `eepromCount` widget in fleet summary bar (only shown when > 0); clicking it filters cards to `eeprom_update_available === 'update_available'`
+- **Server notes**: `servers.notes TEXT` column; displayed in server detail header when set; editable in the edit form textarea; passed through `ServerCreate`/`ServerUpdate`/`ServerOut`
+- **Upgrade dry-run preview**: `/api/ws/dry-run/{server_id}` WebSocket endpoint in `backend/routers/upgrades.py`; runs `apt-get upgrade/dist-upgrade --dry-run`; collapsible output panel above the live terminal in `UpgradePanel` (ServerDetail.tsx); `createDryRunWebSocket()` helper in `api/client.ts`
+- **`last_apt_update` in server detail**: already collected in `ServerStats`; now returned in `ServerOut` via `_build_server_out()`; shown in the stats bar in `ServerDetail.tsx`
+- **Dashboard tag search fix**: search filter checks `(s.tags ?? []).some(t => t.name.toLowerCase().includes(search))` — was previously case-sensitive and ignored tags with spaces
+- **Cron validation in ScheduleTab**: `describeCron()` helper parses 5-field cron into human-readable text (e.g. "Daily at 06:00"); `CronInput` component shows green preview when valid, red error when invalid; used for check cron and auto-upgrade cron fields
+- **Reboot confirmation modal**: `RebootButton` in `Dashboard.tsx` uses `createPortal` modal overlay with backdrop blur and warning text instead of inline confirm buttons; also used in `ServerDetail.tsx`
 - **Tailscale sidecar** — opt-in via compose overlay; NOT embedded in the app image (updates independently via `docker compose pull`):
   - `docker-compose.tailscale.yml` — production overlay; adds `tailscale/tailscale:latest` sidecar; app uses `network_mode: service:tailscale` to share the tailnet interface
   - `docker-compose.local.yml` + `build-run-local.sh` — git-ignored local dev equivalents; uses separate `tailscale-state-local` / `tailscale-socket-local` volumes to avoid conflicting with production
   - `tailscale-serve.json` — `TS_SERVE_CONFIG` template; proxies HTTPS `:443` → app `:8000`; uses `${TS_CERT_DOMAIN}` placeholder resolved at runtime to the node's tailnet DNS name
   - `backend/routers/tailscale.py` — `GET /api/tailscale/status`; connects to the daemon via httpx `AsyncHTTPTransport(uds=...)` against `/var/run/tailscale/tailscaled.sock` (shared named volume); returns available/backend_state/IPs/hostname/dns_name/online
   - Socket volume must NOT be mounted `:ro` — connecting to a Unix socket requires write permission even for read-only queries
+  - `TS_SOCKET=/var/run/tailscale/tailscaled.sock` must be set on the tailscale container — without it, tailscaled creates the socket at `/tmp/tailscaled.sock` and only drops a symlink in `/var/run/tailscale/`; the symlink target doesn't exist in the app container, so the API calls fail silently
   - Status widget in Settings → Infrastructure tab polls every 30 s; shows inline enable command when sidecar is absent
   - `k8s/deployment.yaml` has a ready-to-uncomment sidecar block (k8s pods share network namespace natively, no `network_mode` needed)
 
@@ -345,6 +360,9 @@ This avoids re-parsing the raw apt output every time the frontend requests the p
 | total_packages | INTEGER | dpkg --list count |
 | virt_type | TEXT | detected virtualization type (kvm, lxc, docker, proxmox, etc.) |
 | auto_security_updates | TEXT | `not_installed` / `disabled` / `enabled` — unattended-upgrades state |
+| eeprom_update_available | TEXT | `up_to_date` / `update_available` / `update_staged` / `frozen` / `error` — Pi 4/400/CM4/5 only; null on non-Pi |
+| eeprom_current_version | TEXT | Unix timestamp string from rpi-eeprom-update output |
+| eeprom_latest_version | TEXT | Unix timestamp string from rpi-eeprom-update output |
 
 ### `notification_config` table (single row, app-wide settings)
 | Column | Type | Notes |

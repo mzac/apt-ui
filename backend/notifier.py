@@ -4,6 +4,8 @@ Unified notification module — email (aiosmtplib) + Telegram (httpx).
 Both channels are optional and controlled by notification_config in the DB.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, date
@@ -87,6 +89,30 @@ async def _send_telegram(cfg: NotificationConfig, text: str):
 
 
 # ---------------------------------------------------------------------------
+# Webhook
+# ---------------------------------------------------------------------------
+
+async def _send_webhook(cfg: NotificationConfig, event: str, payload: dict):
+    """POST a JSON event to the configured webhook URL.
+    If webhook_secret is set, add an X-Hub-Signature-256 header (HMAC-SHA256).
+    """
+    if not cfg.webhook_enabled or not cfg.webhook_url:
+        return
+    body = json.dumps({"event": event, **payload}).encode()
+    headers = {"Content-Type": "application/json", "User-Agent": "apt-dashboard/1.0"}
+    if cfg.webhook_secret:
+        sig = hmac.new(cfg.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = f"sha256={sig}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(cfg.webhook_url, content=body, headers=headers)
+            if not resp.is_success:
+                logger.warning("Webhook %s returned %s", cfg.webhook_url, resp.status_code)
+    except Exception as exc:
+        logger.error("Webhook send failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Daily summary
 # ---------------------------------------------------------------------------
 
@@ -137,6 +163,15 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
         await _send_email(cfg, subject, html_body, text_body)
     if cfg.telegram_enabled:
         await _send_telegram(cfg, telegram_body)
+
+    up_to_date, with_updates, with_errors, _ = _categorize(server_data)
+    await _send_webhook(cfg, "daily_summary", {
+        "date": today,
+        "total_servers": len(server_data),
+        "up_to_date": len(up_to_date),
+        "with_updates": len(with_updates),
+        "errors": len(with_errors),
+    })
 
 
 def _categorize(server_data: list[dict]):
@@ -503,6 +538,12 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
 
     await _send_email(cfg, subject, html, text)
     await _send_telegram(cfg, text)
+    event = "upgrade_complete" if history.status == "success" else "upgrade_failed"
+    await _send_webhook(cfg, event, {
+        "server": server.name, "hostname": server.hostname,
+        "action": history.action, "status": history.status,
+        "packages_upgraded": len(pkgs),
+    })
 
 
 async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
@@ -535,6 +576,12 @@ async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
     html = "<html><body><pre style='font-family:monospace'>" + text + "</pre></body></html>"
     await _send_email(cfg, subject, html, text)
     await _send_telegram(cfg, text)
+    await _send_webhook(cfg, "upgrade_all_complete", {
+        "total": len(results),
+        "succeeded": len(successes),
+        "failed": len(failures),
+        "servers": [{"server": s.name, "hostname": s.hostname, "status": h.status} for s, h in results],
+    })
 
 
 async def get_telegram_updates(bot_token: str) -> list[dict]:

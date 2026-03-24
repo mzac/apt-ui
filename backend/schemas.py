@@ -103,6 +103,7 @@ class ServerCreate(BaseModel):
     tag_ids: list[int] = []
     tag_names: list[str] = []
     ssh_private_key: Optional[str] = None  # write-only; stored encrypted
+    notes: Optional[str] = None
 
 
 class ServerUpdate(BaseModel):
@@ -117,6 +118,7 @@ class ServerUpdate(BaseModel):
     tag_ids: Optional[list[int]] = None
     tag_names: Optional[list[str]] = None
     ssh_private_key: Optional[str] = None  # write-only; stored encrypted
+    notes: Optional[str] = None
 
 
 class LatestCheckOut(BaseModel):
@@ -157,6 +159,11 @@ class ServerOut(BaseModel):
     uptime_seconds: Optional[int] = None
     virt_type: Optional[str] = None
     auto_security_updates: Optional[str] = None  # not_installed / disabled / enabled
+    eeprom_update_available: Optional[str] = None  # up_to_date / update_available / update_staged / error / frozen
+    eeprom_current_version: Optional[str] = None  # unix timestamp string
+    eeprom_latest_version: Optional[str] = None   # unix timestamp string
+    last_apt_update: Optional[datetime] = None    # mtime of apt package cache on remote
+    notes: Optional[str] = None                   # free-text notes for this server
 
     model_config = {"from_attributes": True}
 
@@ -327,6 +334,9 @@ class NotificationConfigOut(BaseModel):
     notify_upgrade_telegram: bool = True
     notify_error_email: bool = True
     notify_error_telegram: bool = True
+    webhook_enabled: bool = False
+    webhook_url: Optional[str] = None
+    webhook_secret: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -353,6 +363,9 @@ class NotificationConfigUpdate(BaseModel):
     notify_upgrade_telegram: Optional[bool] = None
     notify_error_email: Optional[bool] = None
     notify_error_telegram: Optional[bool] = None
+    webhook_enabled: Optional[bool] = None
+    webhook_url: Optional[str] = None
+    webhook_secret: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

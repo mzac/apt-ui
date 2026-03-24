@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { stats as statsApi } from '@/api/client'
-import type { UpdateHistory } from '@/types'
+import { stats as statsApi, servers as serversApi } from '@/api/client'
+import type { UpdateHistory, Server } from '@/types'
 
 type HistoryItem = UpdateHistory & { server_name: string }
 
@@ -29,16 +29,28 @@ export default function History() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [serverList, setServerList] = useState<Server[]>([])
+  const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
+  const [filterStatus, setFilterStatus] = useState<string>('')
 
   const perPage = 50
 
   useEffect(() => {
+    serversApi.list().then(setServerList).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     setLoading(true)
-    statsApi.globalHistory(page).then(res => {
+    statsApi.globalHistory(page, filterServerId, filterStatus || undefined).then(res => {
       setItems(res.items)
       setTotal(res.total)
     }).finally(() => setLoading(false))
-  }, [page])
+  }, [page, filterServerId, filterStatus])
+
+  function handleFilterChange() {
+    setPage(1)
+    setExpanded(null)
+  }
 
   const totalPages = Math.ceil(total / perPage)
 
@@ -49,10 +61,42 @@ export default function History() {
         <span className="text-sm text-text-muted font-mono">{total} total entries</span>
       </div>
 
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          className="input w-48 text-sm"
+          value={filterServerId ?? ''}
+          onChange={e => { setFilterServerId(e.target.value ? parseInt(e.target.value) : undefined); handleFilterChange() }}
+        >
+          <option value="">All servers</option>
+          {serverList.map(s => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+        <select
+          className="input w-36 text-sm"
+          value={filterStatus}
+          onChange={e => { setFilterStatus(e.target.value); handleFilterChange() }}
+        >
+          <option value="">All statuses</option>
+          <option value="success">Success</option>
+          <option value="error">Error</option>
+          <option value="running">Running</option>
+        </select>
+        {(filterServerId || filterStatus) && (
+          <button
+            className="btn-secondary text-xs"
+            onClick={() => { setFilterServerId(undefined); setFilterStatus(''); setPage(1) }}
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
       {loading ? (
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       ) : items.length === 0 ? (
-        <div className="text-center py-12 text-text-muted text-sm">No upgrade history yet.</div>
+        <div className="text-center py-12 text-text-muted text-sm">No upgrade history found.</div>
       ) : (
         <div className="card overflow-hidden">
           <table className="w-full text-xs font-mono">

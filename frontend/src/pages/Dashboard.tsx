@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi } from '@/api/client'
 import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow } from '@/types'
@@ -41,6 +42,11 @@ function relativeTime(iso: string | null): string {
   const h = Math.floor(min / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
+}
+
+function isStale(iso: string | null | undefined, hours = 24): boolean {
+  if (!iso) return false
+  return Date.now() - new Date(iso).getTime() > hours * 3600_000
 }
 
 // Custom pie tooltip
@@ -154,7 +160,7 @@ export default function Dashboard() {
   const filtered = serverList
     .filter(s => activeGroup == null || (s.groups ?? []).some(g => g.id === activeGroup))
     .filter(s => activeTag == null || (s.tags ?? []).some(t => t.id === activeTag))
-    .filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()) || s.hostname.includes(search))
+    .filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()) || s.hostname.toLowerCase().includes(search.toLowerCase()) || (s.tags ?? []).some(t => t.name.toLowerCase().includes(search.toLowerCase())))
     .filter(s => {
       if (!statusFilter) return true
       const c = s.latest_check
@@ -166,6 +172,7 @@ export default function Dashboard() {
       if (statusFilter === 'held') return (c?.held_packages ?? 0) > 0
       if (statusFilter === 'autoremove') return (c?.autoremove_count ?? 0) > 0
       if (statusFilter === 'sec_disabled') return s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed'
+      if (statusFilter === 'eeprom') return s.eeprom_update_available === 'update_available'
       return true
     })
     .sort((a, b) => {
@@ -270,6 +277,7 @@ export default function Dashboard() {
   const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
   const hasFilters = activeGroup != null || activeTag != null
   const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
+  const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
 
   // Groups with servers (including via memberships)
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
@@ -318,6 +326,7 @@ export default function Dashboard() {
               { label: 'Held pkgs', value: overview.held_packages_total, color: overview.held_packages_total > 0 ? 'text-blue' : 'text-text-muted', filter: 'held' },
               { label: 'Autoremove', value: overview.autoremove_total, color: overview.autoremove_total > 0 ? 'text-amber' : 'text-text-muted', filter: 'autoremove' },
               { label: 'Sec off', value: secDisabledCount, color: secDisabledCount > 0 ? 'text-amber' : 'text-text-muted', filter: 'sec_disabled' },
+              ...(eepromCount > 0 ? [{ label: 'EEPROM', value: eepromCount, color: 'text-amber', filter: 'eeprom' }] : []),
             ].map(({ label, value, color, filter }) => (
               <button
                 key={label}
@@ -644,18 +653,19 @@ function UpdatesSummary({ servers }: { servers: Server[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Reboot confirmation button (shared)
+// Reboot confirmation button — uses a modal overlay
 // ---------------------------------------------------------------------------
 function RebootButton({ serverId, serverName, className = '' }: {
   serverId: number
   serverName: string
   className?: string
 }) {
-  const [state, setState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
+  const [open, setOpen] = useState(false)
+  const [rebooting, setRebooting] = useState(false)
   const [result, setResult] = useState<string | null>(null)
 
   async function doReboot() {
-    setState('rebooting')
+    setRebooting(true)
     setResult(null)
     try {
       const res = await serversApi.reboot(serverId)
@@ -663,31 +673,52 @@ function RebootButton({ serverId, serverName, className = '' }: {
     } catch (err: unknown) {
       setResult((err as Error).message)
     } finally {
-      setState('idle')
+      setRebooting(false)
+      setOpen(false)
     }
   }
 
-  if (state === 'confirm') {
-    return (
-      <span className="flex items-center gap-1">
-        <span className="text-xs text-amber font-mono">Reboot {serverName}?</span>
-        <button onClick={doReboot} className="btn-danger text-xs py-0.5">Yes, reboot</button>
-        <button onClick={() => setState('idle')} className="btn-secondary text-xs py-0.5">Cancel</button>
-      </span>
-    )
-  }
-
   return (
-    <span className="flex items-center gap-1">
-      <button
-        onClick={() => setState('confirm')}
-        disabled={state === 'rebooting'}
-        className={`btn-secondary text-xs py-0.5 text-amber border-amber/40 hover:border-amber/70 ${className}`}
-      >
-        {state === 'rebooting' ? 'Rebooting…' : '↻ Reboot'}
-      </button>
-      {result && <span className="text-xs font-mono text-text-muted">{result}</span>}
-    </span>
+    <>
+      <span className="flex items-center gap-1">
+        <button
+          onClick={() => setOpen(true)}
+          disabled={rebooting}
+          className={`btn-secondary text-xs py-0.5 text-amber border-amber/40 hover:border-amber/70 ${className}`}
+        >
+          {rebooting ? 'Rebooting…' : '↻ Reboot'}
+        </button>
+        {result && <span className="text-xs font-mono text-text-muted">{result}</span>}
+      </span>
+
+      {open && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="bg-surface border border-border rounded-lg p-6 shadow-xl max-w-sm w-full mx-4 space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">↻</span>
+              <div>
+                <h3 className="text-text-primary font-medium">Confirm Reboot</h3>
+                <p className="text-text-muted text-sm">This will immediately reboot <span className="font-mono text-amber">{serverName}</span>.</p>
+              </div>
+            </div>
+            <p className="text-xs text-text-muted">Any running processes will be interrupted. Make sure no critical operations are in progress.</p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setOpen(false)} className="btn-secondary">Cancel</button>
+              <button onClick={doReboot} disabled={rebooting} className="btn-danger">
+                {rebooting ? 'Rebooting…' : 'Yes, reboot now'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   )
 }
 
@@ -781,7 +812,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
       {/* Bottom row: tags/groups/badges left, auto-sec right */}
       {(() => {
         const groups = (s.groups ?? []).length > 0 ? s.groups! : (s.group_name ? [{ id: -1, name: s.group_name, color: s.group_color ?? '#3b82f6' }] : [])
-        const hasBadges = groups.length > 0 || (s.tags ?? []).length > 0 || c?.reboot_required || (c?.held_packages ?? 0) > 0 || (c?.autoremove_count ?? 0) > 0 || s.auto_security_updates
+        const hasBadges = groups.length > 0 || (s.tags ?? []).length > 0 || c?.reboot_required || (c?.held_packages ?? 0) > 0 || (c?.autoremove_count ?? 0) > 0 || s.auto_security_updates || s.eeprom_update_available != null
         if (!hasBadges) return null
         return (
           <div className="flex items-end justify-between gap-2 min-h-0">
@@ -801,6 +832,18 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
               ))}
               {c?.reboot_required && (
                 <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot</span>
+              )}
+              {s.eeprom_update_available === 'up_to_date' && (
+                <span className="badge bg-green/10 text-green border border-green/30 text-xs" title="EEPROM firmware up to date">✓ eeprom</span>
+              )}
+              {s.eeprom_update_available === 'update_available' && (
+                <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs" title="EEPROM firmware update available">⬆ eeprom</span>
+              )}
+              {s.eeprom_update_available === 'update_staged' && (
+                <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs" title="EEPROM update staged — reboot to apply">⬆ eeprom*</span>
+              )}
+              {s.eeprom_update_available === 'frozen' && (
+                <span className="badge bg-surface-2 text-text-muted border border-border text-xs" title="EEPROM updates frozen (rpi-eeprom-update -f)">◼ eeprom</span>
               )}
               {c && c.held_packages > 0 && (
                 <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">{c.held_packages} held</span>
@@ -829,7 +872,13 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
 
       {/* Footer */}
       <div className="flex items-center justify-between pt-1 border-t border-border/50 mt-auto">
-        <span className="text-xs text-text-muted font-mono">{relativeTime(c?.checked_at || null)}</span>
+        <span
+          className={`text-xs font-mono ${isStale(c?.checked_at, 24) ? 'text-amber' : isStale(c?.checked_at, 12) ? 'text-amber/70' : 'text-text-muted'}`}
+          title={isStale(c?.checked_at, 24) ? 'Last check was over 24h ago' : undefined}
+        >
+          {relativeTime(c?.checked_at || null)}
+          {isStale(c?.checked_at, 24) && ' ⚠'}
+        </span>
         <div className="flex gap-1 flex-wrap justify-end items-center">
           <button
             onClick={onToggleEnabled}
