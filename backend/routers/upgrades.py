@@ -231,7 +231,7 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 
         if enable:
             cmd = (
-                f"{sudo}apt-get install -y unattended-upgrades; "
+                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y unattended-upgrades; "
                 f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
                 f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
             )

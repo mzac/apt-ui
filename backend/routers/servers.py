@@ -562,7 +562,7 @@ async def set_auto_security_updates(
     if enable:
         # Install unattended-upgrades if missing, then enable it
         cmd = (
-            f"{sudo}apt-get install -y unattended-upgrades 2>/dev/null; "
+            f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y unattended-upgrades 2>/dev/null; "
             f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
             f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
         )
