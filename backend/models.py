@@ -196,6 +196,17 @@ class NotificationConfig(Base):
     webhook_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # optional HMAC-SHA256 secret
+    daily_summary_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_upgrade_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_error_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_security_updates: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_security_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_security_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_security_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_reboot_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_reboot_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_reboot_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_reboot_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ScheduleConfig(Base):

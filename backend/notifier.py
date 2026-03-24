@@ -17,7 +17,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import NotificationConfig, Server, UpdateCheck, UpdateHistory
+from backend.models import NotificationConfig, Server, ServerStats, UpdateCheck, UpdateHistory
 
 logger = logging.getLogger(__name__)
 
@@ -123,55 +123,36 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
     today = date.today().isoformat()
     subject = f"Apt Dashboard — Daily Summary — {today}"
 
-    # Gather fleet state
-    srv_result = await db.execute(select(Server))
-    servers = srv_result.scalars().all()
-
-    server_data = []
-    for s in servers:
-        chk_res = await db.execute(
-            select(UpdateCheck)
-            .where(UpdateCheck.server_id == s.id)
-            .order_by(UpdateCheck.checked_at.desc())
-            .limit(1)
-        )
-        chk = chk_res.scalar_one_or_none()
-        packages = []
-        if chk and chk.packages_json:
-            try:
-                packages = json.loads(chk.packages_json)
-            except Exception:
-                pass
+    # Gather fleet state (reuses the shared helper; add held list per server)
+    server_data = await _fetch_server_check_data(db)
+    for sd in server_data:
+        chk = sd["check"]
         held = []
         if chk and chk.held_packages_list:
             try:
                 held = json.loads(chk.held_packages_list)
             except Exception:
                 pass
-        server_data.append({
-            "server": s,
-            "check": chk,
-            "packages": packages,
-            "held": held,
-        })
+        sd["held"] = held
 
     html_body = _build_html_summary(subject, server_data)
     text_body = _build_text_summary(subject, server_data)
     telegram_body = _build_telegram_summary(subject, server_data)
 
-    if cfg.email_enabled:
+    if cfg.email_enabled and cfg.daily_summary_email:
         await _send_email(cfg, subject, html_body, text_body)
-    if cfg.telegram_enabled:
+    if cfg.telegram_enabled and cfg.daily_summary_telegram:
         await _send_telegram(cfg, telegram_body)
 
     up_to_date, with_updates, with_errors, _ = _categorize(server_data)
-    await _send_webhook(cfg, "daily_summary", {
-        "date": today,
-        "total_servers": len(server_data),
-        "up_to_date": len(up_to_date),
-        "with_updates": len(with_updates),
-        "errors": len(with_errors),
-    })
+    if cfg.daily_summary_webhook:
+        await _send_webhook(cfg, "daily_summary", {
+            "date": today,
+            "total_servers": len(server_data),
+            "up_to_date": len(up_to_date),
+            "with_updates": len(with_updates),
+            "errors": len(with_errors),
+        })
 
 
 def _categorize(server_data: list[dict]):
@@ -193,6 +174,7 @@ def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: 
     up_to_date, with_updates, with_errors, no_check = _categorize(server_data)
     total = len(server_data)
     reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
+    eeprom_servers = [sd for sd in server_data if sd.get("stats") and sd["stats"].eeprom_update_available in ("update_available", "update_staged")]
     held_servers = [sd for sd in server_data if sd["held"]]
     today_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -330,6 +312,28 @@ def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: 
   {items}
 </div>"""
 
+    eeprom_section = ""
+    if eeprom_servers:
+        items = "".join(
+            f'<div style="padding:6px 12px;border-bottom:1px solid #fde68a;'
+            f'font-size:12px;color:#374151;">'
+            f'<strong>{sd["server"].name}</strong>'
+            f'<span style="color:#6b7280;font-size:12px;"> ({sd["server"].hostname})</span>'
+            f'<span style="margin-left:8px;background:#fef3c7;color:#92400e;font-size:10px;'
+            f'padding:2px 6px;border-radius:4px;">'
+            f'{"staged — reboot to apply" if sd["stats"].eeprom_update_available == "update_staged" else "update available"}'
+            f'</span></div>'
+            for sd in eeprom_servers
+        )
+        eeprom_section = f"""
+<div style="background:#fff;border-radius:8px;border:1px solid #fde68a;
+            margin-bottom:12px;overflow:hidden;">
+  <div style="background:#fffbeb;padding:10px 16px;border-bottom:1px solid #fde68a;">
+    <span style="font-size:14px;font-weight:600;color:#92400e;">🔧 EEPROM firmware updates</span>
+  </div>
+  {items}
+</div>"""
+
     held_section = ""
     if held_servers:
         items = "".join(
@@ -398,6 +402,7 @@ def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: 
 
   {error_section}
   {reboot_section}
+  {eeprom_section}
   {held_section}
   {up_to_date_section}
 
@@ -414,14 +419,21 @@ def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: 
 
 def _build_text_summary(subject: str, server_data: list[dict]) -> str:
     up_to_date, with_updates, with_errors, _ = _categorize(server_data)
+    reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
+    eeprom_servers = [sd for sd in server_data if sd.get("stats") and sd["stats"].eeprom_update_available in ("update_available", "update_staged")]
     lines = [subject, "=" * len(subject), ""]
     lines.append(f"Total: {len(server_data)} | Up to date: {len(up_to_date)} | "
                  f"Updates: {len(with_updates)} | Errors: {len(with_errors)}")
+    if reboot_servers:
+        lines.append(f"Reboot required: {', '.join(sd['server'].name for sd in reboot_servers)}")
+    if eeprom_servers:
+        lines.append(f"EEPROM updates: {', '.join(sd['server'].name for sd in eeprom_servers)}")
     lines.append("")
     for sd in with_updates:
         s, chk = sd["server"], sd["check"]
+        reboot_flag = " [REBOOT REQUIRED]" if chk.reboot_required else ""
         lines.append(f"[UPDATES] {s.name} ({s.hostname}) — {chk.packages_available} updates "
-                     f"({chk.security_packages} security)")
+                     f"({chk.security_packages} security){reboot_flag}")
         for p in sd["packages"]:
             tag = "[SECURITY] " if p["is_security"] else ""
             lines.append(f"  {tag}{p['name']}: {p['current_version']} → {p['available_version']}")
@@ -432,14 +444,21 @@ def _build_text_summary(subject: str, server_data: list[dict]) -> str:
 
 def _build_telegram_summary(subject: str, server_data: list[dict]) -> str:
     up_to_date, with_updates, with_errors, _ = _categorize(server_data)
+    reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
+    eeprom_servers = [sd for sd in server_data if sd.get("stats") and sd["stats"].eeprom_update_available in ("update_available", "update_staged")]
     lines = [f"*{subject}*", ""]
     lines.append(f"✅ {len(up_to_date)} up to date | "
                  f"🟡 {len(with_updates)} with updates | "
                  f"🔴 {len(with_errors)} errors")
+    if reboot_servers:
+        lines.append(f"↻ Reboot required: {', '.join('*' + sd['server'].name + '*' for sd in reboot_servers)}")
+    if eeprom_servers:
+        lines.append(f"🔧 EEPROM updates: {', '.join('*' + sd['server'].name + '*' for sd in eeprom_servers)}")
     lines.append("")
     for sd in with_updates:
         s, chk = sd["server"], sd["check"]
-        lines.append(f"*{s.name}* — {chk.packages_available} updates "
+        reboot_flag = " ↻" if chk.reboot_required else ""
+        lines.append(f"*{s.name}*{reboot_flag} — {chk.packages_available} updates "
                      f"({chk.security_packages} 🔒 security)")
         for p in sd["packages"][:10]:  # cap per server to stay within limits
             tag = "🔒 " if p["is_security"] else ""
@@ -536,14 +555,19 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
             "</div></body></html>"
         )
 
-    await _send_email(cfg, subject, html, text)
-    await _send_telegram(cfg, text)
-    event = "upgrade_complete" if history.status == "success" else "upgrade_failed"
-    await _send_webhook(cfg, event, {
-        "server": server.name, "hostname": server.hostname,
-        "action": history.action, "status": history.status,
-        "packages_upgraded": len(pkgs),
-    })
+    is_success = history.status == "success"
+    if cfg.notify_upgrade_email if is_success else cfg.notify_error_email:
+        await _send_email(cfg, subject, html, text)
+    if cfg.notify_upgrade_telegram if is_success else cfg.notify_error_telegram:
+        await _send_telegram(cfg, text)
+    webhook_allowed = cfg.notify_upgrade_webhook if is_success else cfg.notify_error_webhook
+    if webhook_allowed:
+        event = "upgrade_complete" if is_success else "upgrade_failed"
+        await _send_webhook(cfg, event, {
+            "server": server.name, "hostname": server.hostname,
+            "action": history.action, "status": history.status,
+            "packages_upgraded": len(pkgs),
+        })
 
 
 async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
@@ -574,14 +598,188 @@ async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
 
     text = "\n".join(lines)
     html = "<html><body><pre style='font-family:monospace'>" + text + "</pre></body></html>"
-    await _send_email(cfg, subject, html, text)
-    await _send_telegram(cfg, text)
-    await _send_webhook(cfg, "upgrade_all_complete", {
-        "total": len(results),
-        "succeeded": len(successes),
-        "failed": len(failures),
-        "servers": [{"server": s.name, "hostname": s.hostname, "status": h.status} for s, h in results],
-    })
+    if cfg.notify_upgrade_email:
+        await _send_email(cfg, subject, html, text)
+    if cfg.notify_upgrade_telegram:
+        await _send_telegram(cfg, text)
+    if cfg.notify_upgrade_webhook:
+        await _send_webhook(cfg, "upgrade_all_complete", {
+            "total": len(results),
+            "succeeded": len(successes),
+            "failed": len(failures),
+            "servers": [{"server": s.name, "hostname": s.hostname, "status": h.status} for s, h in results],
+        })
+
+
+async def _fetch_server_check_data(db: AsyncSession) -> list[dict]:
+    """Fetch all servers with their latest check and stats rows."""
+    srv_result = await db.execute(select(Server))
+    servers = srv_result.scalars().all()
+    rows = []
+    for s in servers:
+        chk_res = await db.execute(
+            select(UpdateCheck)
+            .where(UpdateCheck.server_id == s.id)
+            .order_by(UpdateCheck.checked_at.desc())
+            .limit(1)
+        )
+        chk = chk_res.scalar_one_or_none()
+        stats_res = await db.execute(
+            select(ServerStats)
+            .where(ServerStats.server_id == s.id)
+            .order_by(ServerStats.recorded_at.desc())
+            .limit(1)
+        )
+        stats = stats_res.scalar_one_or_none()
+        packages = []
+        if chk and chk.packages_json:
+            try:
+                packages = json.loads(chk.packages_json)
+            except Exception:
+                pass
+        rows.append({"server": s, "check": chk, "stats": stats, "packages": packages})
+    return rows
+
+
+async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSession):
+    """Fire after a check-all when any server has pending security updates."""
+    if not cfg.notify_security_updates:
+        return
+
+    server_data = await _fetch_server_check_data(db)
+    sec_servers = [
+        sd for sd in server_data
+        if sd["check"] and sd["check"].status == "success" and sd["check"].security_packages > 0
+    ]
+    if not sec_servers:
+        return
+
+    total_sec = sum(sd["check"].security_packages for sd in sec_servers)
+    subject = f"Apt Dashboard — {total_sec} Security Update(s) on {len(sec_servers)} Server(s)"
+
+    # Plain text
+    lines = [subject, ""]
+    for sd in sec_servers:
+        s, chk = sd["server"], sd["check"]
+        lines.append(f"{s.name} ({s.hostname}) — {chk.security_packages} security update(s)")
+        for p in [p for p in sd["packages"] if p.get("is_security")]:
+            lines.append(f"  🔒 {p['name']}: {p['current_version']} → {p['available_version']}")
+    text = "\n".join(lines)
+
+    # HTML
+    rows_html = ""
+    for sd in sec_servers:
+        s, chk = sd["server"], sd["check"]
+        sec_pkgs = [p for p in sd["packages"] if p.get("is_security")]
+        pkg_rows = "".join(
+            f"<tr><td style='padding:3px 12px 3px 0;font-family:monospace;font-size:12px'>"
+            f"🔒 <strong>{p['name']}</strong></td>"
+            f"<td style='padding:3px 8px;font-family:monospace;font-size:11px;color:#888'>{p['current_version']}</td>"
+            f"<td style='padding:3px 4px;color:#888'>→</td>"
+            f"<td style='padding:3px 0;font-family:monospace;font-size:11px;color:#dc2626'>{p['available_version']}</td></tr>"
+            for p in sec_pkgs
+        )
+        rows_html += (
+            f"<div style='margin-bottom:12px;background:#fff;border:1px solid #fca5a5;"
+            f"border-radius:8px;overflow:hidden;'>"
+            f"<div style='background:#fef2f2;padding:10px 16px;border-bottom:1px solid #fca5a5;'>"
+            f"<strong style='color:#111'>{s.name}</strong>"
+            f"<span style='color:#6b7280;font-size:12px;margin-left:8px'>{s.hostname}</span>"
+            f"<span style='margin-left:8px;font-size:12px;color:#dc2626;font-weight:600'>"
+            f"{chk.security_packages} security update(s)</span></div>"
+            f"<div style='padding:8px 16px'><table border='0' cellpadding='0'>{pkg_rows}</table></div>"
+            f"</div>"
+        )
+    html = (
+        f"<html><body style='font-family:sans-serif;background:#f4f4f5'>"
+        f"<div style='max-width:600px;margin:20px auto;'>"
+        f"<div style='background:#1a1f2e;border-radius:8px;padding:20px 24px;margin-bottom:16px'>"
+        f"<div style='font-size:11px;color:#f87171;letter-spacing:.1em;font-weight:600;text-transform:uppercase'>SECURITY ALERT</div>"
+        f"<div style='font-size:18px;font-weight:700;color:#f9fafb;margin-top:4px'>{subject}</div>"
+        f"</div>{rows_html}</div></body></html>"
+    )
+
+    # Telegram
+    tg_lines = [f"🔒 *Security Updates Found*", ""]
+    for sd in sec_servers:
+        s, chk = sd["server"], sd["check"]
+        tg_lines.append(f"*{s.name}* — {chk.security_packages} security update(s)")
+        for p in [p for p in sd["packages"] if p.get("is_security")][:5]:
+            tg_lines.append(f"  `{p['name']}: {p['current_version']} → {p['available_version']}`")
+    tg_text = "\n".join(tg_lines)
+
+    if cfg.notify_security_email:
+        await _send_email(cfg, subject, html, text)
+    if cfg.notify_security_telegram:
+        await _send_telegram(cfg, tg_text)
+    if cfg.notify_security_webhook:
+        await _send_webhook(cfg, "security_updates_found", {
+            "total_security_updates": total_sec,
+            "servers": [
+                {"server": sd["server"].name, "hostname": sd["server"].hostname,
+                 "security_packages": sd["check"].security_packages}
+                for sd in sec_servers
+            ],
+        })
+
+
+async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
+    """Fire after a check-all when any server needs a reboot."""
+    if not cfg.notify_reboot_required:
+        return
+
+    server_data = await _fetch_server_check_data(db)
+    reboot_servers = [
+        sd for sd in server_data
+        if sd["check"] and sd["check"].status == "success" and sd["check"].reboot_required
+    ]
+    if not reboot_servers:
+        return
+
+    subject = f"Apt Dashboard — Reboot Required on {len(reboot_servers)} Server(s)"
+
+    lines = [subject, ""]
+    for sd in reboot_servers:
+        s = sd["server"]
+        lines.append(f"↻ {s.name} ({s.hostname})")
+    text = "\n".join(lines)
+
+    server_items = "".join(
+        f"<div style='padding:8px 12px;border-bottom:1px solid #fde68a;font-size:13px'>"
+        f"<strong style='color:#111'>{sd['server'].name}</strong>"
+        f"<span style='color:#6b7280;font-size:12px;margin-left:8px'>{sd['server'].hostname}</span>"
+        f"</div>"
+        for sd in reboot_servers
+    )
+    html = (
+        f"<html><body style='font-family:sans-serif;background:#f4f4f5'>"
+        f"<div style='max-width:600px;margin:20px auto;'>"
+        f"<div style='background:#1a1f2e;border-radius:8px;padding:20px 24px;margin-bottom:16px'>"
+        f"<div style='font-size:11px;color:#fbbf24;letter-spacing:.1em;font-weight:600;text-transform:uppercase'>REBOOT REQUIRED</div>"
+        f"<div style='font-size:18px;font-weight:700;color:#f9fafb;margin-top:4px'>{subject}</div>"
+        f"</div>"
+        f"<div style='background:#fff;border:1px solid #fde68a;border-radius:8px;overflow:hidden'>"
+        f"<div style='background:#fffbeb;padding:10px 16px;border-bottom:1px solid #fde68a'>"
+        f"<span style='font-weight:600;color:#92400e'>↻ Servers requiring reboot</span></div>"
+        f"{server_items}</div></div></body></html>"
+    )
+
+    tg_text = (
+        f"↻ *Reboot Required*\n\n"
+        + "\n".join(f"• *{sd['server'].name}* ({sd['server'].hostname})" for sd in reboot_servers)
+    )
+
+    if cfg.notify_reboot_email:
+        await _send_email(cfg, subject, html, text)
+    if cfg.notify_reboot_telegram:
+        await _send_telegram(cfg, tg_text)
+    if cfg.notify_reboot_webhook:
+        await _send_webhook(cfg, "reboot_required", {
+            "servers": [
+                {"server": sd["server"].name, "hostname": sd["server"].hostname}
+                for sd in reboot_servers
+            ],
+        })
 
 
 async def get_telegram_updates(bot_token: str) -> list[dict]:

@@ -497,6 +497,8 @@ async def reboot_server(
     result = await run_command(server, f"{sudo}reboot", timeout=15)
     # SSH will drop mid-command on reboot — exit code 255 is normal here
     if result.exit_code == 0 or result.exit_code == 255:
+        from backend.scheduler import schedule_reboot_check
+        schedule_reboot_check(server_id)
         return {"success": True, "detail": "Reboot command sent"}
     return {"success": False, "detail": result.stderr or "Reboot command failed"}
 

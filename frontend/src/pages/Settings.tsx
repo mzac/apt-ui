@@ -1183,6 +1183,7 @@ function NotificationsTab() {
                 <th className="text-center py-1 px-3">Enabled</th>
                 <th className="text-center py-1 px-3">Email</th>
                 <th className="text-center py-1 px-3">Telegram</th>
+                <th className="text-center py-1 px-3">Webhook</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
@@ -1204,6 +1205,12 @@ function NotificationsTab() {
                     onChange={e => setForm(f => ({ ...f, daily_summary_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
                 </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.daily_summary_webhook ?? true}
+                    disabled={!form.webhook_enabled}
+                    onChange={e => setForm(f => ({ ...f, daily_summary_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
               </tr>
               {/* Upgrade complete */}
               <tr>
@@ -1223,6 +1230,72 @@ function NotificationsTab() {
                     onChange={e => setForm(f => ({ ...f, notify_upgrade_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
                 </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_upgrade_webhook ?? true}
+                    disabled={!form.webhook_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_upgrade_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+              </tr>
+              {/* Security updates found */}
+              <tr>
+                <td className="py-2 pr-4">
+                  <div className="text-text-primary">Security updates found</div>
+                  <div className="text-xs text-text-muted">Fires after each check-all when any server has pending security updates</div>
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_security_updates ?? true}
+                    onChange={e => setForm(f => ({ ...f, notify_security_updates: e.target.checked }))}
+                    className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_security_email ?? true}
+                    disabled={!form.notify_security_updates}
+                    onChange={e => setForm(f => ({ ...f, notify_security_email: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_security_telegram ?? true}
+                    disabled={!form.notify_security_updates}
+                    onChange={e => setForm(f => ({ ...f, notify_security_telegram: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_security_webhook ?? true}
+                    disabled={!form.webhook_enabled || !form.notify_security_updates}
+                    onChange={e => setForm(f => ({ ...f, notify_security_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+              </tr>
+              {/* Reboot required */}
+              <tr>
+                <td className="py-2 pr-4">
+                  <div className="text-text-primary">Reboot required</div>
+                  <div className="text-xs text-text-muted">Fires after each check-all when any server needs a reboot</div>
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_reboot_required ?? true}
+                    onChange={e => setForm(f => ({ ...f, notify_reboot_required: e.target.checked }))}
+                    className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_reboot_email ?? true}
+                    disabled={!form.notify_reboot_required}
+                    onChange={e => setForm(f => ({ ...f, notify_reboot_email: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_reboot_telegram ?? true}
+                    disabled={!form.notify_reboot_required}
+                    onChange={e => setForm(f => ({ ...f, notify_reboot_telegram: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_reboot_webhook ?? true}
+                    disabled={!form.webhook_enabled || !form.notify_reboot_required}
+                    onChange={e => setForm(f => ({ ...f, notify_reboot_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
               </tr>
               {/* On error */}
               <tr>
@@ -1241,6 +1314,12 @@ function NotificationsTab() {
                   <input type="checkbox" checked={form.notify_error_telegram ?? true}
                     onChange={e => setForm(f => ({ ...f, notify_error_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_error_webhook ?? true}
+                    disabled={!form.webhook_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_error_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
               </tr>
             </tbody>

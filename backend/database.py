@@ -142,6 +142,17 @@ async def init_db():
             "ALTER TABLE notification_config ADD COLUMN webhook_enabled BOOLEAN DEFAULT 0",
             "ALTER TABLE notification_config ADD COLUMN webhook_url TEXT",
             "ALTER TABLE notification_config ADD COLUMN webhook_secret TEXT",
+            "ALTER TABLE notification_config ADD COLUMN daily_summary_webhook BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_upgrade_webhook BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_error_webhook BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_security_updates BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_security_email BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_security_telegram BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_security_webhook BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_reboot_required BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_reboot_email BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_reboot_telegram BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_reboot_webhook BOOLEAN DEFAULT 1",
         ]
         for sql in migrations:
             try:

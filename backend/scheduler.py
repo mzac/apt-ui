@@ -8,11 +8,13 @@ Jobs:
   log_purge      — delete old check/history/stats records (daily 03:00)
 """
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from backend.config import TZ
 
@@ -54,6 +56,12 @@ async def _job_check_all():
             await check_all_servers(list(servers), db, concurrency)
     except Exception as exc:
         logger.error("Scheduled check-all failed: %s", exc)
+
+    # Send event notifications (security updates, reboot required)
+    try:
+        await _send_event_notifications()
+    except Exception as exc:
+        logger.error("Event notifications failed: %s", exc)
 
     # Send daily summary regardless of whether the check succeeded
     try:
@@ -110,6 +118,20 @@ async def _job_auto_upgrade():
     await asyncio.gather(*[_do(s) for s in to_upgrade])
 
 
+async def _send_event_notifications():
+    from backend.database import AsyncSessionLocal
+    from backend.models import NotificationConfig
+    from backend.notifier import notify_security_updates_found, notify_reboot_required
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        cfg_res = await db.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        if cfg:
+            await notify_security_updates_found(cfg, db)
+            await notify_reboot_required(cfg, db)
+
+
 async def _send_daily_summary():
     from backend.database import AsyncSessionLocal
     from backend.models import NotificationConfig
@@ -121,6 +143,81 @@ async def _send_daily_summary():
         cfg = cfg_res.scalar_one_or_none()
         if cfg and cfg.daily_summary_enabled:
             await send_daily_summary(cfg, db)
+
+
+async def _job_reboot_check(server_id: int):
+    """Poll until server is reachable post-reboot, then run a full check."""
+    from backend.database import AsyncSessionLocal
+    from backend.models import Server
+    from backend.ssh_manager import run_command
+    from backend.update_checker import check_server
+    from sqlalchemy import select
+
+    logger.info("Reboot-check: starting post-reboot check for server %d", server_id)
+
+    async with AsyncSessionLocal() as db:
+        srv_res = await db.execute(select(Server).where(Server.id == server_id))
+        server = srv_res.scalar_one_or_none()
+
+    if server is None or not server.is_enabled:
+        logger.warning("Reboot-check: server %d not found or disabled, skipping", server_id)
+        return
+
+    # Poll every 30 s for up to 10 minutes
+    max_attempts = 20
+    for attempt in range(1, max_attempts + 1):
+        result = await run_command(server, "echo ok", timeout=10)
+        if result.exit_code == 0 and "ok" in result.stdout:
+            logger.info(
+                "Reboot-check: server %d (%s) is back up after %d attempt(s)",
+                server_id, server.hostname, attempt,
+            )
+            break
+        logger.debug(
+            "Reboot-check: server %d not yet reachable (attempt %d/%d)",
+            server_id, attempt, max_attempts,
+        )
+        if attempt < max_attempts:
+            await asyncio.sleep(30)
+    else:
+        logger.error(
+            "Reboot-check: server %d (%s) did not come back within 10 minutes",
+            server_id, server.hostname,
+        )
+        return
+
+    # Run a full update check now that the server is back
+    try:
+        async with AsyncSessionLocal() as db:
+            srv_res = await db.execute(select(Server).where(Server.id == server_id))
+            server = srv_res.scalar_one_or_none()
+            if server:
+                await check_server(server, db)
+                logger.info("Reboot-check: post-reboot check complete for server %d", server_id)
+    except Exception as exc:
+        logger.error("Reboot-check: check failed for server %d: %s", server_id, exc)
+
+
+def schedule_reboot_check(server_id: int, delay_seconds: int = 60) -> None:
+    """Schedule a one-shot post-reboot check job for *server_id*.
+
+    Fires after *delay_seconds* (default 60 s) then polls until the server
+    is reachable, then runs a full update check to clear the reboot_required flag.
+    Replaces any existing pending reboot-check for the same server.
+    """
+    run_at = datetime.now(tz=TZ) + timedelta(seconds=delay_seconds)
+    job_id = f"reboot_check_{server_id}"
+    _scheduler.add_job(
+        _job_reboot_check,
+        DateTrigger(run_date=run_at, timezone=TZ),
+        id=job_id,
+        replace_existing=True,
+        kwargs={"server_id": server_id},
+    )
+    logger.info(
+        "Reboot-check: scheduled post-reboot check for server %d in %ds (job %s)",
+        server_id, delay_seconds, job_id,
+    )
 
 
 async def _job_log_purge():

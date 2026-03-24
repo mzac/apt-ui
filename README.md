@@ -16,7 +16,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Templates** — define named package sets and apply them to one or more hosts at once (useful for provisioning)
 - **Scheduled checks** — configurable cron schedule for automatic update checks
 - **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
-- **Notifications** — daily summary + per-event alerts via email (SMTP), Telegram, and outbound webhooks (HMAC-SHA256 signed), with per-channel toggles
+- **Notifications** — daily summary + per-event alerts via email (SMTP), Telegram, and outbound webhooks (HMAC-SHA256 signed); triggers: upgrade complete, error, security updates found (after each check), reboot required (after each check); per-channel and per-trigger toggles; daily summary includes reboot and EEPROM firmware status
 - **Server groups** — colour-coded grouping; servers can belong to multiple groups
 - **Tags** — freeform colour-coded tags per server; auto-tagging by OS and machine type supported
 - **OS & virt detection** — detects Proxmox VE (via `pveversion`), Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`

@@ -162,6 +162,17 @@ export interface NotificationConfig {
   webhook_enabled: boolean
   webhook_url: string | null
   webhook_secret: string | null
+  daily_summary_webhook: boolean
+  notify_upgrade_webhook: boolean
+  notify_error_webhook: boolean
+  notify_security_updates: boolean
+  notify_security_email: boolean
+  notify_security_telegram: boolean
+  notify_security_webhook: boolean
+  notify_reboot_required: boolean
+  notify_reboot_email: boolean
+  notify_reboot_telegram: boolean
+  notify_reboot_webhook: boolean
 }
 
 export interface TemplatePackage {

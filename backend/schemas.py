@@ -337,6 +337,17 @@ class NotificationConfigOut(BaseModel):
     webhook_enabled: bool = False
     webhook_url: Optional[str] = None
     webhook_secret: Optional[str] = None
+    daily_summary_webhook: bool = True
+    notify_upgrade_webhook: bool = True
+    notify_error_webhook: bool = True
+    notify_security_updates: bool = True
+    notify_security_email: bool = True
+    notify_security_telegram: bool = True
+    notify_security_webhook: bool = True
+    notify_reboot_required: bool = True
+    notify_reboot_email: bool = True
+    notify_reboot_telegram: bool = True
+    notify_reboot_webhook: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -366,6 +377,17 @@ class NotificationConfigUpdate(BaseModel):
     webhook_enabled: Optional[bool] = None
     webhook_url: Optional[str] = None
     webhook_secret: Optional[str] = None
+    daily_summary_webhook: Optional[bool] = None
+    notify_upgrade_webhook: Optional[bool] = None
+    notify_error_webhook: Optional[bool] = None
+    notify_security_updates: Optional[bool] = None
+    notify_security_email: Optional[bool] = None
+    notify_security_telegram: Optional[bool] = None
+    notify_security_webhook: Optional[bool] = None
+    notify_reboot_required: Optional[bool] = None
+    notify_reboot_email: Optional[bool] = None
+    notify_reboot_telegram: Optional[bool] = None
+    notify_reboot_webhook: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
