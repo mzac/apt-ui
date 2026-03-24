@@ -61,6 +61,7 @@ Examples from the codebase:
 ```python
 "ALTER TABLE servers ADD COLUMN ssh_private_key_enc TEXT",
 "ALTER TABLE schedule_config ADD COLUMN conffile_action TEXT DEFAULT 'confdef_confold'",
+"ALTER TABLE server_stats ADD COLUMN auto_security_updates TEXT",
 "ALTER TABLE schedule_config ADD COLUMN run_apt_update_before_upgrade BOOLEAN DEFAULT 0",
 ```
 
@@ -89,16 +90,34 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - `backend/routers/tags.py` — server tagging with auto-tag on check (OS + virt type)
 - `backend/routers/templates.py` — package templates for bulk install
 - `backend/routers/config_io.py` — JSON import/export of server config
+- `backend/routers/aptcache.py` — apt-cacher-ng monitoring; fetches `/acng-report.html?output=plain`, parses hit/miss counts, traffic bytes, cache size; `GET /api/aptcache/stats/all` fetches all enabled servers in parallel
 - `backend/upgrade_manager.py` — upgrade execution separated from `update_checker.py`
 - `frontend/pages/Templates.tsx` — UI for template management
-- `frontend/components/PackageInstallModal.tsx` — package installation modal
-- `schedule_config` has `auto_tag_os`, `auto_tag_virt`, `run_apt_update_before_upgrade` fields
+- `frontend/components/PackageInstallModal.tsx` — package installation modal (rendered via `createPortal` to avoid click-event bubbling from server cards)
+- `schedule_config` has `auto_tag_os`, `auto_tag_virt`, `run_apt_update_before_upgrade`, `conffile_action` fields
+- `AptCacheServer` model / `apt_cache_servers` table — new table, created automatically by `Base.metadata.create_all()` on startup (no ALTER TABLE migration needed for new tables, only for new columns on existing tables)
+- Package descriptions stored in `packages_json` — `_parse_apt_cache_show()` in `update_checker.py` runs `apt-cache show --no-all-versions` for all upgradable packages during each check and stores short descriptions
+- `likelyRequiresReboot()` in `ServerDetail.tsx` — client-side heuristic matching package names against patterns (linux-image*, libc6, libssl*, systemd, udev, etc.)
+- Server groups are many-to-many via `server_group_memberships` junction table; legacy `servers.group_id` FK kept for backward compat
+- `virt_type` stored in `server_stats`; OS detection uses `pveversion` (not `/etc/pve/pve-release`) for Proxmox VE detection since that file doesn't exist on modern PVE
+- `.github/workflows/release.yml` — publishes multi-arch Docker image (`linux/amd64`, `linux/arm64`) to `ghcr.io/mzac/apt-ui` on GitHub release
+- Per-server auto security updates: `server_stats.auto_security_updates` stores `not_installed`/`disabled`/`enabled`; detected during check via `unattended-upgrades` package state; enable/disable via WebSocket (`/api/ws/auto-security-updates/{id}`) which streams SSH output to an inline terminal in the server edit form; shield badge on dashboard cards (green=enabled, amber=disabled/not_installed); `sec_disabled` filter in fleet summary bar counts and filters servers without auto-sec
+- apt-cacher-ng compact cards in fleet summary bar (right of Autoremove widget) showing hit rate %, mini hit bar, hits/misses counts, and data served; wider cards (~140px min)
+- Server card two-column layout: left=identity (name, hostname, OS), right=group badges + update count + hardware stats; security update count shown large/bold in red when present (takes priority over total update count)
+- Background job bell: all jobs (check-all, upgrade-all, single-host check, single-host upgrade) show in bell while running and auto-remove 3 s after completing; no persistent amber dot; page reload clears all stale jobs
+- Terminal `\r` (carriage return) handling: `applyChunk()` helper in `ServerDetail.tsx` applies carriage-return semantics so apt progress lines (e.g. "Reading database ... 5% ... 100%") update in place instead of concatenating
 
 **Frontend path alias:** `@/` resolves to `frontend/src/` (configured in both `vite.config.ts` and `tsconfig.json`).
 
-**State management:** Zustand stores in `frontend/src/hooks/useAuth.ts` (auth state) and `useJobStore.ts` (active upgrade jobs). Both are read by multiple components.
+**State management:** Zustand stores in `frontend/src/hooks/useAuth.ts` (auth state) and `frontend/src/hooks/useJobStore.ts` (background job tracking for the bell icon). Both are read by multiple components.
+
+**Background job bell:** `Layout.tsx` reads `useJobStore` and renders a bell icon in the top nav. Jobs are registered via `addJob()` from Dashboard (`handleCheckAll`, `handleCheck`), `UpgradeAllModal` (`start()`), and `UpgradePanel` in ServerDetail. Jobs auto-remove 3 s after completion; no amber dot (unseenCount always 0).
+
+**Dashboard sort persistence:** `sortBy` state is initialised from `sessionStorage` (`dashboard:sortBy`) so the chosen sort order survives navigation within the session.
 
 **Terminal rendering:** `@xterm/xterm` is used for the terminal panel in ServerDetail (not just `ansi-to-html`).
+
+**Settings tabs:** Servers, Schedule, Preferences (concurrency / log retention / auto-upgrade / auto-tagging), Notifications, Infrastructure (apt-cacher-ng), Account, Backup.
 
 ---
 

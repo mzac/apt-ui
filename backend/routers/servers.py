@@ -151,6 +151,7 @@ async def _build_server_out(
         kernel_version=stats_row.kernel_version if stats_row else None,
         uptime_seconds=stats_row.uptime_seconds if stats_row else None,
         virt_type=stats_row.virt_type if stats_row else None,
+        auto_security_updates=stats_row.auto_security_updates if stats_row else None,
     )
 
 
@@ -495,6 +496,48 @@ async def test_server_connection(
     if result.success:
         return {"success": True, "detail": "Connection successful"}
     return {"success": False, "detail": result.stderr or "Connection failed"}
+
+
+@router.post("/{server_id}/auto-security-updates")
+async def set_auto_security_updates(
+    server_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Enable or disable unattended-upgrades (auto security updates) on a server via SSH."""
+    server = await _get_server_or_404(server_id, db)
+    enable: bool = body.get("enable", True)
+    sudo = "" if server.username == "root" else "sudo "
+
+    if enable:
+        # Install unattended-upgrades if missing, then enable it
+        cmd = (
+            f"{sudo}apt-get install -y unattended-upgrades 2>/dev/null; "
+            f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
+            f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
+        )
+    else:
+        cmd = (
+            f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"0\";\\n' "
+            f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
+        )
+
+    result = await run_command(server, cmd, timeout=60)
+    if not result.success and result.exit_code == 255:
+        raise HTTPException(status_code=502, detail="SSH connection failed")
+
+    # Update the latest stats row with the new value
+    stats_res = await db.execute(
+        select(ServerStats).where(ServerStats.server_id == server_id).order_by(ServerStats.recorded_at.desc()).limit(1)
+    )
+    stats_row = stats_res.scalar_one_or_none()
+    new_val = "enabled" if enable else "disabled"
+    if stats_row:
+        stats_row.auto_security_updates = new_val
+        await db.commit()
+
+    return {"success": True, "auto_security_updates": new_val}
 
 
 @router.post("/check-all")

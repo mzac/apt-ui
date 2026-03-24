@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi } from '@/api/client'
-import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag } from '@/types'
+import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi } from '@/api/client'
+import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
-const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Account', 'Backup'] as const
+const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Account', 'Backup'] as const
 type Tab = typeof TABS[number]
 
 const PALETTE = [
@@ -50,6 +50,7 @@ export default function Settings() {
       {tab === 'Schedule' && <ScheduleTab />}
       {tab === 'Preferences' && <PreferencesTab />}
       {tab === 'Notifications' && <NotificationsTab />}
+      {tab === 'Infrastructure' && <InfrastructureTab />}
       {tab === 'Account' && <AccountTab />}
       {tab === 'Backup' && <BackupTab />}
     </div>
@@ -1333,6 +1334,111 @@ function CsvImport() {
       </label>
       {result && <p className="text-green text-sm">✓ {result}</p>}
       {error && <p className="text-red text-sm">{error}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Infrastructure tab — apt-cacher-ng
+// ---------------------------------------------------------------------------
+function InfrastructureTab() {
+  const [servers, setServers] = useState<AptCacheServer[]>([])
+  const [form, setForm] = useState({ label: '', host: '', port: '3142' })
+  const [formError, setFormError] = useState('')
+  const [adding, setAdding] = useState(false)
+
+  const load = useCallback(async () => {
+    const data = await aptcacheApi.list()
+    setServers(data)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault()
+    setFormError('')
+    if (!form.host.trim()) { setFormError('Host is required'); return }
+    try {
+      await aptcacheApi.add({
+        label: form.label.trim() || form.host.trim(),
+        host: form.host.trim(),
+        port: parseInt(form.port) || 3142,
+      })
+      setForm({ label: '', host: '', port: '3142' })
+      setAdding(false)
+      load()
+    } catch {
+      setFormError('Failed to add server')
+    }
+  }
+
+  async function handleToggle(s: AptCacheServer) {
+    await aptcacheApi.update(s.id, { enabled: !s.enabled })
+    load()
+  }
+
+  async function handleRemove(id: number) {
+    await aptcacheApi.remove(id)
+    load()
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <section className="card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-medium text-text-primary">apt-cacher-ng Servers</h2>
+            <p className="text-xs text-text-muted mt-0.5">Monitor your apt cache servers. Stats appear as a widget on the dashboard.</p>
+          </div>
+          <button onClick={() => setAdding(v => !v)} className="btn-secondary text-xs">{adding ? 'Cancel' : '+ Add'}</button>
+        </div>
+
+        {adding && (
+          <form onSubmit={handleAdd} className="grid grid-cols-3 gap-2 items-end border-t border-border pt-4">
+            <div>
+              <label className="label">Label</label>
+              <input className="input" placeholder="My apt cache" value={form.label} onChange={e => setForm(f => ({ ...f, label: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">Host / IP</label>
+              <input className="input" placeholder="192.168.1.10" value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">Port</label>
+              <input className="input" type="number" value={form.port} onChange={e => setForm(f => ({ ...f, port: e.target.value }))} />
+            </div>
+            {formError && <p className="col-span-3 text-red text-xs">{formError}</p>}
+            <div className="col-span-3 flex gap-2">
+              <button type="submit" className="btn-primary text-xs">Add Server</button>
+            </div>
+          </form>
+        )}
+
+        {servers.length === 0 && !adding ? (
+          <p className="text-xs text-text-muted">No apt-cacher-ng servers configured.</p>
+        ) : (
+          <div className="divide-y divide-border/40">
+            {servers.map(s => (
+              <div key={s.id} className="flex items-center gap-3 py-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-mono text-text-primary">{s.label}</p>
+                  <p className="text-xs text-text-muted font-mono">{s.host}:{s.port}</p>
+                </div>
+                <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={s.enabled}
+                    onChange={() => handleToggle(s)}
+                    className="w-3.5 h-3.5 accent-green"
+                  />
+                  Enabled
+                </label>
+                <button onClick={() => handleRemove(s.id)} className="text-text-muted hover:text-red transition-colors text-xs">Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }

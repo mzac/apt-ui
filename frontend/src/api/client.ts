@@ -107,6 +107,8 @@ export const servers = {
     get<PackageSearchResult[]>(`/api/servers/${id}/packages/search?q=${encodeURIComponent(q)}`),
   history: (id: number, page = 1) =>
     get<{ total: number; page: number; items: UpdateHistory[] }>(`/api/servers/${id}/history?page=${page}`),
+  setAutoSecurityUpdates: (id: number, enable: boolean) =>
+    post<{ success: boolean; auto_security_updates: string }>(`/api/servers/${id}/auto-security-updates`, { enable }),
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,17 @@ export const config = {
   },
 }
 
+export const aptcache = {
+  list:       () => get<import('@/types').AptCacheServer[]>('/api/aptcache'),
+  add:        (data: { label: string; host: string; port: number }) =>
+                post<import('@/types').AptCacheServer>('/api/aptcache', data),
+  update:     (id: number, data: Partial<{ label: string; host: string; port: number; enabled: boolean }>) =>
+                put<import('@/types').AptCacheServer>(`/api/aptcache/${id}`, data),
+  remove:     (id: number) => del(`/api/aptcache/${id}`),
+  stats:      (id: number) => get<import('@/types').AptCacheStats>(`/api/aptcache/${id}/stats`),
+  allStats:   () => get<import('@/types').AptCacheStats[]>('/api/aptcache/stats/all'),
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket helpers
 // ---------------------------------------------------------------------------
@@ -246,6 +259,18 @@ export function createSelectiveUpgradeWebSocket(
   return ws
 }
 
+export function createAptUpdateWebSocket(
+  serverId: number,
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-update/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
 export function createAutoremoveWebSocket(
   serverId: number,
   params: { packages: string[] | null },
@@ -269,6 +294,20 @@ export function createInstallWebSocket(
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify({ packages })) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createAutoSecurityUpdatesWebSocket(
+  serverId: number,
+  params: { enable: boolean },
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/auto-security-updates/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()
   return ws

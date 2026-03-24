@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { servers as serversApi, groups as groupsApi, stats as statsApi } from '@/api/client'
-import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag } from '@/types'
+import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi } from '@/api/client'
+import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
@@ -73,6 +73,7 @@ export default function Dashboard() {
   const { user } = useAuthStore()
   const [serverList, setServerList] = useState<Server[]>([])
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
+  const [initialLoaded, setInitialLoaded] = useState(false)
   const [overview, setOverview] = useState<FleetOverview | null>(null)
   const [activeGroup, setActiveGroup] = useState<number | null>(null)
   const [activeTag, setActiveTag] = useState<number | null>(null)
@@ -117,6 +118,7 @@ export default function Dashboard() {
     setServerList(s)
     setGroupList(g)
     setOverview(o)
+    setInitialLoaded(true)
     return s
   }, [])
 
@@ -166,6 +168,7 @@ export default function Dashboard() {
       if (statusFilter === 'reboot') return c?.reboot_required === true
       if (statusFilter === 'held') return (c?.held_packages ?? 0) > 0
       if (statusFilter === 'autoremove') return (c?.autoremove_count ?? 0) > 0
+      if (statusFilter === 'sec_disabled') return s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed'
       return true
     })
     .sort((a, b) => {
@@ -183,9 +186,19 @@ export default function Dashboard() {
     })
 
   async function handleCheck(id: number) {
+    const s = serverList.find(x => x.id === id)
+    const jobId = `check-${id}`
     setChecking(c => new Set(c).add(id))
-    try { await serversApi.check(id); await load() }
-    finally { setChecking(c => { const n = new Set(c); n.delete(id); return n }) }
+    addJob({ id: jobId, type: 'check', label: `Check ${s?.name ?? id}`, status: 'running', link: `/servers/${id}`, startedAt: Date.now() })
+    try {
+      await serversApi.check(id)
+      updateJob(jobId, { status: 'complete', completedAt: Date.now() })
+      await load()
+    } catch {
+      updateJob(jobId, { status: 'error', completedAt: Date.now() })
+    } finally {
+      setChecking(c => { const n = new Set(c); n.delete(id); return n })
+    }
   }
 
   async function handleToggleEnabled(s: Server, e: React.MouseEvent) {
@@ -217,7 +230,7 @@ export default function Dashboard() {
       const res = await serversApi.checkAll()
       const total = res.total || serverList.filter(s => s.is_enabled).length
 
-      // Poll progress
+      // Poll progress for the banner — Layout handles the bell job update
       progressIntervalRef.current = setInterval(async () => {
         try {
           const prog = await serversApi.checkProgress()
@@ -226,14 +239,12 @@ export default function Dashboard() {
             clearInterval(progressIntervalRef.current!)
             progressIntervalRef.current = null
             setCheckingAll(false)
-            updateJob('check-all', { status: 'complete', completedAt: Date.now() })
             await load()
           }
         } catch {
           clearInterval(progressIntervalRef.current!)
           progressIntervalRef.current = null
           setCheckingAll(false)
-          updateJob('check-all', { status: 'error', completedAt: Date.now() })
         }
       }, 2000)
     } catch {
@@ -261,6 +272,7 @@ export default function Dashboard() {
 
   const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
   const hasFilters = activeGroup != null || activeTag != null
+  const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
 
   // Groups with servers (including via memberships)
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
@@ -308,6 +320,7 @@ export default function Dashboard() {
               { label: 'Reboot', value: overview.reboot_required, color: overview.reboot_required > 0 ? 'text-amber' : 'text-text-muted', filter: 'reboot' },
               { label: 'Held pkgs', value: overview.held_packages_total, color: overview.held_packages_total > 0 ? 'text-blue' : 'text-text-muted', filter: 'held' },
               { label: 'Autoremove', value: overview.autoremove_total, color: overview.autoremove_total > 0 ? 'text-amber' : 'text-text-muted', filter: 'autoremove' },
+              { label: 'Sec off', value: secDisabledCount, color: secDisabledCount > 0 ? 'text-amber' : 'text-text-muted', filter: 'sec_disabled' },
             ].map(({ label, value, color, filter }) => (
               <button
                 key={label}
@@ -319,6 +332,7 @@ export default function Dashboard() {
                 <div className="text-xs text-text-muted">{label}</div>
               </button>
             ))}
+            <AptCacheCompactCards />
           </div>
           {statusFilter && (
             <div className="flex items-center gap-2">
@@ -458,10 +472,14 @@ export default function Dashboard() {
         <UpdatesSummary servers={serversWithUpdates} />
       )}
 
+
       {/* Server cards */}
       {groupView ? (
         <div className="space-y-6">
-          {filtered.length === 0 && (
+          {!initialLoaded && (
+            <div className="py-12 text-center text-text-muted text-sm">Loading…</div>
+          )}
+          {initialLoaded && filtered.length === 0 && (
             <div className="py-12 text-center text-text-muted text-sm">
               {serverList.length === 0 ? (
                 <>No servers yet. <Link to="/settings" className="text-cyan underline">Add one in Settings.</Link></>
@@ -507,7 +525,10 @@ export default function Dashboard() {
               reachable={reachability[s.id]}
             />
           ))}
-          {filtered.length === 0 && (
+          {!initialLoaded && (
+            <div className="col-span-full py-12 text-center text-text-muted text-sm">Loading…</div>
+          )}
+          {initialLoaded && filtered.length === 0 && (
             <div className="col-span-full py-12 text-center text-text-muted text-sm">
               {serverList.length === 0 ? (
                 <>No servers yet. <Link to="/settings" className="text-cyan underline">Add one in Settings.</Link></>
@@ -695,135 +716,124 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
 
   return (
     <div
-      className={`card p-3 space-y-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : ''}`}
+      className={`card p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : ''}`}
       style={primaryGroupColor ? { borderLeft: `3px solid ${primaryGroupColor}66` } : undefined}
       onClick={() => navigate(`/servers/${s.id}`)}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+      {/* Two-column body: left = identity, right = status/stats */}
+      <div className="flex items-start gap-2">
+        {/* Left: name, hostname, OS */}
+        <div className="flex-1 min-w-0 space-y-0.5">
           <div className="flex items-center gap-1.5">
             <StatusDot status={status} />
-            <span className="font-mono text-sm text-text-primary truncate">
-              {s.name}
-            </span>
+            <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
           </div>
           <div className="flex items-center font-mono text-xs text-text-muted truncate">
-            {reachable === false && <span title="Unreachable" className="w-2 h-2 rounded-full bg-red inline-block mr-1" />}
-            {reachable === true && <span title="Reachable" className="w-2 h-2 rounded-full bg-green inline-block mr-1" />}
-            {(reachable === null || reachable === undefined) && <span className="w-2 h-2 rounded-full bg-gray-600 inline-block mr-1" />}
-            {s.hostname}
+            {reachable === false && <span title="Unreachable" className="w-2 h-2 rounded-full bg-red inline-block mr-1 shrink-0" />}
+            {reachable === true && <span title="Reachable" className="w-2 h-2 rounded-full bg-green inline-block mr-1 shrink-0" />}
+            {(reachable === null || reachable === undefined) && <span className="w-2 h-2 rounded-full bg-gray-600 inline-block mr-1 shrink-0" />}
+            <span className="truncate">{s.hostname}</span>
           </div>
-        </div>
-        {/* Group badges (multiple) */}
-        <div className="flex flex-col items-end gap-0.5 shrink-0">
-          {(s.groups ?? []).slice(0, 2).map(g => (
-            <span
-              key={g.id}
-              className="badge text-xs"
-              style={{ background: (g.color || '#3b82f6') + '22', color: g.color || '#3b82f6', border: `1px solid ${g.color || '#3b82f6'}44` }}
-            >
-              {g.name}
-            </span>
-          ))}
-          {(s.groups ?? []).length > 2 && (
-            <span className="badge text-xs bg-surface-2 text-text-muted border border-border">
-              +{(s.groups ?? []).length - 2}
-            </span>
+          {s.os_info && (
+            <div className="text-xs text-text-muted font-mono truncate">
+              <span className="mr-1">{osIcon(s.os_info)}</span>{s.os_info}
+            </div>
           )}
-          {/* Fallback: if no groups array yet */}
-          {(s.groups ?? []).length === 0 && s.group_name && (
-            <span
-              className="badge text-xs"
-              style={{ background: (s.group_color || '#3b82f6') + '22', color: s.group_color || '#3b82f6', border: `1px solid ${s.group_color || '#3b82f6'}44` }}
-            >
-              {s.group_name}
-            </span>
+        </div>
+
+        {/* Right: update count, stats */}
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {/* Update count or status */}
+          {c && c.packages_available > 0 ? (
+            <div className="text-right leading-none mt-1">
+              {c.security_packages > 0 ? (
+                <>
+                  <div>
+                    <span className="text-2xl font-mono font-bold text-red">{c.security_packages}</span>
+                    <span className="text-[10px] text-red/70 ml-1">sec</span>
+                  </div>
+                  <div className="mt-0.5">
+                    <span className="text-sm font-mono text-amber/80">{c.packages_available}</span>
+                    <span className="text-[10px] text-text-muted ml-1">upd</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="text-2xl font-mono font-medium text-amber">{c.packages_available}</span>
+                  <span className="text-[10px] text-text-muted ml-1">upd</span>
+                </>
+              )}
+            </div>
+          ) : c?.packages_available === 0 && c?.status === 'success' ? (
+            <span className="text-xs text-green font-mono mt-1">✓ ok</span>
+          ) : c?.status === 'error' ? (
+            <span className="text-xs text-red font-mono mt-1" title={c.error_message || ''}>✗ err</span>
+          ) : null}
+
+          {/* Hardware stats */}
+          {(s.cpu_count != null || memGb != null || s.virt_type) && (
+            <div className="text-[10px] text-text-muted font-mono text-right leading-tight mt-0.5">
+              {s.cpu_count != null && <div>{s.cpu_count} CPU</div>}
+              {memGb != null && <div>{memGb} GB</div>}
+              {s.virt_type && <div className="text-text-muted/60 truncate max-w-[80px]">{s.virt_type}</div>}
+            </div>
           )}
         </div>
       </div>
 
-      {/* OS */}
-      {s.os_info && (
-        <div className="text-xs text-text-muted font-mono truncate">
-          <span className="mr-1">{osIcon(s.os_info)}</span>{s.os_info}
-        </div>
-      )}
-
-      {/* Tags with colors */}
-      {(s.tags ?? []).length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {(s.tags ?? []).map(t => (
-            <span
-              key={t.id}
-              className="badge text-xs"
-              style={{
-                background: (t.color || '#6366f1') + '22',
-                color: t.color || '#6366f1',
-                border: `1px solid ${t.color || '#6366f1'}44`,
-              }}
-            >
-              {t.name}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Update counts */}
-      {c && c.packages_available > 0 && (
-        <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-mono font-medium text-amber">{c.packages_available}</span>
-          <span className="text-xs text-text-muted">
-            updates
-            {c.security_packages > 0 && (
-              <span className="ml-1 text-red font-medium">· {c.security_packages} security</span>
-            )}
-          </span>
-        </div>
-      )}
-
-      {c && c.packages_available === 0 && c.status === 'success' && (
-        <div className="text-xs text-green font-mono">✓ up to date</div>
-      )}
-
-      {c?.status === 'error' && (
-        <div className="text-xs text-red font-mono truncate" title={c.error_message || ''}>
-          ✗ {c.error_message || 'error'}
-        </div>
-      )}
-
-      {/* Badges */}
-      <div className="flex flex-wrap gap-1">
-        {c?.reboot_required && (
-          <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot required</span>
-        )}
-        {c && c.held_packages > 0 && (
-          <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">{c.held_packages} held</span>
-        )}
-        {c && c.autoremove_count > 0 && (
-          <button
-            className="badge bg-amber/10 text-amber border border-amber/30 text-xs cursor-pointer hover:bg-amber/20"
-            onClick={e => { e.stopPropagation(); navigate(`/servers/${s.id}`, { state: { tab: 'Packages' } }) }}
-          >
-            {c.autoremove_count} to remove
-          </button>
-        )}
-      </div>
-
-      {/* CPU/Memory/disk stats row */}
-      {(s.cpu_count != null || memGb != null || s.latest_check) && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-muted font-mono">
-          {s.cpu_count != null && <span>{s.cpu_count} CPU</span>}
-          {memGb != null && <span>{memGb} GB RAM</span>}
-          {s.virt_type && <span>{s.virt_type}</span>}
-        </div>
-      )}
+      {/* Bottom row: tags/groups/badges left, auto-sec right */}
+      {(() => {
+        const groups = (s.groups ?? []).length > 0 ? s.groups! : (s.group_name ? [{ id: -1, name: s.group_name, color: s.group_color ?? '#3b82f6' }] : [])
+        const hasBadges = groups.length > 0 || (s.tags ?? []).length > 0 || c?.reboot_required || (c?.held_packages ?? 0) > 0 || (c?.autoremove_count ?? 0) > 0 || s.auto_security_updates
+        if (!hasBadges) return null
+        return (
+          <div className="flex items-end justify-between gap-2 min-h-0">
+            {/* Left: groups, tags, status badges — wrap leftward */}
+            <div className="flex flex-wrap gap-1 min-w-0">
+              {groups.map(g => (
+                <span key={g.id} className="badge text-xs"
+                  style={{ background: (g.color || '#3b82f6') + '22', color: g.color || '#3b82f6', border: `1px solid ${g.color || '#3b82f6'}44` }}>
+                  {g.name}
+                </span>
+              ))}
+              {(s.tags ?? []).map(t => (
+                <span key={t.id} className="badge text-xs"
+                  style={{ background: (t.color || '#6366f1') + '22', color: t.color || '#6366f1', border: `1px solid ${t.color || '#6366f1'}44` }}>
+                  {t.name}
+                </span>
+              ))}
+              {c?.reboot_required && (
+                <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot</span>
+              )}
+              {c && c.held_packages > 0 && (
+                <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">{c.held_packages} held</span>
+              )}
+              {c && c.autoremove_count > 0 && (
+                <button
+                  className="badge bg-amber/10 text-amber border border-amber/30 text-xs cursor-pointer hover:bg-amber/20"
+                  onClick={e => { e.stopPropagation(); navigate(`/servers/${s.id}`, { state: { tab: 'Packages' } }) }}
+                >
+                  {c.autoremove_count} remove
+                </button>
+              )}
+            </div>
+            {/* Right: auto-sec badge pinned to bottom-right */}
+            <div className="shrink-0">
+              {s.auto_security_updates === 'enabled' && (
+                <span className="badge bg-green/10 text-green border border-green/30 text-xs" title="Auto security updates enabled">🛡 auto-sec</span>
+              )}
+              {(s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed') && (
+                <span className="badge bg-red/10 text-red border border-red/30 text-xs" title={s.auto_security_updates === 'not_installed' ? 'unattended-upgrades not installed' : 'Auto security updates disabled'}>🛡 no-auto-sec</span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Footer */}
-      <div className="flex items-center justify-between pt-1 border-t border-border/50">
+      <div className="flex items-center justify-between pt-1 border-t border-border/50 mt-auto">
         <span className="text-xs text-text-muted font-mono">{relativeTime(c?.checked_at || null)}</span>
         <div className="flex gap-1 flex-wrap justify-end items-center">
-          {/* Disable/Enable toggle */}
           <button
             onClick={onToggleEnabled}
             className={`text-xs py-0.5 px-1.5 rounded border transition-colors font-mono ${
@@ -867,6 +877,201 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
           onClose={() => setShowInstall(false)}
         />
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// apt-cacher-ng monitoring widget
+// ---------------------------------------------------------------------------
+
+function HitBar({ pct }: { pct: number }) {
+  const color = pct >= 50 ? '#22c55e' : pct >= 25 ? '#f59e0b' : '#ef4444'
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      <div className="h-1.5 flex-1 bg-surface-2 rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="font-mono text-xs shrink-0" style={{ color }}>{pct}%</span>
+    </div>
+  )
+}
+
+function AptCacheCard({ s }: { s: AptCacheStats }) {
+  const today = s.daily[0] as AptCacheDailyRow | undefined
+  const shown = s.daily.slice(0, 7)
+
+  return (
+    <div className="card p-3 space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <span className="font-mono text-sm text-text-primary">{s.label}</span>
+          <span className="ml-2 text-xs text-text-muted font-mono">{s.host}:{s.port}</span>
+        </div>
+        <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${s.ok ? 'text-green bg-green/10' : 'text-red bg-red/10'}`}>
+          {s.ok ? 'online' : 'offline'}
+        </span>
+      </div>
+
+      {!s.ok && <p className="text-xs text-red">{s.error ?? 'Unreachable'}</p>}
+
+      {s.ok && (
+        <>
+          {/* Transfer totals */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="bg-surface-2 rounded p-2 space-y-0.5">
+              <p className="text-text-muted uppercase tracking-wide text-[10px]">Fetched from upstream</p>
+              <p className="font-mono text-text-primary">{s.data_fetched_recent || s.data_fetched_startup || '—'}</p>
+              {s.data_fetched_startup && s.data_fetched_recent && (
+                <p className="text-text-muted text-[10px]">all-time: {s.data_fetched_startup}</p>
+              )}
+            </div>
+            <div className="bg-surface-2 rounded p-2 space-y-0.5">
+              <p className="text-text-muted uppercase tracking-wide text-[10px]">Served to clients</p>
+              <p className="font-mono text-text-primary">{s.data_served_recent || s.data_served_startup || '—'}</p>
+              {s.data_served_startup && s.data_served_recent && (
+                <p className="text-text-muted text-[10px]">all-time: {s.data_served_startup}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Today's quick stats */}
+          {today && (
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wide text-text-muted">Today ({today.date})</p>
+              <HitBar pct={today.hit_req_pct} />
+              <div className="flex gap-3 text-xs text-text-muted font-mono">
+                <span className="text-green">{today.hit_requests.toLocaleString()} hits</span>
+                <span className="text-amber">{today.miss_requests.toLocaleString()} misses</span>
+                <span>{today.total_requests.toLocaleString()} total</span>
+              </div>
+              <div className="flex gap-3 text-xs text-text-muted font-mono">
+                <span>↑ {today.hits_data}</span>
+                <span className="text-text-muted/60">miss: {today.misses_data}</span>
+                <span>total: {today.total_data}</span>
+              </div>
+            </div>
+          )}
+
+          {/* 7-day table */}
+          {shown.length > 1 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-text-muted mb-1">Last {shown.length} days</p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-text-muted text-[10px] uppercase">
+                    <th className="text-left py-0.5 pr-2 font-normal">Date</th>
+                    <th className="text-left py-0.5 pr-2 font-normal">Hit rate</th>
+                    <th className="text-right py-0.5 pr-2 font-normal">Reqs</th>
+                    <th className="text-right py-0.5 font-normal">Data</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/20">
+                  {shown.map((row, i) => (
+                    <tr key={row.date} className={i === 0 ? 'text-text-primary' : 'text-text-muted'}>
+                      <td className="py-0.5 pr-2 font-mono">{row.date}</td>
+                      <td className="py-0.5 pr-2 w-28"><HitBar pct={row.hit_req_pct} /></td>
+                      <td className="py-0.5 pr-2 text-right font-mono">{row.total_requests.toLocaleString()}</td>
+                      <td className="py-0.5 text-right font-mono">{row.total_data}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function useAptCacheData() {
+  const [servers, setServers] = useState<AptCacheStats[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    try {
+      const data = await aptcacheApi.allStats()
+      setServers(data)
+    } catch {
+      // silently fail if no servers configured
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const id = setInterval(load, 60_000)
+    return () => clearInterval(id)
+  }, [load])
+
+  return { servers, loading, reload: load }
+}
+
+function AptCacheCompactCards() {
+  const { servers, loading } = useAptCacheData()
+  if (loading || servers.length === 0) return null
+
+  return (
+    <>
+      {servers.map(s => {
+        const today = (s.daily ?? [])[0] as AptCacheDailyRow | undefined
+        const pct = today?.hit_req_pct ?? null
+        const color = !s.ok
+          ? '#ef4444'
+          : pct == null ? '#22c55e'
+          : pct >= 50 ? '#22c55e' : pct >= 25 ? '#f59e0b' : '#ef4444'
+        return (
+          <div key={s.id} className="card px-3 py-2 space-y-1" style={{ minWidth: 140 }} title={`${s.host}:${s.port}${!s.ok ? ` — ${s.error}` : ''}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-text-muted truncate">{s.label}</span>
+              <span className={`text-[10px] font-mono ${s.ok ? 'text-green' : 'text-red'}`}>{s.ok ? 'online' : 'offline'}</span>
+            </div>
+            {!s.ok ? (
+              <div className="text-xs text-red font-mono">unreachable</div>
+            ) : pct != null ? (
+              <>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-xl font-mono font-bold" style={{ color }}>{pct}%</span>
+                  <span className="text-[10px] text-text-muted">hit rate</span>
+                </div>
+                <div className="h-1 bg-surface-2 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+                </div>
+                <div className="flex gap-2 text-[10px] font-mono">
+                  <span className="text-green">{today!.hit_requests.toLocaleString()} hits</span>
+                  <span className="text-amber">{today!.miss_requests.toLocaleString()} miss</span>
+                </div>
+                {s.data_served_recent && (
+                  <div className="text-[10px] text-text-muted font-mono">served {s.data_served_recent}</div>
+                )}
+              </>
+            ) : (
+              <div className="text-xs text-green font-mono">✓ no log data</div>
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+export function AptCacheWidget() {
+  const { servers, loading, reload } = useAptCacheData()
+
+  if (loading || servers.length === 0) return null
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-xs uppercase tracking-wide text-text-muted font-medium">apt-cacher-ng</h2>
+        <button onClick={reload} className="text-text-muted/50 hover:text-text-muted text-xs transition-colors" title="Refresh">↻</button>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+        {servers.map(s => <AptCacheCard key={s.id} s={s} />)}
+      </div>
     </div>
   )
 }

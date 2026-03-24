@@ -156,6 +156,7 @@ class ServerOut(BaseModel):
     kernel_version: Optional[str] = None
     uptime_seconds: Optional[int] = None
     virt_type: Optional[str] = None
+    auto_security_updates: Optional[str] = None  # not_installed / disabled / enabled
 
     model_config = {"from_attributes": True}
 

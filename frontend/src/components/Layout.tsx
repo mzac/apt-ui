@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
+import { servers as serversApi } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
 
 function timeAgo(ts: number): string {
@@ -56,12 +57,44 @@ function JobRow({ job, onNavigate }: { job: Job; onNavigate: () => void }) {
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuthStore()
   const { pathname } = useLocation()
-  const { jobs, unseenCount, markSeen } = useJobStore()
+  const { jobs, unseenCount, markSeen, updateJob } = useJobStore()
   const [bellOpen, setBellOpen] = useState(false)
   const bellRef = useRef<HTMLDivElement>(null)
+  const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const running = jobs.filter(j => j.status === 'running')
   const hasRunning = running.length > 0
+
+  // Poll check-all progress from Layout so it resolves even when navigating away
+  useEffect(() => {
+    const hasRunningCheckAll = jobs.some(j => j.id === 'check-all' && j.status === 'running')
+    if (hasRunningCheckAll && !checkPollRef.current) {
+      checkPollRef.current = setInterval(async () => {
+        try {
+          const prog = await serversApi.checkProgress()
+          if (!prog.running) {
+            clearInterval(checkPollRef.current!)
+            checkPollRef.current = null
+            updateJob('check-all', { status: 'complete', completedAt: Date.now() })
+          }
+        } catch {
+          clearInterval(checkPollRef.current!)
+          checkPollRef.current = null
+          updateJob('check-all', { status: 'error', completedAt: Date.now() })
+        }
+      }, 2000)
+    }
+    if (!hasRunningCheckAll && checkPollRef.current) {
+      clearInterval(checkPollRef.current)
+      checkPollRef.current = null
+    }
+    return () => {
+      if (checkPollRef.current) {
+        clearInterval(checkPollRef.current)
+        checkPollRef.current = null
+      }
+    }
+  }, [jobs, updateJob])
 
   // Close dropdown on outside click
   useEffect(() => {

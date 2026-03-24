@@ -159,6 +159,7 @@ class ServerStats(Base):
     cpu_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mem_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     virt_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_security_updates: Mapped[str | None] = mapped_column(Text, nullable=True)  # not_installed / disabled / enabled
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 
@@ -218,6 +219,17 @@ class AppConfig(Base):
 
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AptCacheServer(Base):
+    __tablename__ = "apt_cache_servers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    host: Mapped[str] = mapped_column(Text, nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=3142)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
 class Template(Base):

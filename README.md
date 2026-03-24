@@ -6,8 +6,8 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ## Features
 
-- **Fleet dashboard** — see all servers at a glance with update counts, security update highlights, reboot-required flags, and held packages
-- **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket
+- **Fleet dashboard** — see all servers at a glance with update counts, security update highlights, reboot-required flags, and held packages; server cards use a two-column layout with security update count shown prominently in red when present
+- **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines (e.g. "Reading database…") update in place rather than concatenating
 - **Package info tooltips** — hover over any upgradable package to see its description, version delta, and whether it likely requires a reboot (kernel, libc, openssl, systemd, etc.)
 - **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
 - **Package install** — search `apt` cache and install new packages on any host directly from the UI
@@ -17,7 +17,10 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Notifications** — daily summary + per-event alerts via email (SMTP) and Telegram, with per-channel toggles
 - **Server groups** — colour-coded grouping; servers can belong to multiple groups
 - **Tags** — freeform colour-coded tags per server; auto-tagging by OS and machine type supported
-- **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
+- **OS & virt detection** — detects Proxmox VE (via `pveversion`), Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
+- **Auto security updates** — per-server toggle to enable/disable `unattended-upgrades`; current state detected on every check and shown as a shield badge on each server card (green=on, amber=off/not installed); enable/disable streams live SSH output to an inline terminal in the server edit form; fleet summary bar includes a "Sec off" filter to quickly find unprotected hosts
+- **apt-cacher-ng monitoring** — add your local apt cache server(s) in Settings → Infrastructure; compact cards in the fleet summary bar show hit rate %, mini hit bar, hits/misses counts, and data served
+- **Background job indicator** — bell icon in the top nav shows running/completed jobs (upgrades, checks) with a spinner; jobs auto-dismiss a few seconds after completion; click to return to a running job
 - **Dark industrial UI** — dense, information-rich dashboard designed for ops use
 
 ---

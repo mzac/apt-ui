@@ -199,6 +199,89 @@ async def ws_install(websocket: WebSocket, server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# WebSocket — auto security updates (enable / disable unattended-upgrades)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/auto-security-updates/{server_id}")
+async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+
+        enable: bool = params.get("enable", True)
+        sudo = "" if server.username == "root" else "sudo "
+
+        if enable:
+            cmd = (
+                f"{sudo}apt-get install -y unattended-upgrades; "
+                f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
+                f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
+            )
+        else:
+            cmd = (
+                f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"0\";\\n' "
+                f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
+            )
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            from backend.ssh_manager import run_command_stream
+            await send_fn({"type": "status", "data": "connecting"})
+            result = await run_command_stream(server, cmd, send_fn)
+            success = result.exit_code == 0
+            new_val = "enabled" if enable else "disabled"
+
+            if success:
+                # Persist the new state to the latest stats row
+                from backend.models import ServerStats
+                from sqlalchemy import select as _sel
+                stats_res = await db.execute(
+                    _sel(ServerStats)
+                    .where(ServerStats.server_id == server_id)
+                    .order_by(ServerStats.recorded_at.desc())
+                    .limit(1)
+                )
+                stats_row = stats_res.scalar_one_or_none()
+                if stats_row:
+                    stats_row.auto_security_updates = new_val
+                    await db.commit()
+
+            await send_fn({"type": "complete", "data": {"success": success, "auto_security_updates": new_val if success else None}})
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # REST trigger endpoints (return immediately, upgrade runs in background)
 # ---------------------------------------------------------------------------
 
@@ -695,6 +778,55 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
 # ---------------------------------------------------------------------------
 # WebSocket — autoremove
 # ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/apt-update/{server_id}")
+async def ws_apt_update(websocket: WebSocket, server_id: int):
+    """Run `sudo apt-get update` on the server and stream the output."""
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        await websocket.send_json({"type": "status", "data": "connecting"})
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            conn_opts = _connect_options(server)
+            async with asyncssh.connect(**conn_opts) as conn:
+                await send_fn({"type": "status", "data": "running"})
+                async with conn.create_process(
+                    "sudo DEBIAN_FRONTEND=noninteractive apt-get update",
+                    stderr=asyncssh.STDOUT,
+                ) as proc:
+                    async for line in proc.stdout:
+                        await send_fn({"type": "output", "data": line})
+                await send_fn({"type": "complete", "data": {"success": True}})
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
 
 @router.websocket("/api/ws/autoremove/{server_id}")
 async def ws_autoremove(websocket: WebSocket, server_id: int):

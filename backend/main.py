@@ -97,6 +97,7 @@ from backend.routers import scheduler as scheduler_router
 from backend.routers import notifications as notifications_router
 from backend.routers import config_io as config_io_router
 from backend.routers import templates as templates_router
+from backend.routers import aptcache as aptcache_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -109,6 +110,7 @@ app.include_router(scheduler_router.router)
 app.include_router(notifications_router.router)
 app.include_router(config_io_router.router)
 app.include_router(templates_router.router)
+app.include_router(aptcache_router.router)
 
 
 @app.get("/api/config/features")

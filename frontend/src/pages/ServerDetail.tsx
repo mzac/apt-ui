@@ -3,13 +3,40 @@ import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket } from '@/api/client'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket } from '@/api/client'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
 import PackageInstallModal from '@/components/PackageInstallModal'
 
 const ansiConvert = new Convert({ escapeXML: true })
+
+// Handle \r (carriage return) in terminal output so apt progress lines
+// overwrite in place rather than accumulating into one long concatenated line.
+function applyChunk(lines: string[], chunk: string): string[] {
+  const result = [...lines]
+  let current = result.length > 0 ? result.pop()! : ''
+  let i = 0
+  while (i < chunk.length) {
+    const cr = chunk.indexOf('\r', i)
+    const nl = chunk.indexOf('\n', i)
+    if (nl !== -1 && (cr === -1 || nl < cr)) {
+      current += chunk.slice(i, nl)
+      result.push(current)
+      current = ''
+      i = nl + 1
+    } else if (cr !== -1 && (nl === -1 || cr < nl)) {
+      current += chunk.slice(i, cr)
+      current = ''  // \r resets to start of line
+      i = cr + 1
+    } else {
+      current += chunk.slice(i)
+      break
+    }
+  }
+  result.push(current)
+  return result
+}
 
 const TABS = ['Packages', 'Upgrade', 'Shell', 'History', 'Stats'] as const
 type Tab = typeof TABS[number]
@@ -26,6 +53,7 @@ export default function ServerDetail() {
   const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
   const [rebootMsg, setRebootMsg] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
+  const { addJob, updateJob } = useJobStore()
 
   const load = useCallback(async () => {
     const [list, glist] = await Promise.all([serversApi.list(), groupsApi.list()])
@@ -50,9 +78,18 @@ export default function ServerDetail() {
   }, [location.state])
 
   async function handleCheck() {
+    const jobId = `check-${serverId}`
     setChecking(true)
-    try { await serversApi.check(serverId); await load() }
-    finally { setChecking(false) }
+    addJob({ id: jobId, type: 'check', label: `Check ${server?.name ?? serverId}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
+    try {
+      await serversApi.check(serverId)
+      updateJob(jobId, { status: 'complete', completedAt: Date.now() })
+      await load()
+    } catch {
+      updateJob(jobId, { status: 'error', completedAt: Date.now() })
+    } finally {
+      setChecking(false)
+    }
   }
 
   async function handleReboot() {
@@ -192,6 +229,11 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [autoSecState, setAutoSecState] = useState(server.auto_security_updates)
+  const [autoSecLines, setAutoSecLines] = useState<string[]>([])
+  const [autoSecRunning, setAutoSecRunning] = useState(false)
+  const autoSecTermRef = useRef<HTMLDivElement>(null)
+  const autoSecWsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
     tagsApi.list().then(setTagList)
@@ -207,6 +249,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       group_ids: (server.groups || []).map(g => g.id),
       tag_ids: (server.tags || []).map(t => t.id),
     })
+    setAutoSecState(server.auto_security_updates)
   }, [server])
 
   function toggleGroup(id: number) {
@@ -243,6 +286,29 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
     } finally {
       setSaving(false)
     }
+  }
+
+  function handleAutoSecToggle(enable: boolean) {
+    setAutoSecLines([])
+    setAutoSecRunning(true)
+    autoSecWsRef.current?.close()
+    const ws = createAutoSecurityUpdatesWebSocket(server.id, { enable }, (msg) => {
+      if (msg.type === 'output') {
+        setAutoSecLines(l => applyChunk(l, msg.data as string))
+      } else if (msg.type === 'status') {
+        setAutoSecLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+      } else if (msg.type === 'error') {
+        setAutoSecLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+      } else if (msg.type === 'complete') {
+        const d = msg.data as { success: boolean; auto_security_updates: string | null }
+        if (d.success && d.auto_security_updates) setAutoSecState(d.auto_security_updates)
+        setAutoSecLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Done' : '✗ Failed'}\x1b[0m\n`])
+      }
+      setTimeout(() => {
+        if (autoSecTermRef.current) autoSecTermRef.current.scrollTop = autoSecTermRef.current.scrollHeight
+      }, 0)
+    }, () => setAutoSecRunning(false))
+    autoSecWsRef.current = ws
   }
 
   return (
@@ -328,6 +394,46 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         </label>
       </div>
 
+      {/* Auto security updates */}
+      {autoSecState !== null && (
+        <div className="border border-border rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-xs text-text-muted uppercase tracking-wide">Auto Security Updates</span>
+              <div className="flex items-center gap-2 mt-0.5">
+                {autoSecState === 'enabled' && <span className="text-xs text-green font-mono">🛡 enabled</span>}
+                {autoSecState === 'disabled' && <span className="text-xs text-text-muted font-mono">disabled</span>}
+                {autoSecState === 'not_installed' && <span className="text-xs text-amber font-mono">unattended-upgrades not installed</span>}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {autoSecState !== 'enabled' && (
+                <button onClick={() => handleAutoSecToggle(true)} disabled={autoSecRunning} className="btn-primary text-xs py-0.5">
+                  {autoSecRunning ? '…' : 'Enable'}
+                </button>
+              )}
+              {autoSecState === 'enabled' && (
+                <button onClick={() => handleAutoSecToggle(false)} disabled={autoSecRunning} className="btn-secondary text-xs py-0.5">
+                  {autoSecRunning ? '…' : 'Disable'}
+                </button>
+              )}
+            </div>
+          </div>
+          {autoSecLines.length > 0 && (
+            <div
+              ref={autoSecTermRef}
+              className="bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary overflow-y-auto"
+              style={{ maxHeight: '200px' }}
+            >
+              {autoSecLines.map((line, i) => (
+                <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+              ))}
+              {autoSecRunning && <span className="text-cyan animate-pulse">▋</span>}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <p className="text-xs text-red font-mono">{error}</p>}
       <div className="flex gap-2">
         <button onClick={handleSave} disabled={saving} className="btn-primary text-sm">
@@ -382,7 +488,9 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
     })
   }, [serverId])
 
-  useEffect(() => { loadPackages() }, [loadPackages])
+  // Re-fetch whenever the check timestamp changes (e.g. after "Check Now")
+  const checkedAt = server.latest_check?.checked_at
+  useEffect(() => { loadPackages() }, [loadPackages, checkedAt])
 
   const sorted = [...packages]
     .filter(p => !filterSec || p.is_security)
@@ -655,7 +763,7 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
       serverId,
       { packages, allow_phased: phasedOpt },
       (msg) => {
-        if (msg.type === 'output') setLines(l => [...l, msg.data as string])
+        if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
         else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
         else if (msg.type === 'error') setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
         else if (msg.type === 'complete') {
@@ -738,7 +846,7 @@ function AutoremoveModal({ serverId, packages, onClose }: {
       serverId,
       { packages },
       (msg) => {
-        if (msg.type === 'output') setLines(l => [...l, msg.data as string])
+        if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
         else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
         else if (msg.type === 'error') setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
         else if (msg.type === 'complete') {
@@ -846,6 +954,28 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [lines])
 
+  function runAptUpdate() {
+    setLines([])
+    setDone(false)
+    setRunning(true)
+    const ws = createAptUpdateWebSocket(serverId, (msg) => {
+      if (msg.type === 'output') {
+        setLines(l => applyChunk(l, msg.data as string))
+      } else if (msg.type === 'status') {
+        setLines(l => [...l, `\x1b[36m[status] ${msg.data}\x1b[0m\n`])
+      } else if (msg.type === 'error') {
+        setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+      } else if (msg.type === 'complete') {
+        setLines(l => [...l, `\x1b[32m\n[complete] ✓ apt-get update finished\x1b[0m\n`])
+      }
+    }, () => {
+      setRunning(false)
+      setDone(true)
+      onRefresh()
+    })
+    wsRef.current = ws
+  }
+
   function startUpgrade() {
     setLines([])
     setDone(false)
@@ -855,7 +985,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
 
     const ws = createUpgradeWebSocket(serverId, { action, allow_phased: allowPhased }, (msg) => {
       if (msg.type === 'output') {
-        setLines(l => [...l, msg.data as string])
+        setLines(l => applyChunk(l, msg.data as string))
       } else if (msg.type === 'status') {
         setLines(l => [...l, `\x1b[36m[status] ${msg.data}\x1b[0m\n`])
       } else if (msg.type === 'error') {
@@ -900,6 +1030,13 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               <input type="checkbox" checked={allowPhased} onChange={e => setAllowPhased(e.target.checked)} className="w-4 h-4 accent-green" />
               Allow phased updates
             </label>
+            <button
+              onClick={runAptUpdate}
+              className="btn-secondary"
+              title="Refresh package lists from remote repositories"
+            >
+              apt-get update
+            </button>
             <button
               onClick={startUpgrade}
               disabled={!hasUpdates}

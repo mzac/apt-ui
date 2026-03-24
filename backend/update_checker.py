@@ -119,6 +119,17 @@ async def _gather_stats(server: Server) -> dict:
         "virt": "systemd-detect-virt 2>/dev/null; true",
         "cpu": "nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo ''",
         "mem": "free -m 2>/dev/null | awk '/^Mem:/{print $2}' || awk '/^MemTotal:/{printf \"%d\", $2/1024}' /proc/meminfo 2>/dev/null || echo ''",
+        # Detect unattended-upgrades state: not_installed / disabled / enabled
+        "auto_sec": (
+            "if ! dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then "
+            "  echo not_installed; "
+            "elif grep -qE '^APT::Periodic::Unattended-Upgrade \"[1-9]' "
+            "  /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then "
+            "  echo enabled; "
+            "else "
+            "  echo disabled; "
+            "fi"
+        ),
     }
     tasks = {k: run_command(server, v, timeout=30) for k, v in commands.items()}
     results = {k: await t for k, t in tasks.items()}
@@ -189,6 +200,9 @@ async def _gather_stats(server: Server) -> dict:
     else:
         virt_type = f"vm ({virt_raw})"
 
+    auto_sec_raw = results["auto_sec"].stdout.strip().splitlines()[0].lower() if results.get("auto_sec") and results["auto_sec"].stdout.strip() else ""
+    auto_security_updates = auto_sec_raw if auto_sec_raw in ("not_installed", "disabled", "enabled") else None
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -199,6 +213,7 @@ async def _gather_stats(server: Server) -> dict:
         "cpu_count": cpu_count,
         "mem_total_mb": mem_total_mb,
         "virt_type": virt_type,
+        "auto_security_updates": auto_security_updates,
     }
 
 
@@ -302,6 +317,7 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         cpu_count=stats.get("cpu_count"),
         mem_total_mb=stats.get("mem_total_mb"),
         virt_type=stats.get("virt_type"),
+        auto_security_updates=stats.get("auto_security_updates"),
     )
     db.add(stat_row)
 
@@ -392,7 +408,11 @@ async def check_all_servers(
             if progress_callback:
                 await progress_callback(s, "running")
             try:
-                results[s.id] = await check_server(s, db)
+                # Each server gets its own session — sharing one AsyncSession
+                # across concurrent coroutines causes silent write failures.
+                from backend.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as server_db:
+                    results[s.id] = await check_server(s, server_db)
                 status = results[s.id].status
             except Exception as exc:
                 logger.error("Error checking %s: %s", s.name, exc)

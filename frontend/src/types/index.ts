@@ -63,6 +63,7 @@ export interface Server {
   kernel_version: string | null
   uptime_seconds: number | null
   virt_type: string | null
+  auto_security_updates: string | null  // not_installed / disabled / enabled
 }
 
 export interface PackageInfo {
@@ -178,3 +179,34 @@ export interface CheckAllProgress {
 }
 
 export type ServerStatus = 'up_to_date' | 'updates_available' | 'error' | 'checking' | 'upgrading' | 'disabled' | 'unknown'
+
+export interface AptCacheServer {
+  id: number
+  label: string
+  host: string
+  port: number
+  enabled: boolean
+}
+
+export interface AptCacheDailyRow {
+  period: string
+  date: string
+  hit_requests: number
+  hit_req_pct: number
+  miss_requests: number
+  total_requests: number
+  hits_data: string
+  hits_data_pct: number
+  misses_data: string
+  total_data: string
+}
+
+export interface AptCacheStats extends AptCacheServer {
+  ok: boolean
+  error?: string
+  data_fetched_startup: string
+  data_fetched_recent: string
+  data_served_startup: string
+  data_served_recent: string
+  daily: AptCacheDailyRow[]
+}
