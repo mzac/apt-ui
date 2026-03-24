@@ -2,6 +2,8 @@
 
 A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` package management across a fleet of Ubuntu / Debian / Raspbian servers. Runs as a single Docker container.
 
+![Main Gui](images/main.png)
+
 ---
 
 ## Features
