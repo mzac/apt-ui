@@ -134,6 +134,7 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN conffile_action TEXT DEFAULT 'confdef_confold'",
             "ALTER TABLE servers ADD COLUMN ssh_private_key_enc TEXT",
             "ALTER TABLE server_stats ADD COLUMN auto_security_updates TEXT",
+            "ALTER TABLE schedule_config ADD COLUMN reachability_ttl_minutes INTEGER DEFAULT 5",
         ]
         for sql in migrations:
             try:

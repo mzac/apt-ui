@@ -128,6 +128,7 @@ export interface ScheduleConfig {
   auto_tag_virt: boolean
   run_apt_update_before_upgrade: boolean
   conffile_action: string
+  reachability_ttl_minutes: number
 }
 
 export interface NotificationConfig {

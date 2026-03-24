@@ -817,6 +817,23 @@ function ScheduleTab() {
         <p className="text-xs text-text-muted">Timezone: <span className="font-mono">{cfg.timezone}</span></p>
       </section>
 
+      <section className="card p-4 space-y-4">
+        <h2 className="text-sm font-medium text-text-primary">Reachability Check</h2>
+        <p className="text-xs text-text-muted">Controls how often the dashboard probes each server via SSH to show the reachability indicator. Results are cached server-side; set to 0 to disable.</p>
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-text-muted">Cache TTL (minutes)</label>
+          <input
+            type="number"
+            className="input w-24"
+            min={0}
+            max={60}
+            value={form.reachability_ttl_minutes ?? 5}
+            onChange={e => setForm(f => ({ ...f, reachability_ttl_minutes: parseInt(e.target.value) || 0 }))}
+          />
+          <span className="text-xs text-text-muted">{(form.reachability_ttl_minutes ?? 5) === 0 ? '— disabled' : `re-checks every ${form.reachability_ttl_minutes ?? 5} min`}</span>
+        </div>
+      </section>
+
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Schedule'}</button>
     </form>
   )

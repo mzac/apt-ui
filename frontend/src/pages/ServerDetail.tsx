@@ -13,25 +13,35 @@ const ansiConvert = new Convert({ escapeXML: true })
 
 // Handle \r (carriage return) in terminal output so apt progress lines
 // overwrite in place rather than accumulating into one long concatenated line.
+// \r\n (Windows / dpkg line endings) is treated as a plain newline so that
+// lines like "Preparing to unpack ...\r\n" are not silently dropped.
 function applyChunk(lines: string[], chunk: string): string[] {
   const result = [...lines]
   let current = result.length > 0 ? result.pop()! : ''
   let i = 0
   while (i < chunk.length) {
-    const cr = chunk.indexOf('\r', i)
-    const nl = chunk.indexOf('\n', i)
-    if (nl !== -1 && (cr === -1 || nl < cr)) {
-      current += chunk.slice(i, nl)
+    const ch = chunk[i]
+    if (ch === '\n') {
       result.push(current)
       current = ''
-      i = nl + 1
-    } else if (cr !== -1 && (nl === -1 || cr < nl)) {
-      current += chunk.slice(i, cr)
-      current = ''  // \r resets to start of line
-      i = cr + 1
+      i++
+    } else if (ch === '\r') {
+      if (chunk[i + 1] === '\n') {
+        // \r\n — treat as a regular newline, preserve content
+        result.push(current)
+        current = ''
+        i += 2
+      } else {
+        // bare \r — carriage return, overwrite current line
+        current = ''
+        i++
+      }
     } else {
-      current += chunk.slice(i)
-      break
+      // Scan forward to the next control character
+      let end = i + 1
+      while (end < chunk.length && chunk[end] !== '\r' && chunk[end] !== '\n') end++
+      current += chunk.slice(i, end)
+      i = end
     }
   }
   result.push(current)

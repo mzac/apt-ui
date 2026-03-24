@@ -96,17 +96,16 @@ export default function Dashboard() {
 
   const isDefaultPassword = user?.is_default_password === true
 
-  async function pingAll(srvList: Server[]) {
-    const results: Record<number, boolean | null> = {}
-    await Promise.allSettled(srvList.map(async s => {
-      try {
-        const r = await serversApi.test(s.id)
-        results[s.id] = r.success
-      } catch {
-        results[s.id] = false
-      }
-    }))
-    setReachability(results)
+  async function pingAll() {
+    try {
+      const raw = await serversApi.reachability()
+      // API returns Record<string, boolean> — convert keys to numbers
+      const results: Record<number, boolean> = {}
+      for (const [k, v] of Object.entries(raw)) results[parseInt(k)] = v
+      setReachability(results)
+    } catch {
+      // silently ignore — reachability is best-effort
+    }
   }
 
   const load = useCallback(async () => {
@@ -131,12 +130,10 @@ export default function Dashboard() {
     return () => window.removeEventListener('apt:refresh', handler)
   }, [load])
 
-  // Ping all servers once on mount, then every 5 minutes (SSH test is heavier than polling)
+  // Reachability: single endpoint with server-side TTL caching
   useEffect(() => {
-    load().then(s => s && pingAll(s))
-    const id = setInterval(() => {
-      if (serverList.length > 0) pingAll(serverList)
-    }, 5 * 60_000)
+    load().then(() => pingAll())
+    const id = setInterval(() => pingAll(), 5 * 60_000)
     return () => clearInterval(id)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

@@ -280,6 +280,7 @@ class ScheduleConfigOut(BaseModel):
     auto_tag_virt: bool = False
     run_apt_update_before_upgrade: bool = False
     conffile_action: str = "confdef_confold"
+    reachability_ttl_minutes: int = 5
 
     model_config = {"from_attributes": True}
 
@@ -296,6 +297,7 @@ class ScheduleConfigUpdate(BaseModel):
     auto_tag_virt: Optional[bool] = None
     run_apt_update_before_upgrade: Optional[bool] = None
     conffile_action: Optional[str] = None
+    reachability_ttl_minutes: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

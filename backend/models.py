@@ -206,6 +206,7 @@ class ScheduleConfig(Base):
     auto_tag_virt: Mapped[bool] = mapped_column(Boolean, default=False)
     run_apt_update_before_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
     conffile_action: Mapped[str] = mapped_column(Text, default="confdef_confold")
+    reachability_ttl_minutes: Mapped[int] = mapped_column(Integer, default=5)
     # conffile_action controls what apt-get does when a package ships a new version
     # of a config file that has been locally modified:
     #   confdef_confold — use the package's default answer; if none, keep existing (safest)

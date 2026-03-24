@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +17,13 @@ from backend.schemas import (
 from backend.ssh_manager import test_connection, run_command
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
+
+# ---------------------------------------------------------------------------
+# In-memory reachability cache  {server_id: (reachable: bool, checked_at: float)}
+# ---------------------------------------------------------------------------
+
+_reachability_cache: dict[int, tuple[bool, float]] = {}
+
 
 # ---------------------------------------------------------------------------
 # In-memory check-all progress tracker
@@ -483,6 +491,47 @@ async def reboot_server(
     if result.exit_code == 0 or result.exit_code == 255:
         return {"success": True, "detail": "Reboot command sent"}
     return {"success": False, "detail": result.stderr or "Reboot command failed"}
+
+
+@router.get("/reachability")
+async def get_reachability(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Return cached SSH reachability for all enabled servers, refreshing stale entries.
+
+    TTL is controlled by schedule_config.reachability_ttl_minutes.
+    Returns {server_id: bool} — omits servers whose cached result is still fresh.
+    Setting TTL to 0 disables reachability checks (returns empty dict).
+    """
+    from backend.models import ScheduleConfig
+    cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+    cfg = cfg_res.scalar_one_or_none()
+    ttl_minutes = cfg.reachability_ttl_minutes if cfg else 5
+
+    if ttl_minutes == 0:
+        return {}
+
+    ttl_seconds = ttl_minutes * 60
+    now = time.time()
+
+    servers_res = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers = servers_res.scalars().all()
+
+    stale = [s for s in servers if s.id not in _reachability_cache or (now - _reachability_cache[s.id][1]) >= ttl_seconds]
+
+    if stale:
+        sem = asyncio.Semaphore(10)
+        async def _check(server):
+            async with sem:
+                try:
+                    result = await test_connection(server)
+                    _reachability_cache[server.id] = (result.success, time.time())
+                except Exception:
+                    _reachability_cache[server.id] = (False, time.time())
+        await asyncio.gather(*[_check(s) for s in stale])
+
+    return {s.id: _reachability_cache[s.id][0] for s in servers if s.id in _reachability_cache}
 
 
 @router.post("/{server_id}/test")
