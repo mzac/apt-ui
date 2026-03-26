@@ -48,7 +48,8 @@ async def fleet_overview(
             up_to_date += 1
         else:
             updates_available += 1
-            security_total += check.security_packages
+            if check.security_packages > 0:
+                security_total += 1
         if check.reboot_required:
             reboot_required += 1
         held_total += check.held_packages
@@ -66,7 +67,7 @@ async def fleet_overview(
         total_servers=total,
         up_to_date=up_to_date,
         updates_available=updates_available,
-        security_updates_total=security_total,
+        security_servers=security_total,
         errors=errors,
         reboot_required=reboot_required,
         held_packages_total=held_total,

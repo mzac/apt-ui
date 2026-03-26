@@ -247,7 +247,7 @@ class FleetOverview(BaseModel):
     total_servers: int
     up_to_date: int
     updates_available: int
-    security_updates_total: int
+    security_servers: int
     errors: int
     reboot_required: int
     held_packages_total: int

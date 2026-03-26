@@ -1034,9 +1034,9 @@ function PreferencesTab() {
         </div>
       </section>
 
+      <DisplayPreferencesSection />
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>
     </form>
-    <DisplayPreferencesSection />
     </div>
   )
 }

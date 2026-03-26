@@ -320,7 +320,7 @@ export default function Dashboard() {
               { label: 'Total', value: overview.total_servers, color: 'text-text-primary', filter: null },
               { label: 'Up to date', value: overview.up_to_date, color: 'text-green', filter: 'up_to_date' },
               { label: 'Updates', value: overview.updates_available, color: overview.updates_available > 0 ? 'text-amber' : 'text-text-muted', filter: 'updates_available' },
-              { label: 'Security', value: overview.security_updates_total, color: overview.security_updates_total > 0 ? 'text-red' : 'text-text-muted', filter: 'security' },
+              { label: 'Security', value: overview.security_servers, color: overview.security_servers > 0 ? 'text-red' : 'text-text-muted', filter: 'security' },
               { label: 'Errors', value: overview.errors, color: overview.errors > 0 ? 'text-red' : 'text-text-muted', filter: 'error' },
               { label: 'Reboot', value: overview.reboot_required, color: overview.reboot_required > 0 ? 'text-amber' : 'text-text-muted', filter: 'reboot' },
               { label: 'Held pkgs', value: overview.held_packages_total, color: overview.held_packages_total > 0 ? 'text-blue' : 'text-text-muted', filter: 'held' },

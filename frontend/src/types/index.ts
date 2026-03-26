@@ -109,7 +109,7 @@ export interface FleetOverview {
   total_servers: number
   up_to_date: number
   updates_available: number
-  security_updates_total: number
+  security_servers: number
   errors: number
   reboot_required: number
   held_packages_total: number
