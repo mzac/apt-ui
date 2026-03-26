@@ -28,6 +28,9 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Upgrade dry-run preview** — preview what `apt-get upgrade` would do (packages, version deltas) before committing, via a collapsible panel in the upgrade UI
 - **Server notes** — free-text notes field per server, visible in the server detail header
 - **History filtering** — filter the fleet-wide upgrade history by server and/or status
+- **Docker host detection** — automatically detects when a managed server is the Docker host running the dashboard; shows a `🐳 docker host` badge on the server card; blocks the Run Upgrade button and shows an SSH command when container-runtime packages (Docker, containerd, Podman, runc, LXD, etc.) are in the upgrade list to prevent the container being killed mid-upgrade; detection works by hostname resolution and by comparing the Docker bridge gateway IP against the server's own IPs collected during check
+- **Default dashboard sort** — configurable in Settings → Preferences → Display; persisted in `localStorage` so it survives browser restarts; changing the sort on the dashboard also updates the preference
+- **Fleet summary security count** — shows number of hosts with security updates (not total package count), consistent with how the Updates counter works
 - **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
 - **Dark industrial UI** — dense, information-rich dashboard designed for ops use
 

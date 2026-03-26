@@ -78,6 +78,7 @@ Examples from the codebase:
 "ALTER TABLE server_stats ADD COLUMN eeprom_update_available TEXT",
 "ALTER TABLE server_stats ADD COLUMN eeprom_current_version TEXT",
 "ALTER TABLE server_stats ADD COLUMN eeprom_latest_version TEXT",
+"ALTER TABLE server_stats ADD COLUMN host_ips TEXT",
 "ALTER TABLE notification_config ADD COLUMN daily_summary_webhook BOOLEAN DEFAULT 1",
 "ALTER TABLE notification_config ADD COLUMN notify_upgrade_webhook BOOLEAN DEFAULT 1",
 "ALTER TABLE notification_config ADD COLUMN notify_error_webhook BOOLEAN DEFAULT 1",
@@ -153,6 +154,9 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 - **Dashboard tag search fix**: search filter checks `(s.tags ?? []).some(t => t.name.toLowerCase().includes(search))` — was previously case-sensitive and ignored tags with spaces
 - **Cron validation in ScheduleTab**: `describeCron()` helper parses 5-field cron into human-readable text (e.g. "Daily at 06:00"); `CronInput` component shows green preview when valid, red error when invalid; used for check cron and auto-upgrade cron fields
 - **Reboot confirmation modal**: `RebootButton` in `Dashboard.tsx` uses `createPortal` modal overlay with backdrop blur and warning text instead of inline confirm buttons; also used in `ServerDetail.tsx`
+- **Docker host detection**: `_get_docker_host_ips()` in `backend/routers/servers.py` — module-level `lru_cache`; checks `/.dockerenv` and `/run/.containerenv` (Podman), reads default gateway from `/proc/net/route`, also tries `host.docker.internal`; `_server_is_docker_host(hostname, stored_ips_json)` checks both hostname resolution and IPs collected from the server via SSH (`hostname -I`, stored in `server_stats.host_ips`); `is_docker_host: bool` in `ServerOut`; `🐳 docker host` badge on dashboard cards; Upgrade tab shows a red blocking callout with SSH command and disables Run Upgrade when container-runtime packages are in the list; package regex covers Docker, Podman, containerd, runc, crun, LXD/LXC, moby
+- **`server_stats.host_ips`**: JSON list of IPs collected from `hostname -I` during each check; used by `_server_is_docker_host()` to detect the Docker host when the server's LAN hostname/IP differs from the Docker bridge gateway; `ALTER TABLE server_stats ADD COLUMN host_ips TEXT` migration added
+- **Fleet summary security counter** shows number of hosts with `security_packages > 0` (not a sum of all security packages); field renamed from `security_updates_total` to `security_servers` in `FleetOverview` schema
 - **Tailscale sidecar** — opt-in via compose overlay; NOT embedded in the app image (updates independently via `docker compose pull`):
   - `docker-compose.tailscale.yml` — production overlay; adds `tailscale/tailscale:latest` sidecar; app uses `network_mode: service:tailscale` to share the tailnet interface
   - `docker-compose.local.yml` + `build-run-local.sh` — git-ignored local dev equivalents; uses separate `tailscale-state-local` / `tailscale-socket-local` volumes to avoid conflicting with production
@@ -169,11 +173,11 @@ The app is a **single Docker container**: FastAPI serves both the REST/WebSocket
 
 **Background job bell:** `Layout.tsx` reads `useJobStore` and renders a bell icon in the top nav. Jobs are registered via `addJob()` from Dashboard (`handleCheckAll`, `handleCheck`), `UpgradeAllModal` (`start()`), and `UpgradePanel` in ServerDetail. Jobs auto-remove 3 s after completion; no amber dot (unseenCount always 0).
 
-**Dashboard sort persistence:** `sortBy` state is initialised from `sessionStorage` (`dashboard:sortBy`) so the chosen sort order survives navigation within the session.
+**Dashboard sort persistence:** `sortBy` state is initialised from `localStorage` (`dashboard:sortBy`) so the chosen sort order survives across browser sessions. Default sort is also configurable in Settings → Preferences → Display (writes the same key). Changing the sort on the dashboard updates the stored preference immediately.
 
 **Terminal rendering:** `@xterm/xterm` is used for the terminal panel in ServerDetail (not just `ansi-to-html`).
 
-**Settings tabs:** Servers, Schedule, Preferences (concurrency / log retention / auto-upgrade / auto-tagging), Notifications, Infrastructure (apt-cacher-ng), Account, Backup.
+**Settings tabs:** Servers, Schedule, Preferences (concurrency / log retention / auto-upgrade / auto-tagging / display), Notifications, Infrastructure (apt-cacher-ng), Account, Backup. The Preferences tab has a "Display" section for local-only preferences (written directly to `localStorage`, no Save button needed).
 
 ---
 
