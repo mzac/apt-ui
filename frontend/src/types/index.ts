@@ -69,6 +69,7 @@ export interface Server {
   eeprom_latest_version: string | null    // unix timestamp string
   last_apt_update: string | null          // ISO datetime when apt cache was last refreshed on the server
   notes: string | null                    // free-text admin notes
+  is_docker_host: boolean                 // true when this server is the Docker host running this container
 }
 
 export interface PackageInfo {

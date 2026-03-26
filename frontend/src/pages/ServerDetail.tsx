@@ -1047,6 +1047,8 @@ function SshShellPanelWrapper({ serverId }: { serverId: number }) {
 // ---------------------------------------------------------------------------
 // Upgrade panel (extracted from old TerminalTab body)
 // ---------------------------------------------------------------------------
+const CONTAINER_RUNTIME_PKGS = /^(docker-ce|docker-ce-cli|docker-ce-rootless-extras|docker\.io|containerd|containerd\.io|docker-buildx-plugin|docker-compose-plugin|moby-engine|podman|podman-compose|buildah|runc|crun|lxd|lxc|lxc-utils|lxcfs)$/
+
 function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
   const [action, setAction] = useState('upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
@@ -1056,6 +1058,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [dryRunLines, setDryRunLines] = useState<string[]>([])
   const [dryRunning, setDryRunning] = useState(false)
   const [showDryRun, setShowDryRun] = useState(false)
+  const [runtimePkgs, setRuntimePkgs] = useState<string[]>([])
   const dryWsRef = useRef<WebSocket | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
@@ -1063,6 +1066,17 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const { addJob, updateJob } = useJobStore()
 
   useEffect(() => () => { wsRef.current?.close(); dryWsRef.current?.close() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Detect container-runtime packages in the upgrade list
+  useEffect(() => {
+    if (!server.is_docker_host) return
+    serversApi.packages(serverId).then(data => {
+      const found = (data.packages as PackageInfo[])
+        .map(p => p.name)
+        .filter(n => CONTAINER_RUNTIME_PKGS.test(n))
+      setRuntimePkgs(found)
+    }).catch(() => {})
+  }, [serverId, server.is_docker_host]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [lines])
@@ -1139,6 +1153,24 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
 
   return (
     <div className="space-y-3">
+      {server.is_docker_host && runtimePkgs.length > 0 && (
+        <div className="rounded border border-red/50 bg-red/10 px-4 py-3 text-sm space-y-2">
+          <p className="font-semibold text-red">🐳 Upgrade blocked — Docker host</p>
+          <p className="text-text-muted">
+            <span className="font-mono text-red">{runtimePkgs.join(', ')}</span>{' '}
+            are in the upgrade list. Upgrading these will restart Docker and kill this container mid-upgrade. <strong className="text-text-primary">Run Upgrade is disabled.</strong>
+          </p>
+          <p className="text-text-muted">
+            Use <strong className="text-text-primary">Selective Upgrade</strong> on the Packages tab to upgrade everything else, then handle these packages directly on the host:
+          </p>
+          <pre className="bg-bg rounded px-3 py-2 text-xs font-mono text-text-primary overflow-x-auto select-all">{`ssh ${server.username}@${server.hostname}${server.ssh_port !== 22 ? ` -p ${server.ssh_port}` : ''}\nsudo apt-get install --only-upgrade ${runtimePkgs.join(' ')}`}</pre>
+        </div>
+      )}
+      {server.is_docker_host && runtimePkgs.length === 0 && (server.latest_check?.packages_available ?? 0) > 0 && (
+        <div className="rounded border border-purple/30 bg-purple/5 px-4 py-2 text-xs text-text-muted">
+          🐳 This is the Docker host. No container-runtime packages in the current upgrade list.
+        </div>
+      )}
       {!running && (
         <div className="card p-4 space-y-3">
           <div className="flex flex-wrap gap-4 items-end">
@@ -1177,9 +1209,9 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
             </button>
             <button
               onClick={startUpgrade}
-              disabled={!hasUpdates}
+              disabled={!hasUpdates || (server.is_docker_host && runtimePkgs.length > 0)}
               className="btn-amber"
-              title={!hasUpdates ? 'No updates available' : ''}
+              title={!hasUpdates ? 'No updates available' : (server.is_docker_host && runtimePkgs.length > 0) ? 'Blocked: container-runtime packages would be upgraded — see warning above' : ''}
             >
               Run Upgrade
             </button>

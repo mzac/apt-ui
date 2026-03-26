@@ -164,6 +164,7 @@ class ServerOut(BaseModel):
     eeprom_latest_version: Optional[str] = None   # unix timestamp string
     last_apt_update: Optional[datetime] = None    # mtime of apt package cache on remote
     notes: Optional[str] = None                   # free-text notes for this server
+    is_docker_host: bool = False                  # true when this server is the Docker host running this container
 
     model_config = {"from_attributes": True}
 

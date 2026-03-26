@@ -164,6 +164,7 @@ class ServerStats(Base):
     eeprom_update_available: Mapped[str | None] = mapped_column(Text, nullable=True)  # up_to_date / update_available / update_staged / error / frozen
     eeprom_current_version: Mapped[str | None] = mapped_column(Text, nullable=True)  # unix timestamp string of current bootloader version
     eeprom_latest_version: Mapped[str | None] = mapped_column(Text, nullable=True)   # unix timestamp string of latest available version
+    host_ips: Mapped[str | None] = mapped_column(Text, nullable=True)               # JSON list of IPs from `hostname -I` — used for Docker host detection
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 

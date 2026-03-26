@@ -119,6 +119,8 @@ async def _gather_stats(server: Server) -> dict:
         "virt": "systemd-detect-virt 2>/dev/null; true",
         "cpu": "nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo ''",
         "mem": "free -m 2>/dev/null | awk '/^Mem:/{print $2}' || awk '/^MemTotal:/{printf \"%d\", $2/1024}' /proc/meminfo 2>/dev/null || echo ''",
+        # All IPs on the server — used to detect if this machine is the Docker host
+        "host_ips": "hostname -I 2>/dev/null || ip addr show | grep -oP 'inet \\K[0-9.]+' | tr '\\n' ' ' || echo ''",
         # Detect unattended-upgrades state: not_installed / disabled / enabled
         "auto_sec": (
             "if ! dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then "
@@ -241,6 +243,14 @@ async def _gather_stats(server: Server) -> dict:
             if lat:
                 eeprom_latest_version = lat.group(1)
 
+    # Parse IPs from `hostname -I` (space-separated) into a JSON list
+    host_ips_raw = results.get("host_ips")
+    host_ips_json = None
+    if host_ips_raw and host_ips_raw.stdout.strip():
+        ips = [ip for ip in host_ips_raw.stdout.strip().split() if ip]
+        if ips:
+            host_ips_json = json.dumps(ips)
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -255,6 +265,7 @@ async def _gather_stats(server: Server) -> dict:
         "eeprom_update_available": eeprom_update_available,
         "eeprom_current_version": eeprom_current_version,
         "eeprom_latest_version": eeprom_latest_version,
+        "host_ips": host_ips_json,
     }
 
 
@@ -362,6 +373,7 @@ async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
         eeprom_update_available=stats.get("eeprom_update_available"),
         eeprom_current_version=stats.get("eeprom_current_version"),
         eeprom_latest_version=stats.get("eeprom_latest_version"),
+        host_ips=stats.get("host_ips"),
     )
     db.add(stat_row)
 

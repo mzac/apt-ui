@@ -1,5 +1,9 @@
 import asyncio
+import functools
 import json
+import os
+import socket
+import struct
 import time
 from datetime import datetime
 
@@ -17,6 +21,86 @@ from backend.schemas import (
 from backend.ssh_manager import test_connection, run_command
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
+
+# ---------------------------------------------------------------------------
+# Docker host detection
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=1)
+def _get_docker_host_ips() -> frozenset[str]:
+    """Return the IP(s) of the Docker host, or empty set if not running in Docker.
+
+    In bridge-mode Docker the host is always the default gateway.  We read
+    /proc/net/route rather than shelling out so there are no extra deps.
+    Result is cached for the lifetime of the process — the host IP never
+    changes while the container is running.
+    """
+    # /.dockerenv  — created by Docker and by Podman (for compatibility)
+    # /run/.containerenv — created by Podman (more reliable for rootful Podman)
+    if not (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")):
+        return frozenset()
+
+    ips: set[str] = set()
+
+    # Default gateway from kernel routing table (Linux only)
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                parts = line.strip().split()
+                # Destination == 00000000 → default route; Gateway is hex little-endian
+                if len(parts) >= 3 and parts[1] == "00000000":
+                    gw_int = int(parts[2], 16)
+                    gw_ip = socket.inet_ntoa(struct.pack("<I", gw_int))
+                    if gw_ip not in ("0.0.0.0", ""):
+                        ips.add(gw_ip)
+    except Exception:
+        pass
+
+    # Docker Desktop (Mac/Windows) injects this hostname
+    try:
+        ips.add(socket.gethostbyname("host.docker.internal"))
+    except Exception:
+        pass
+
+    return frozenset(ips)
+
+
+def _server_is_docker_host(hostname: str, stored_ips_json: str | None = None) -> bool:
+    """Return True if this server is the Docker host running this container.
+
+    Two complementary checks:
+    1. Resolve the server hostname and compare against the container's gateway IP.
+       Works when the server is added by its Docker bridge IP (rare).
+    2. Compare the container's gateway IP against the server's own IPs collected
+       during the last SSH check (`hostname -I`). Works for the common case where
+       the server is added by its LAN hostname/IP — because the Docker host also
+       has the bridge IP (e.g. 172.17.0.1) assigned to its docker0 interface.
+    """
+    host_ips = _get_docker_host_ips()
+    if not host_ips:
+        return False
+
+    # Check 1: hostname resolution
+    try:
+        results = socket.getaddrinfo(hostname, None)
+        server_ips = {r[4][0] for r in results}
+        if host_ips & server_ips:
+            return True
+    except Exception:
+        pass
+
+    # Check 2: compare against IPs collected from the server via SSH
+    if stored_ips_json:
+        try:
+            import json as _json
+            stored_ips = set(_json.loads(stored_ips_json))
+            if host_ips & stored_ips:
+                return True
+        except Exception:
+            pass
+
+    return False
+
 
 # ---------------------------------------------------------------------------
 # In-memory reachability cache  {server_id: (reachable: bool, checked_at: float)}
@@ -165,6 +249,7 @@ async def _build_server_out(
         eeprom_latest_version=stats_row.eeprom_latest_version if stats_row else None,
         last_apt_update=stats_row.last_apt_update if stats_row else None,
         notes=server.notes,
+        is_docker_host=_server_is_docker_host(server.hostname, stats_row.host_ips if stats_row else None),
     )
 
 

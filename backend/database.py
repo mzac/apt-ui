@@ -138,6 +138,7 @@ async def init_db():
             "ALTER TABLE server_stats ADD COLUMN eeprom_update_available TEXT",
             "ALTER TABLE server_stats ADD COLUMN eeprom_current_version TEXT",
             "ALTER TABLE server_stats ADD COLUMN eeprom_latest_version TEXT",
+            "ALTER TABLE server_stats ADD COLUMN host_ips TEXT",
             "ALTER TABLE servers ADD COLUMN notes TEXT",
             "ALTER TABLE notification_config ADD COLUMN webhook_enabled BOOLEAN DEFAULT 0",
             "ALTER TABLE notification_config ADD COLUMN webhook_url TEXT",

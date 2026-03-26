@@ -85,7 +85,7 @@ export default function Dashboard() {
   const [activeTag, setActiveTag] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>(
-    () => (sessionStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
+    () => (localStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
   )
   const [groupView, setGroupView] = useState(false)
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
@@ -430,7 +430,7 @@ export default function Dashboard() {
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <select className="input w-auto text-xs py-1" value={sortBy} onChange={e => { const v = e.target.value as typeof sortBy; setSortBy(v); sessionStorage.setItem('dashboard:sortBy', v) }}>
+        <select className="input w-auto text-xs py-1" value={sortBy} onChange={e => { const v = e.target.value as typeof sortBy; setSortBy(v); localStorage.setItem('dashboard:sortBy', v) }}>
           <option value="status">Sort: Status</option>
           <option value="updates">Sort: Updates</option>
           <option value="name">Sort: Name</option>
@@ -830,6 +830,9 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
                   {t.name}
                 </span>
               ))}
+              {s.is_docker_host && (
+                <span className="badge bg-purple/10 text-purple border border-purple/30 text-xs" title="This server is the Docker host running this container — upgrading Docker/containerd here may disrupt the dashboard">🐳 docker host</span>
+              )}
               {c?.reboot_required && (
                 <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot</span>
               )}

@@ -953,7 +953,8 @@ function PreferencesTab() {
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
 
   return (
-    <form onSubmit={handleSave} className="space-y-6 max-w-xl">
+    <div className="space-y-6 max-w-xl">
+    <form onSubmit={handleSave} className="space-y-6">
       <section className="card p-4 space-y-4">
         <h2 className="text-sm font-medium text-text-primary">Auto-Upgrade</h2>
         <div className="px-3 py-2 bg-amber/10 border border-amber/30 rounded text-amber text-xs">
@@ -1035,6 +1036,46 @@ function PreferencesTab() {
 
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>
     </form>
+    <DisplayPreferencesSection />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Display preferences (localStorage only — no backend)
+// ---------------------------------------------------------------------------
+
+const SORT_OPTIONS = [
+  { value: 'name',    label: 'Name' },
+  { value: 'status',  label: 'Status' },
+  { value: 'updates', label: 'Update count' },
+  { value: 'group',   label: 'Group' },
+] as const
+
+function DisplayPreferencesSection() {
+  const [defaultSort, setDefaultSort] = useState(
+    () => localStorage.getItem('dashboard:sortBy') ?? 'status'
+  )
+
+  function handleSortChange(v: string) {
+    setDefaultSort(v)
+    localStorage.setItem('dashboard:sortBy', v)
+  }
+
+  return (
+    <section className="card p-4 space-y-3">
+      <h2 className="text-sm font-medium text-text-primary">Display</h2>
+      <p className="text-xs text-text-muted">These preferences are stored locally in your browser and apply only to this device.</p>
+      <div>
+        <label className="label">Default dashboard sort order</label>
+        <select className="input w-48" value={defaultSort} onChange={e => handleSortChange(e.target.value)}>
+          {SORT_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <p className="text-xs text-text-muted mt-1">Takes effect on the next page load. Changing the sort on the dashboard also updates this.</p>
+      </div>
+    </section>
   )
 }
 
