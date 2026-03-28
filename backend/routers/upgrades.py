@@ -1051,7 +1051,8 @@ async def validate_deb_url(
         return {"valid": False, "error": "Invalid URL"}
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+        # follow_redirects=False: redirects could point to a private IP, bypassing the check above
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10) as client:
             resp = await client.head(url)
     except httpx.TimeoutException:
         return {"valid": False, "error": "Request timed out"}
@@ -1061,6 +1062,8 @@ async def validate_deb_url(
         logging.getLogger(__name__).exception("Unexpected error validating deb URL")
         return {"valid": False, "error": "Request failed"}
 
+    if resp.status_code in (301, 302, 303, 307, 308):
+        return {"valid": False, "error": "URL redirects — please use the final direct download URL"}
     if resp.status_code != 200:
         return {"valid": False, "error": f"Server returned HTTP {resp.status_code}"}
 
