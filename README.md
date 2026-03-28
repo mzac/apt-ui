@@ -4,6 +4,8 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ![Main Gui](images/main.png)
 
+> **This project was entirely written by [Claude](https://claude.ai) (Anthropic's AI assistant) via [Claude Code](https://claude.ai/code).** All code, configuration, and documentation — from the FastAPI backend and asyncssh integration to the React frontend and Docker setup — was generated through an iterative, conversation-driven development process with no manual coding.
+
 ---
 
 ## Features
