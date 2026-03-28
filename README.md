@@ -6,6 +6,8 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 > **This project was entirely written by [Claude](https://claude.ai) (Anthropic's AI assistant) via [Claude Code](https://claude.ai/code).** All code, configuration, and documentation — from the FastAPI backend and asyncssh integration to the React frontend and Docker setup — was generated through an iterative, conversation-driven development process with no manual coding.
 
+📐 [Architecture](ARCHITECTURE.md) · 🔒 [Security Policy](SECURITY.md)
+
 ---
 
 ## Features
@@ -274,38 +276,56 @@ npm run dev   # Vite dev server on :5173, proxies /api/* to :8000
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph browser["Browser"]
+        SPA["React 18 SPA  —  Vite · TypeScript · Tailwind\n6 pages · 6 components · Zustand state"]
+    end
+
+    subgraph container["Docker Container  (:8000)"]
+        direction TB
+        API["FastAPI  —  14 routers · 50+ REST endpoints · 15 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
+        BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook"]
+        DB[("SQLite  /data/apt-dashboard.db\n13 tables · 38 migrations")]
+        SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]
+    end
+
+    subgraph servers["Managed Servers  (SSH :22)"]
+        S["Ubuntu · Debian · Raspbian · Armbian · Proxmox VE · Raspberry Pi"]
+    end
+
+    subgraph notif["Notifications  (optional)"]
+        N["SMTP Email  ·  Telegram Bot API  ·  Outbound Webhook"]
+    end
+
+    SPA -- "REST + WebSocket" --> API
+    API --> DB
+    API --> SSH
+    BG --> DB
+    BG --> SSH
+    BG --> N
+    SSH --> S
 ```
-Docker Container
-┌─────────────────────────────────────────┐
-│  FastAPI (backend.main:app)  :8000       │
-│  ├── /api/*       REST + WebSocket       │
-│  ├── /health      liveness probe         │
-│  └── /*           React SPA (static/)    │
-│                                          │
-│  SQLite  ←→  /data/apt-dashboard.db      │
-│  APScheduler  (cron jobs)                │
-└──────────────┬──────────────────────────┘
-               │ asyncssh (no host key verification)
-               ▼
-        Remote Ubuntu/Debian/Raspbian hosts
-        (apt-get over SSH, passwordless sudo)
-```
+
+> See [ARCHITECTURE.md](ARCHITECTURE.md) for full diagrams, request flow details, data model, and CI/CD pipeline documentation.
 
 ---
 
 ## Tech Stack
 
-| Layer | Library |
+| Layer | Library / Tool |
 |---|---|
 | Backend | Python 3.12, FastAPI, Uvicorn |
-| Auth | passlib[bcrypt], PyJWT (httpOnly cookie) |
-| SSH | asyncssh |
-| Database | SQLite, SQLAlchemy (async + aiosqlite) |
-| Scheduler | APScheduler 3.x (AsyncIOScheduler) |
-| Email | aiosmtplib |
-| Telegram | httpx (direct Bot API calls) |
+| Auth | passlib[bcrypt], PyJWT — httpOnly cookie (HS256, 24 h) |
+| SSH | asyncssh — fresh connection per command, no host-key verification |
+| Encryption | Fernet (AES-128-CBC + HMAC-SHA256) — per-server SSH keys in DB |
+| Database | SQLite, SQLAlchemy async + aiosqlite |
+| Scheduler | APScheduler 3.x AsyncIOScheduler — live reconfiguration, no restart needed |
+| Notifications | aiosmtplib (email), httpx (Telegram Bot API), httpx (webhook + HMAC-SHA256) |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | State | Zustand |
 | Charts | Recharts |
-| Terminal | ansi-to-html |
-| Container | Multi-stage Dockerfile (node:20-alpine → python:3.12-slim) |
+| Terminal | ansi-to-html (apt output), @xterm/xterm (interactive shell) |
+| Container | Multi-stage Dockerfile — node:20-alpine build → python:3.12-slim runtime |
+| Registry | GitHub Container Registry (ghcr.io) — linux/amd64 + linux/arm64 |
+| CI/CD | GitHub Actions — CodeQL scanning, Dependabot, multi-arch release pipeline |
