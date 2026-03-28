@@ -1,10 +1,13 @@
 import asyncio
+import io
 import json
 import re
 import shlex
 
 import asyncssh
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+import httpx
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -997,6 +1000,204 @@ async def ws_autoremove(websocket: WebSocket, server_id: int):
                 packages=packages if packages else None,
                 send_fn=send_fn,
             )
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# .deb file installation — URL validation
+# ---------------------------------------------------------------------------
+
+class DebUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/api/servers/{server_id}/validate-deb-url")
+async def validate_deb_url(
+    server_id: int,
+    body: DebUrlRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """HEAD-request the URL from the dashboard container to validate it is a .deb file."""
+    url = body.url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return {"valid": False, "error": "URL must start with http:// or https://"}
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+            resp = await client.head(url)
+    except Exception as exc:
+        return {"valid": False, "error": f"Request failed: {exc}"}
+
+    if resp.status_code != 200:
+        return {"valid": False, "error": f"Server returned HTTP {resp.status_code}"}
+
+    content_type = resp.headers.get("content-type", "")
+    is_deb = (
+        "debian" in content_type
+        or "octet-stream" in content_type
+        or url.lower().split("?")[0].endswith(".deb")
+    )
+    if not is_deb:
+        return {"valid": False, "error": f"URL does not appear to be a .deb file (Content-Type: {content_type})"}
+
+    filename = url.split("/")[-1].split("?")[0] or "package.deb"
+    filename = re.sub(r"[^a-zA-Z0-9._\-+]", "_", filename)
+    if not filename.endswith(".deb"):
+        filename += ".deb"
+
+    content_length = resp.headers.get("content-length")
+    return {
+        "valid": True,
+        "filename": filename,
+        "content_length": int(content_length) if content_length else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# .deb file installation — file upload (SCP to remote /tmp/)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/servers/{server_id}/upload-deb")
+async def upload_deb(
+    server_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Receive a .deb file and copy it to /tmp/ on the target server via SFTP."""
+    server = await _get_server(server_id, db)
+
+    if not (file.filename or "").lower().endswith(".deb"):
+        raise HTTPException(status_code=400, detail="File must be a .deb package")
+
+    contents = await file.read()
+    if len(contents) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 500 MB)")
+
+    safe_name = re.sub(r"[^a-zA-Z0-9._\-+]", "_", file.filename or "package.deb")
+    if not safe_name.endswith(".deb"):
+        safe_name += ".deb"
+    remote_path = f"/tmp/{safe_name}"
+
+    try:
+        async with asyncssh.connect(**_connect_options(server)) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.putfo(io.BytesIO(contents), remote_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"SFTP upload failed: {exc}")
+
+    return {"remote_path": remote_path, "filename": safe_name, "size": len(contents)}
+
+
+# ---------------------------------------------------------------------------
+# .deb file installation — WebSocket (download URL or install pre-uploaded)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/install-deb/{server_id}")
+async def ws_install_deb(websocket: WebSocket, server_id: int):
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        source = params.get("source", "url")  # "url" | "remote"
+        sudo = "" if server.username == "root" else "sudo "
+
+        try:
+            if source == "url":
+                url = params.get("url", "").strip()
+                if not url.lower().startswith(("http://", "https://")):
+                    await send_fn({"type": "error", "data": "Invalid URL"})
+                    await websocket.close()
+                    return
+
+                filename = url.split("/")[-1].split("?")[0] or "package.deb"
+                filename = re.sub(r"[^a-zA-Z0-9._\-+]", "_", filename)
+                if not filename.endswith(".deb"):
+                    filename += ".deb"
+                remote_path = shlex.quote(f"/tmp/{filename}")
+
+                await send_fn({"type": "status", "data": "downloading"})
+                dl_cmd = f"wget -O {remote_path} {shlex.quote(url)}"
+                dl_result = await run_command_stream(server, dl_cmd, send_fn, timeout=300)
+                if dl_result.exit_code != 0:
+                    await send_fn({"type": "complete", "data": {"success": False, "error": "Download failed"}})
+                    return
+
+            elif source == "remote":
+                path = params.get("path", "")
+                if not re.match(r"^/tmp/[a-zA-Z0-9._\-+]+\.deb$", path):
+                    await send_fn({"type": "error", "data": "Invalid remote path"})
+                    await websocket.close()
+                    return
+                remote_path = shlex.quote(path)
+
+            else:
+                await send_fn({"type": "error", "data": "Invalid source"})
+                await websocket.close()
+                return
+
+            # Install with dpkg
+            await send_fn({"type": "status", "data": "installing"})
+            install_cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive dpkg -i {remote_path}"
+            await run_command_stream(server, install_cmd, send_fn, timeout=300)
+
+            # Fix any missing dependencies
+            await send_fn({"type": "status", "data": "fixing_deps"})
+            fix_cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -f -y"
+            fix_result = await run_command_stream(server, fix_cmd, send_fn, timeout=300)
+
+            # Clean up temp file
+            await run_command(server, f"rm -f {remote_path}", timeout=10)
+
+            success = fix_result.exit_code == 0
+            await send_fn({"type": "complete", "data": {"success": success}})
+
+            if success:
+                from backend.update_checker import check_server
+                from backend.database import AsyncSessionLocal as ASL
+
+                async def _bg():
+                    async with ASL() as bg_db:
+                        from sqlalchemy import select as _sel
+                        srv = (await bg_db.execute(_sel(Server).where(Server.id == server_id))).scalar_one_or_none()
+                        if srv:
+                            await check_server(srv, bg_db)
+
+                asyncio.create_task(_bg())
+
         except WebSocketDisconnect:
             pass
         except Exception as exc:

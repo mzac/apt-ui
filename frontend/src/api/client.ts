@@ -4,6 +4,15 @@ import type {
   TemplatePackage, UpdateHistory, User,
 } from '@/types'
 
+export interface DpkgLogEntry {
+  timestamp: string
+  action: 'install' | 'upgrade' | 'remove' | 'purge'
+  package: string
+  arch: string
+  old_version: string
+  new_version: string
+}
+
 // ---------------------------------------------------------------------------
 // Core fetch wrapper
 // ---------------------------------------------------------------------------
@@ -112,6 +121,34 @@ export const servers = {
     get<{ total: number; page: number; items: UpdateHistory[] }>(`/api/servers/${id}/history?page=${page}`),
   setAutoSecurityUpdates: (id: number, enable: boolean) =>
     post<{ success: boolean; auto_security_updates: string }>(`/api/servers/${id}/auto-security-updates`, { enable }),
+  dpkgLog: (id: number, params?: { package?: string; action?: string; days?: number; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.package) q.set('package', params.package)
+    if (params?.action) q.set('action', params.action)
+    if (params?.days != null) q.set('days', String(params.days))
+    if (params?.limit != null) q.set('limit', String(params.limit))
+    if (params?.offset != null) q.set('offset', String(params.offset))
+    return get<{ total: number; offset: number; limit: number; items: DpkgLogEntry[] }>(
+      `/api/servers/${id}/dpkg-log${q.toString() ? '?' + q : ''}`
+    )
+  },
+  validateDebUrl: (id: number, url: string) =>
+    post<{ valid: boolean; filename?: string; content_length?: number | null; error?: string }>(
+      `/api/servers/${id}/validate-deb-url`, { url }
+    ),
+  uploadDeb: (id: number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`/api/servers/${id}/upload-deb`, {
+      method: 'POST', credentials: 'include', body: form,
+    }).then(async r => {
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${r.status}`)
+      }
+      return r.json() as Promise<{ remote_path: string; filename: string; size: number }>
+    })
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +396,20 @@ export function createTemplateApplyWebSocket(
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/template-apply/${templateId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify({ server_ids: serverIds })) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createInstallDebWebSocket(
+  serverId: number,
+  params: { source: 'url'; url: string } | { source: 'remote'; path: string },
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install-deb/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()
   return ws

@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
+import type { DpkgLogEntry } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
 import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket } from '@/api/client'
+import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
@@ -48,7 +50,7 @@ function applyChunk(lines: string[], chunk: string): string[] {
   return result
 }
 
-const TABS = ['Packages', 'Upgrade', 'Shell', 'History', 'Stats'] as const
+const TABS = ['Packages', 'Upgrade', 'Shell', 'History', 'Stats', 'dpkg Log'] as const
 type Tab = typeof TABS[number]
 
 export default function ServerDetail() {
@@ -224,6 +226,7 @@ export default function ServerDetail() {
       {tab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
       {tab === 'History' && <HistoryTab serverId={serverId} />}
       {tab === 'Stats' && <StatsTab serverId={serverId} />}
+      {tab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
     </div>
   )
 }
@@ -585,6 +588,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   const [removeTarget, setRemoveTarget] = useState<string[] | null>(null)
   const [removeModal, setRemoveModal] = useState(false)
   const [showInstallModal, setShowInstallModal] = useState(false)
+  const [showDebModal, setShowDebModal] = useState(false)
 
   const loadPackages = useCallback(() => {
     serversApi.packages(serverId).then(data => {
@@ -624,8 +628,14 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
 
   return (
     <div className="space-y-4">
-      {/* Install Package button — always visible */}
-      <div className="flex justify-end">
+      {/* Install buttons — always visible */}
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={() => setShowDebModal(true)}
+          className="btn-secondary text-xs"
+        >
+          + Install .deb
+        </button>
         <button
           onClick={() => setShowInstallModal(true)}
           className="btn-secondary text-xs"
@@ -837,6 +847,13 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
           serverId={serverId}
           serverName={server.name}
           onClose={() => { setShowInstallModal(false); loadPackages(); onRefresh() }}
+        />
+      )}
+
+      {showDebModal && (
+        <DebInstallModal
+          serverId={serverId}
+          onClose={() => { setShowDebModal(false); loadPackages(); onRefresh() }}
         />
       )}
     </div>
@@ -1484,6 +1501,154 @@ function StatsTab({ serverId }: { serverId: number }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  )
+}
+
+
+// ---------------------------------------------------------------------------
+// dpkg Log tab
+// ---------------------------------------------------------------------------
+const ACTION_COLORS: Record<string, string> = {
+  install: 'text-green bg-green/10 border-green/30',
+  upgrade: 'text-cyan-400 bg-cyan-400/10 border-cyan-400/30',
+  remove:  'text-amber bg-amber/10 border-amber/30',
+  purge:   'text-red-400 bg-red-400/10 border-red-400/30',
+}
+
+function DpkgLogTab({ serverId }: { serverId: number }) {
+  const [loaded, setLoaded] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [items, setItems] = useState<DpkgLogEntry[]>([])
+  const [total, setTotal] = useState(0)
+  const [offset, setOffset] = useState(0)
+  const LIMIT = 200
+
+  // Filters
+  const [pkgFilter, setPkgFilter] = useState('')
+  const [actionFilter, setActionFilter] = useState('')
+  const [daysFilter, setDaysFilter] = useState('')
+
+  async function fetchLog(newOffset = 0) {
+    setLoading(true)
+    setError(null)
+    try {
+      const params: Parameters<typeof serversApi.dpkgLog>[1] = { limit: LIMIT, offset: newOffset }
+      if (pkgFilter.trim()) params.package = pkgFilter.trim()
+      if (actionFilter) params.action = actionFilter
+      if (daysFilter) params.days = parseInt(daysFilter)
+      const result = await serversApi.dpkgLog(serverId, params)
+      setItems(result.items)
+      setTotal(result.total)
+      setOffset(newOffset)
+      setLoaded(true)
+    } catch (e: unknown) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function formatTs(iso: string) {
+    // iso is YYYY-MM-DDTHH:MM:SS
+    return iso.replace('T', ' ')
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / LIMIT))
+  const currentPage = Math.floor(offset / LIMIT) + 1
+
+  return (
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          placeholder="Filter by package…"
+          value={pkgFilter}
+          onChange={e => setPkgFilter(e.target.value)}
+          className="input text-xs py-1 w-48"
+        />
+        <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} className="input text-xs py-1 w-auto">
+          <option value="">All actions</option>
+          <option value="install">Install</option>
+          <option value="upgrade">Upgrade</option>
+          <option value="remove">Remove</option>
+          <option value="purge">Purge</option>
+        </select>
+        <select value={daysFilter} onChange={e => setDaysFilter(e.target.value)} className="input text-xs py-1 w-auto">
+          <option value="">All time</option>
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+        </select>
+        <button
+          onClick={() => fetchLog(0)}
+          disabled={loading}
+          className="btn-primary text-xs py-1"
+        >
+          {loading ? 'Loading…' : loaded ? 'Reload' : 'Load History'}
+        </button>
+        {loaded && <span className="text-xs text-text-muted">{total.toLocaleString()} entries</span>}
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-400 bg-red-400/10 border border-red-400/30 rounded px-3 py-2">{error}</div>
+      )}
+
+      {!loaded && !loading && (
+        <p className="text-text-muted text-sm py-8 text-center">
+          Click <strong>Load History</strong> to fetch dpkg.log from the server.
+        </p>
+      )}
+
+      {loaded && items.length === 0 && (
+        <p className="text-text-muted text-sm py-8 text-center">No entries match the current filters.</p>
+      )}
+
+      {loaded && items.length > 0 && (
+        <>
+          <div className="card overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border text-text-muted">
+                  <th className="text-left px-3 py-2 font-medium">Date/Time</th>
+                  <th className="text-left px-3 py-2 font-medium">Action</th>
+                  <th className="text-left px-3 py-2 font-medium">Package</th>
+                  <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Arch</th>
+                  <th className="text-left px-3 py-2 font-medium">From</th>
+                  <th className="text-left px-3 py-2 font-medium">To</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((entry, i) => (
+                  <tr key={i} className="border-b border-border/50 hover:bg-white/5">
+                    <td className="px-3 py-1.5 font-mono text-text-muted whitespace-nowrap">{formatTs(entry.timestamp)}</td>
+                    <td className="px-3 py-1.5">
+                      <span className={`inline-block px-1.5 py-0.5 rounded border text-xs font-medium ${ACTION_COLORS[entry.action] ?? ''}`}>
+                        {entry.action}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-text-primary">{entry.package}</td>
+                    <td className="px-3 py-1.5 text-text-muted hidden sm:table-cell">{entry.arch}</td>
+                    <td className="px-3 py-1.5 font-mono text-text-muted">{entry.old_version || '—'}</td>
+                    <td className="px-3 py-1.5 font-mono text-text-muted">{entry.new_version || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex gap-2 items-center justify-center">
+              <button disabled={currentPage === 1} onClick={() => fetchLog(offset - LIMIT)} className="btn-secondary text-xs">Prev</button>
+              <span className="text-text-muted text-xs">{currentPage} / {totalPages}</span>
+              <button disabled={currentPage >= totalPages} onClick={() => fetchLog(offset + LIMIT)} className="btn-secondary text-xs">Next</button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
