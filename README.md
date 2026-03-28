@@ -12,34 +12,50 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ## Features
 
-- **Fleet dashboard** — see all servers at a glance with update counts, security update highlights, reboot-required flags, and held packages; server cards use a two-column layout with security update count shown prominently in red when present
-- **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines (e.g. "Reading database…") update in place rather than concatenating
-- **Package info tooltips** — hover over any upgradable package to see its description, version delta, and whether it likely requires a reboot (kernel, libc, openssl, systemd, etc.)
-- **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
-- **Package install** — search `apt` cache and install new packages on any host directly from the UI
-- **Templates** — define named package sets and apply them to one or more hosts at once (useful for provisioning)
-- **Scheduled checks** — configurable cron schedule for automatic update checks
-- **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
-- **Notifications** — daily summary + per-event alerts via email (SMTP), Telegram, and outbound webhooks (HMAC-SHA256 signed); triggers: upgrade complete, error, security updates found (after each check), reboot required (after each check); per-channel and per-trigger toggles; daily summary includes reboot and EEPROM firmware status
-- **Server groups** — colour-coded grouping; servers can belong to multiple groups
-- **Tags** — freeform colour-coded tags per server; auto-tagging by OS and machine type supported
-- **OS & virt detection** — detects Proxmox VE (via `pveversion`), Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / container via `systemd-detect-virt`
-- **Auto security updates** — per-server toggle to enable/disable `unattended-upgrades`; current state detected on every check and shown as a shield badge on each server card (green=on, amber=off/not installed); enable/disable streams live SSH output to an inline terminal in the server edit form; fleet summary bar includes a "Sec off" filter to quickly find unprotected hosts
-- **Raspberry Pi EEPROM firmware** — detects EEPROM firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5 during every check; amber badge on dashboard cards when update available; apply with one click from the server edit form (streams live output, stages update for next reboot)
-- **apt-cacher-ng monitoring** — add your local apt cache server(s) in Settings → Infrastructure; compact cards in the fleet summary bar show hit rate %, mini hit bar, hits/misses counts, and data served
-- **Tailscale integration** — optional sidecar that joins the container to your tailnet; supports `tailscale serve` for automatic HTTPS with a Let's Encrypt cert; connection status (IP, hostname, DNS name) visible in Settings → Infrastructure
-- **Background job indicator** — bell icon in the top nav shows running/completed jobs (upgrades, checks) with a spinner; jobs auto-dismiss a few seconds after completion; click to return to a running job
-- **Upgrade dry-run preview** — preview what `apt-get upgrade` would do (packages, version deltas) before committing, via a collapsible panel in the upgrade UI
-- **Server notes** — free-text notes field per server, visible in the server detail header
-- **History filtering** — filter the fleet-wide upgrade history by server and/or status
-- **Docker host detection** — automatically detects when a managed server is the Docker host running the dashboard; shows a `🐳 docker host` badge on the server card; blocks the Run Upgrade button and shows an SSH command when container-runtime packages (Docker, containerd, Podman, runc, LXD, etc.) are in the upgrade list to prevent the container being killed mid-upgrade; detection works by hostname resolution and by comparing the Docker bridge gateway IP against the server's own IPs collected during check
-- **Default dashboard sort** — configurable in Settings → Preferences → Display; persisted in `localStorage` so it survives browser restarts; changing the sort on the dashboard also updates the preference
-- **Fleet summary security count** — shows number of hosts with security updates (not total package count), consistent with how the Updates counter works
-- **dpkg log history** — new "dpkg Log" tab on each server detail page shows full install/upgrade/remove/purge history parsed from `/var/log/dpkg.log` and all rotated archives (including `.gz`); fetched on demand so it never slows down page load; filterable by package name, action type, and time window (7/30/90/365 days or all); colour-coded action badges
-- **.deb package installation** — install local `.deb` files on any managed server directly from the UI; two modes: paste a URL (validated with a HEAD request, then `wget`'d on the remote) or upload a file from your browser (SFTP'd to `/tmp/` via asyncssh); both paths stream `dpkg -i` + `apt-get install -f` output in a live terminal; "+ Install .deb" button in the Packages tab
-- **Apt repo management** — new "Apt Repos" tab on each server detail page reads all apt source files (`/etc/apt/sources.list` and all `/etc/apt/sources.list.d/*.list` / `*.sources` files) via SSH on demand; per-file tabbed editor with unsaved-changes indicator; save via `sudo tee`; delete files from `sources.list.d`; add new `.list` or `.sources` files; "Test with apt-get update" button streams live output to confirm sources are valid after changes
+### Dashboard & Fleet View
+- **Fleet overview** — server card grid with update counts, security update highlights (shown in red), reboot-required and held-package badges, staleness indicators, and hardware stats at a glance
+- **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly
+- **Server groups & tags** — colour-coded groups (servers can belong to multiple); freeform tags with auto-tagging by OS and virtualisation type
+- **Sorting & search** — sort by name, update count, security count, or status; full-text search including tags; default sort persisted in `localStorage`
+- **Docker host detection** — detects when a managed server is the Docker host running the dashboard; shows a badge and blocks upgrades of container-runtime packages (Docker, containerd, Podman, runc, LXD, etc.) to prevent killing the container mid-upgrade
 - **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
-- **Dark industrial UI** — dense, information-rich dashboard designed for ops use
+
+### Package Management
+- **Upgradable packages** — full list with version deltas, repository source, security flag, and phased-update flag; hover tooltips show package description and reboot likelihood
+- **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
+- **Upgrade dry-run** — preview exactly what `apt-get upgrade` would change before committing
+- **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines update in place
+- **Package install** — search the `apt` cache and install new packages on any host directly from the UI
+- **.deb installation** — install a `.deb` file by URL (validated then `wget`'d on the remote) or by uploading from your browser (SFTP'd via asyncssh); both paths stream `dpkg -i` + `apt-get install -f` output live
+- **Templates** — define named package sets and apply them to one or more hosts at once; useful for provisioning identical server roles
+
+### Apt Source Management
+- **Apt repo editor** — "Apt Repos" tab reads all apt source files (`/etc/apt/sources.list` and `sources.list.d/*.{list,sources}`) on demand; per-file tabbed editor with unsaved-changes indicator; save, delete, and create new files; "Test with apt-get update" streams live output to validate changes
+
+### History & Audit
+- **Upgrade history** — per-server and fleet-wide log of every upgrade run; filterable by server and status; full terminal output expandable per run
+- **dpkg log** — "dpkg Log" tab parses `/var/log/dpkg.log` and all rotated archives (including `.gz`) on demand; filterable by package name, action type, and time window; colour-coded install / upgrade / remove / purge badges
+
+### Server Detail
+- **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / LXC / Docker via `systemd-detect-virt`
+- **Auto security updates** — per-server toggle for `unattended-upgrades`; state shown as a shield badge (green = enabled, amber = disabled/not installed); streams live SSH output when toggling
+- **Raspberry Pi EEPROM firmware** — detects firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5; apply with one click (stages update for next reboot)
+- **Server notes** — free-text notes field visible in the server detail header
+- **Interactive shell** — optional SSH terminal tab (disabled by default; enable via `ENABLE_TERMINAL=true`)
+
+### Automation & Scheduling
+- **Scheduled checks** — configurable cron schedule for automatic fleet-wide update checks
+- **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
+- **Background job indicator** — bell icon in the top nav tracks running and recently completed jobs; click to return to a running job
+
+### Notifications
+- **Channels** — email (SMTP), Telegram (Bot API), and outbound webhooks (HMAC-SHA256 signed)
+- **Events** — upgrade complete, upgrade error, security updates found, reboot required, daily summary
+- **Per-channel per-trigger toggles** — independently enable each event on each channel; daily summary includes reboot and EEPROM firmware status
+
+### Infrastructure
+- **apt-cacher-ng monitoring** — add local apt cache servers; compact cards in the fleet summary bar show hit rate, hits/misses, and data served
+- **Tailscale integration** — optional sidecar joins the container to your tailnet; supports `tailscale serve` for automatic HTTPS; connection status visible in Settings → Infrastructure
 
 ---
 
