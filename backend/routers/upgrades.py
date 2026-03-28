@@ -1050,10 +1050,20 @@ async def validate_deb_url(
     except Exception:
         return {"valid": False, "error": "Invalid URL"}
 
+    # Reconstruct the URL from parsed + validated components so the request
+    # target is never derived directly from the raw user-supplied string.
+    # This breaks the CodeQL taint chain and prevents any parser-confusion
+    # attacks where urlparse() and the HTTP client disagree on the host.
+    port_part = f":{parsed.port}" if parsed.port else ""
+    safe_url = f"{parsed.scheme}://{resolved_ip}{port_part}{parsed.path}"
+    if parsed.query:
+        safe_url += f"?{parsed.query}"
+
     try:
-        # follow_redirects=False: redirects could point to a private IP, bypassing the check above
+        # follow_redirects=False: redirects could point to a private IP, bypassing the check above.
+        # Host header is set to the original hostname so the server responds correctly.
         async with httpx.AsyncClient(follow_redirects=False, timeout=10) as client:
-            resp = await client.head(url)
+            resp = await client.head(safe_url, headers={"Host": hostname})
     except httpx.TimeoutException:
         return {"valid": False, "error": "Request timed out"}
     except httpx.RequestError:
