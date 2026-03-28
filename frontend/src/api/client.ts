@@ -4,6 +4,13 @@ import type {
   TemplatePackage, UpdateHistory, User,
 } from '@/types'
 
+export interface AptRepoFile {
+  path: string
+  content: string
+  format: 'one-line' | 'deb822'
+  deletable: boolean
+}
+
 export interface DpkgLogEntry {
   timestamp: string
   action: 'install' | 'upgrade' | 'remove' | 'purge'
@@ -136,6 +143,18 @@ export const servers = {
     post<{ valid: boolean; filename?: string; content_length?: number | null; error?: string }>(
       `/api/servers/${id}/validate-deb-url`, { url }
     ),
+  aptRepos: (id: number) =>
+    get<{ files: AptRepoFile[] }>(`/api/servers/${id}/apt-repos`),
+  saveAptRepo: (id: number, path: string, content: string) =>
+    request<{ ok: boolean }>(`/api/servers/${id}/apt-repos`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, content }),
+    }),
+  deleteAptRepo: (id: number, path: string) =>
+    request<{ ok: boolean }>(`/api/servers/${id}/apt-repos`, {
+      method: 'DELETE',
+      body: JSON.stringify({ path }),
+    }),
   uploadDeb: (id: number, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -410,6 +429,18 @@ export function createInstallDebWebSocket(
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install-deb/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createAptReposTestWebSocket(
+  serverId: number,
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-repos-test/${serverId}`
+  const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()
   return ws

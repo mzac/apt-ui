@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
-import type { DpkgLogEntry } from '@/api/client'
+import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket } from '@/api/client'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket } from '@/api/client'
 import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
@@ -50,7 +50,7 @@ function applyChunk(lines: string[], chunk: string): string[] {
   return result
 }
 
-const TABS = ['Packages', 'Upgrade', 'Shell', 'History', 'Stats', 'dpkg Log'] as const
+const TABS = ['Packages', 'Upgrade', 'Apt Repos', 'History', 'dpkg Log', 'Stats', 'Shell'] as const
 type Tab = typeof TABS[number]
 
 export default function ServerDetail() {
@@ -227,6 +227,7 @@ export default function ServerDetail() {
       {tab === 'History' && <HistoryTab serverId={serverId} />}
       {tab === 'Stats' && <StatsTab serverId={serverId} />}
       {tab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
+      {tab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
     </div>
   )
 }
@@ -1647,6 +1648,338 @@ function DpkgLogTab({ serverId }: { serverId: number }) {
               <button disabled={currentPage >= totalPages} onClick={() => fetchLog(offset + LIMIT)} className="btn-secondary text-xs">Next</button>
             </div>
           )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Apt Repos Tab
+// ---------------------------------------------------------------------------
+
+function AptReposTab({ serverId }: { serverId: number }) {
+  const [loaded, setLoaded] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [files, setFiles] = useState<AptRepoFile[]>([])
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  // Tracks unsaved edits per file path — cleared on save
+  const [pendingEdits, setPendingEdits] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveOk, setSaveOk] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  // New file form
+  const [showNewForm, setShowNewForm] = useState(false)
+  const [newFilename, setNewFilename] = useState('')
+  const [newFileError, setNewFileError] = useState<string | null>(null)
+
+  // apt-get update test terminal
+  const [testLines, setTestLines] = useState<string[]>([])
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<boolean | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const termRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
+  }, [testLines])
+
+  useEffect(() => {
+    return () => { wsRef.current?.close() }
+  }, [])
+
+  async function loadRepos() {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await serversApi.aptRepos(serverId)
+      setFiles(result.files)
+      setSelectedPath(prev => {
+        // Keep current selection if still present, otherwise pick first
+        if (prev && result.files.some(f => f.path === prev)) return prev
+        return result.files[0]?.path ?? null
+      })
+      setLoaded(true)
+    } catch (e: unknown) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const currentFile = files.find(f => f.path === selectedPath) ?? null
+  const currentContent = selectedPath != null
+    ? (pendingEdits[selectedPath] ?? currentFile?.content ?? '')
+    : ''
+
+  function isDirty(path: string): boolean {
+    if (pendingEdits[path] === undefined) return false
+    const file = files.find(f => f.path === path)
+    return pendingEdits[path] !== file?.content
+  }
+
+  async function saveFile() {
+    if (!selectedPath) return
+    setSaving(true)
+    setSaveError(null)
+    setSaveOk(false)
+    try {
+      await serversApi.saveAptRepo(serverId, selectedPath, currentContent)
+      setFiles(prev => prev.map(f =>
+        f.path === selectedPath ? { ...f, content: currentContent } : f
+      ))
+      setPendingEdits(prev => { const next = { ...prev }; delete next[selectedPath!]; return next })
+      setSaveOk(true)
+      setTimeout(() => setSaveOk(false), 3000)
+    } catch (e: unknown) {
+      setSaveError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteFile() {
+    if (!selectedPath || !currentFile?.deletable) return
+    if (!window.confirm(`Delete ${selectedPath}?\n\nThis cannot be undone.`)) return
+    setDeleting(true)
+    setSaveError(null)
+    try {
+      await serversApi.deleteAptRepo(serverId, selectedPath)
+      const remaining = files.filter(f => f.path !== selectedPath)
+      setFiles(remaining)
+      setPendingEdits(prev => { const next = { ...prev }; delete next[selectedPath!]; return next })
+      setSelectedPath(remaining[0]?.path ?? null)
+    } catch (e: unknown) {
+      setSaveError(String(e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  function addNewFile() {
+    const filename = newFilename.trim()
+    if (!filename) return
+    if (!/^[a-zA-Z0-9._\-]+\.(list|sources)$/.test(filename)) {
+      setNewFileError('Filename must end in .list or .sources and contain only letters, numbers, dots, hyphens, underscores.')
+      return
+    }
+    const path = `/etc/apt/sources.list.d/${filename}`
+    if (files.some(f => f.path === path)) {
+      setNewFileError('A file with that name already exists.')
+      return
+    }
+    const newFile: AptRepoFile = {
+      path,
+      content: '',
+      format: filename.endsWith('.sources') ? 'deb822' : 'one-line',
+      deletable: true,
+    }
+    setFiles(prev => [...prev, newFile])
+    setSelectedPath(path)
+    setShowNewForm(false)
+    setNewFilename('')
+    setNewFileError(null)
+    setSaveError(null)
+    setSaveOk(false)
+  }
+
+  function runTest() {
+    if (testing) return
+    setTestLines([])
+    setTestResult(null)
+    setTesting(true)
+    wsRef.current?.close()
+    wsRef.current = createAptReposTestWebSocket(serverId, (msg) => {
+      if (msg.type === 'output') {
+        setTestLines(prev => applyChunk(prev, msg.data as string))
+      } else if (msg.type === 'complete') {
+        const ok = (msg.data as Record<string, unknown>).success as boolean
+        setTestResult(ok)
+        setTesting(false)
+      } else if (msg.type === 'error') {
+        setTestLines(prev => [...prev, `ERROR: ${msg.data as string}`])
+        setTestResult(false)
+        setTesting(false)
+      }
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Warning */}
+      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 text-xs text-amber-400">
+        <span className="shrink-0 mt-0.5">⚠</span>
+        <span>
+          Changes to apt sources take effect the next time{' '}
+          <code className="bg-black/30 px-1 rounded">apt-get update</code> runs.
+          Invalid sources will break package management on this server.
+        </span>
+      </div>
+
+      {/* Load button */}
+      {!loaded && (
+        <div className="flex items-center gap-3">
+          <button onClick={loadRepos} disabled={loading} className="btn-primary text-xs py-1">
+            {loading ? 'Loading…' : 'Load Repos'}
+          </button>
+          {!loading && (
+            <p className="text-text-muted text-sm">
+              Reads <code className="text-xs bg-black/30 px-1 rounded">/etc/apt/sources.list</code> and{' '}
+              <code className="text-xs bg-black/30 px-1 rounded">sources.list.d/</code> from the server.
+            </p>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="text-xs text-red-400 bg-red-400/10 border border-red-400/30 rounded px-3 py-2">{error}</div>
+      )}
+
+      {loaded && files.length === 0 && (
+        <p className="text-text-muted text-sm py-4 text-center">No apt source files found on this server.</p>
+      )}
+
+      {loaded && (
+        <>
+          {/* File tabs */}
+          <div className="flex flex-wrap items-center gap-0 border-b border-border">
+            {files.map(f => {
+              const name = f.path.split('/').pop() ?? f.path
+              const dirty = isDirty(f.path)
+              return (
+                <button
+                  key={f.path}
+                  onClick={() => { setSelectedPath(f.path); setSaveError(null); setSaveOk(false) }}
+                  title={f.path}
+                  className={`px-3 py-1.5 text-xs -mb-px border-b-2 transition-colors font-mono whitespace-nowrap ${
+                    selectedPath === f.path
+                      ? 'border-green text-text-primary'
+                      : 'border-transparent text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  {name}
+                  {dirty && <span className="text-amber-400 ml-1">•</span>}
+                </button>
+              )
+            })}
+
+            {/* New file inline form */}
+            {!showNewForm ? (
+              <button
+                onClick={() => { setShowNewForm(true); setNewFilename(''); setNewFileError(null) }}
+                className="px-3 py-1.5 text-xs -mb-px border-b-2 border-transparent text-text-muted hover:text-green transition-colors"
+              >
+                + New File
+              </button>
+            ) : (
+              <div className="flex items-center gap-1 px-2 py-1 -mb-px">
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="myrepo.list"
+                  value={newFilename}
+                  onChange={e => { setNewFilename(e.target.value); setNewFileError(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') addNewFile(); if (e.key === 'Escape') setShowNewForm(false) }}
+                  className="input text-xs py-0.5 w-40 font-mono"
+                />
+                <button onClick={addNewFile} className="text-xs text-green hover:text-green/80 px-1">✓</button>
+                <button onClick={() => setShowNewForm(false)} className="text-xs text-text-muted hover:text-text-primary px-1">✕</button>
+              </div>
+            )}
+
+            {/* Reload */}
+            <button
+              onClick={loadRepos}
+              disabled={loading}
+              className="ml-auto px-2 py-1.5 text-xs -mb-px text-text-muted hover:text-text-primary transition-colors"
+              title="Reload all files from server"
+            >
+              {loading ? '↻…' : '↻ Reload'}
+            </button>
+          </div>
+
+          {newFileError && (
+            <div className="text-xs text-red-400">{newFileError}</div>
+          )}
+
+          {/* Editor */}
+          {selectedPath && currentFile && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono text-text-muted">{selectedPath}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded border ${
+                  currentFile.format === 'deb822'
+                    ? 'border-blue-500/40 text-blue-400 bg-blue-500/10'
+                    : 'border-border text-text-muted bg-black/20'
+                }`}>
+                  {currentFile.format === 'deb822' ? 'DEB822' : 'one-line'}
+                </span>
+              </div>
+              <textarea
+                value={currentContent}
+                onChange={e => {
+                  setSaveError(null)
+                  setPendingEdits(prev => ({ ...prev, [selectedPath]: e.target.value }))
+                }}
+                rows={Math.max(8, (currentContent.match(/\n/g)?.length ?? 0) + 3)}
+                spellCheck={false}
+                className="w-full bg-black/40 border border-border rounded px-3 py-2 text-xs font-mono text-text-primary focus:outline-none focus:border-green resize-y"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={saveFile}
+                  disabled={saving || !isDirty(selectedPath)}
+                  className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                {currentFile.deletable && (
+                  <button
+                    onClick={deleteFile}
+                    disabled={deleting}
+                    className="px-3 py-1 text-xs bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 rounded disabled:opacity-40"
+                  >
+                    {deleting ? 'Deleting…' : 'Delete File'}
+                  </button>
+                )}
+                {saveOk && <span className="text-xs text-green">✓ Saved</span>}
+                {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+              </div>
+            </div>
+          )}
+
+          {/* Test section */}
+          <div className="border-t border-border pt-4 space-y-2">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={runTest}
+                disabled={testing}
+                className="btn-secondary text-xs py-1"
+              >
+                {testing ? (
+                  <>
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse mr-1.5" />
+                    Running apt-get update…
+                  </>
+                ) : 'Test with apt-get update'}
+              </button>
+              {testResult !== null && !testing && (
+                <span className={`text-xs font-medium ${testResult ? 'text-green' : 'text-red-400'}`}>
+                  {testResult ? '✓ Update succeeded' : '✗ Update failed — check sources above'}
+                </span>
+              )}
+            </div>
+            {testLines.length > 0 && (
+              <div
+                ref={termRef}
+                className="bg-black rounded p-3 h-48 overflow-y-auto font-mono text-xs leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: testLines.map(l => ansiConvert.toHtml(l)).join('') }}
+              />
+            )}
+          </div>
         </>
       )}
     </div>

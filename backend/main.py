@@ -100,6 +100,7 @@ from backend.routers import templates as templates_router
 from backend.routers import aptcache as aptcache_router
 from backend.routers import tailscale as tailscale_router
 from backend.routers import dpkg_log as dpkg_log_router
+from backend.routers import apt_repos as apt_repos_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -115,6 +116,7 @@ app.include_router(templates_router.router)
 app.include_router(aptcache_router.router)
 app.include_router(tailscale_router.router)
 app.include_router(dpkg_log_router.router)
+app.include_router(apt_repos_router.router)
 
 
 @app.get("/api/config/features")
