@@ -1,8 +1,12 @@
 import asyncio
 import io
+import ipaddress
 import json
+import logging
 import re
 import shlex
+import socket
+from urllib.parse import urlparse
 
 import asyncssh
 import httpx
@@ -1031,11 +1035,31 @@ async def validate_deb_url(
     if not url.lower().startswith(("http://", "https://")):
         return {"valid": False, "error": "URL must start with http:// or https://"}
 
+    # SSRF protection: resolve the hostname and block private/loopback/link-local ranges
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return {"valid": False, "error": "Invalid URL: could not parse hostname"}
+        resolved_ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(resolved_ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved:
+            return {"valid": False, "error": "URL hostname resolves to a private or reserved address"}
+    except socket.gaierror:
+        return {"valid": False, "error": "URL hostname could not be resolved"}
+    except Exception:
+        return {"valid": False, "error": "Invalid URL"}
+
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
             resp = await client.head(url)
-    except Exception as exc:
-        return {"valid": False, "error": f"Request failed: {exc}"}
+    except httpx.TimeoutException:
+        return {"valid": False, "error": "Request timed out"}
+    except httpx.RequestError:
+        return {"valid": False, "error": "Request failed: could not connect to host"}
+    except Exception:
+        logging.getLogger(__name__).exception("Unexpected error validating deb URL")
+        return {"valid": False, "error": "Request failed"}
 
     if resp.status_code != 200:
         return {"valid": False, "error": f"Server returned HTTP {resp.status_code}"}
