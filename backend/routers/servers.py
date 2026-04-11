@@ -558,6 +558,36 @@ async def delete_server(
     await db.commit()
 
 
+@router.post("/generate-ssh-key")
+async def generate_ssh_key(
+    _: User = Depends(get_current_user),
+):
+    """Generate a new Ed25519 SSH key pair and return both keys as strings.
+    The private key is returned in OpenSSH PEM format; the public key in
+    authorized_keys format.  Neither is stored — the caller decides what to do.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        PrivateFormat,
+        PublicFormat,
+        NoEncryption,
+    )
+
+    private_key = Ed25519PrivateKey.generate()
+    private_pem = private_key.private_bytes(
+        encoding=Encoding.PEM,
+        format=PrivateFormat.OpenSSH,
+        encryption_algorithm=NoEncryption(),
+    ).decode()
+    public_openssh = private_key.public_key().public_bytes(
+        encoding=Encoding.OpenSSH,
+        format=PublicFormat.OpenSSH,
+    ).decode()
+
+    return {"private_key": private_pem, "public_key": public_openssh}
+
+
 @router.delete("/{server_id}/ssh-key", status_code=204)
 async def clear_server_ssh_key(
     server_id: int,
@@ -728,3 +758,57 @@ async def check_all_servers_endpoint(
 
     asyncio.create_task(_run())
     return {"detail": "Check started", "total": len(servers)}
+
+
+@router.post("/refresh-all")
+async def refresh_all_servers_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Like /check-all but skips apt-get update — reads each server's existing local apt cache.
+    Much faster than a full check; use when you want to see what's already known without
+    fetching fresh package index data from upstream repositories.
+    """
+    from backend.update_checker import check_all_servers
+    from backend.models import ScheduleConfig
+
+    cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+    cfg = cfg_res.scalar_one_or_none()
+    concurrency = cfg.upgrade_concurrency if cfg else 5
+
+    srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers = list(srv_res.scalars().all())
+
+    _check_progress["running"] = True
+    _check_progress["total"] = len(servers)
+    _check_progress["done"] = 0
+    _check_progress["current"] = []
+    _check_progress["results"] = {}
+
+    async def _progress_cb(server: Server, status: str):
+        if status == "running":
+            _check_progress["current"].append(server.name)
+        else:
+            _check_progress["done"] += 1
+            _check_progress["results"][server.id] = status
+            try:
+                _check_progress["current"].remove(server.name)
+            except ValueError:
+                pass
+
+    async def _run():
+        from backend.database import AsyncSessionLocal
+        try:
+            async with AsyncSessionLocal() as bg_db:
+                await check_all_servers(
+                    servers, bg_db,
+                    concurrency=concurrency,
+                    progress_callback=_progress_cb,
+                    skip_apt_update=True,
+                )
+        finally:
+            _check_progress["running"] = False
+            _check_progress["current"] = []
+
+    asyncio.create_task(_run())
+    return {"detail": "Refresh started", "total": len(servers)}

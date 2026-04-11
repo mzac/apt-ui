@@ -13,3 +13,4 @@ frontend/dist/
 .env.local
 docker-compose.local.yml
 build-run-local.sh
+TODO.md

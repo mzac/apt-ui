@@ -156,8 +156,10 @@ export default function History() {
                           <div>
                             <div className="text-text-muted mb-1">Packages upgraded:</div>
                             <div className="flex flex-wrap gap-1">
-                              {item.packages_upgraded.map((p: string) => (
-                                <span key={p} className="bg-surface px-1.5 py-0.5 rounded text-text-primary border border-border">{p}</span>
+                              {item.packages_upgraded.map((p, i) => (
+                                <span key={i} className="bg-surface px-1.5 py-0.5 rounded text-text-primary border border-border">
+                                  {p.name}{p.from_version ? `: ${p.from_version} → ${p.to_version}` : ''}
+                                </span>
                               ))}
                             </div>
                           </div>

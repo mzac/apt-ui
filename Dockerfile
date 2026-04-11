@@ -7,6 +7,12 @@ COPY frontend/package.json ./
 RUN npm install
 
 COPY frontend/ ./
+
+# Bake the version into the frontend bundle at build time.
+# Pass --build-arg APP_VERSION=v1.2.3 to set it; defaults to "dev".
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=$APP_VERSION
+
 RUN npm run build
 # Output: /app/frontend/dist/
 

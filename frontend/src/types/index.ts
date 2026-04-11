@@ -100,7 +100,7 @@ export interface UpdateHistory {
   status: string
   action: string
   phased_updates: boolean
-  packages_upgraded: string[] | null
+  packages_upgraded: Array<{ name: string; from_version: string; to_version: string }> | null
   log_output: string | null
   initiated_by: string
 }

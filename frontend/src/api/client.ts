@@ -109,12 +109,15 @@ export const servers = {
     notes?: string
   }) => put<Server>(`/api/servers/${id}`, data),
   clearSshKey: (id: number) => del(`/api/servers/${id}/ssh-key`),
+  generateSshKey: () => post<{ private_key: string; public_key: string }>('/api/servers/generate-ssh-key', {}),
   remove: (id: number) => del(`/api/servers/${id}`),
   reboot: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/reboot`),
   test: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/test`),
   reachability: () => get<Record<string, boolean>>('/api/servers/reachability'),
   check: (id: number) => post<{ status: string; packages_available: number }>(`/api/servers/${id}/check`),
   checkAll: () => post<{ detail: string; total: number }>('/api/servers/check-all'),
+  refreshAll: () => post<{ detail: string; total: number }>('/api/servers/refresh-all'),
+  refresh: (id: number) => post<{ status: string; packages_available: number }>(`/api/servers/${id}/refresh`, {}),
   checkProgress: () => get<CheckAllProgress>('/api/servers/check-all/progress'),
   upgrade: (id: number, action: string, allow_phased: boolean) =>
     post(`/api/servers/${id}/upgrade`, { action, allow_phased }),

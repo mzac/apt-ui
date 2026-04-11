@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi } from '@/api/client'
-import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow } from '@/types'
+import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow, PackageInfo } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
@@ -94,6 +94,7 @@ export default function Dashboard() {
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
   const [checkingAll, setCheckingAll] = useState(false)
+  const [checkingMode, setCheckingMode] = useState<'check' | 'refresh' | null>(null)
   const [checkProgress, setCheckProgress] = useState<{ done: number; total: number; current: string[] }>({ done: 0, total: 0, current: [] })
   const [showUpdatesSummary, setShowUpdatesSummary] = useState(false)
   const [reachability, setReachability] = useState<Record<number, boolean | null>>({})
@@ -226,12 +227,14 @@ export default function Dashboard() {
     setConfirmDisable(null)
   }
 
-  async function handleCheckAll() {
+  async function _runCheckAll(mode: 'check' | 'refresh') {
     setCheckingAll(true)
+    setCheckingMode(mode)
     setCheckProgress({ done: 0, total: 0, current: [] })
-    addJob({ id: 'check-all', type: 'check-all', label: 'Check All', status: 'running', link: '/', startedAt: Date.now() })
+    const label = mode === 'refresh' ? 'Refresh All' : 'Check All'
+    addJob({ id: 'check-all', type: 'check-all', label, status: 'running', link: '/', startedAt: Date.now() })
     try {
-      const res = await serversApi.checkAll()
+      const res = mode === 'refresh' ? await serversApi.refreshAll() : await serversApi.checkAll()
       const total = res.total || serverList.filter(s => s.is_enabled).length
 
       // Poll progress for the banner — Layout handles the bell job update
@@ -243,19 +246,25 @@ export default function Dashboard() {
             clearInterval(progressIntervalRef.current!)
             progressIntervalRef.current = null
             setCheckingAll(false)
+            setCheckingMode(null)
             await load()
           }
         } catch {
           clearInterval(progressIntervalRef.current!)
           progressIntervalRef.current = null
           setCheckingAll(false)
+          setCheckingMode(null)
         }
       }, 2000)
     } catch {
       setCheckingAll(false)
+      setCheckingMode(null)
       updateJob('check-all', { status: 'error', completedAt: Date.now() })
     }
   }
+
+  async function handleCheckAll() { await _runCheckAll('check') }
+  async function handleRefreshAll() { await _runCheckAll('refresh') }
 
   // Cleanup interval on unmount
   useEffect(() => {
@@ -327,17 +336,24 @@ export default function Dashboard() {
               { label: 'Autoremove', value: overview.autoremove_total, color: overview.autoremove_total > 0 ? 'text-amber' : 'text-text-muted', filter: 'autoremove' },
               { label: 'Sec off', value: secDisabledCount, color: secDisabledCount > 0 ? 'text-amber' : 'text-text-muted', filter: 'sec_disabled' },
               ...(eepromCount > 0 ? [{ label: 'EEPROM', value: eepromCount, color: 'text-amber', filter: 'eeprom' }] : []),
-            ].map(({ label, value, color, filter }) => (
-              <button
-                key={label}
-                onClick={() => setStatusFilter(statusFilter === filter ? null : filter)}
-                className={`card px-3 py-2 text-center cursor-pointer hover:border-text-muted transition-colors ${statusFilter === filter ? 'border-green/50 bg-green/5' : ''}`}
-                style={{ minWidth: 72 }}
-              >
-                <div className={`text-xl font-mono font-medium ${color}`}>{value}</div>
-                <div className="text-xs text-text-muted">{label}</div>
-              </button>
-            ))}
+            ].map(({ label, value, color, filter }) => {
+              const opensModal = (filter === 'updates_available' || filter === 'security') && serversWithUpdates.length > 0
+              return (
+                <button
+                  key={label}
+                  onClick={() => {
+                    setStatusFilter(statusFilter === filter ? null : filter)
+                    if (opensModal) setShowUpdatesSummary(true)
+                  }}
+                  className={`card px-3 py-2 text-center cursor-pointer hover:border-text-muted transition-colors ${statusFilter === filter ? 'border-green/50 bg-green/5' : ''}`}
+                  style={{ minWidth: 72 }}
+                  title={opensModal ? 'Click to view pending packages' : undefined}
+                >
+                  <div className={`text-xl font-mono font-medium ${color}`}>{value}</div>
+                  <div className="text-xs text-text-muted">{label}</div>
+                </button>
+              )
+            })}
             <AptCacheCompactCards />
           </div>
           {statusFilter && (
@@ -443,11 +459,34 @@ export default function Dashboard() {
         >
           ⊞ Group
         </button>
-        <button onClick={handleCheckAll} disabled={checkingAll} className="btn-secondary text-xs">
-          {checkingAll
-            ? `Checking… ${checkProgress.done}/${checkProgress.total}`
-            : 'Check All'}
-        </button>
+        <div className="relative group/check">
+          <button onClick={handleRefreshAll} disabled={checkingAll} className="btn-secondary text-xs">
+            {checkingAll && checkingMode === 'refresh'
+              ? `Refreshing… ${checkProgress.done}/${checkProgress.total}`
+              : 'Refresh All'}
+          </button>
+          <div className="absolute bottom-full left-0 mb-1.5 w-64 hidden group-hover/check:block pointer-events-none z-20">
+            <div className="bg-surface border border-border rounded shadow-lg p-2.5 text-xs text-text-muted leading-snug">
+              <p className="font-medium text-text-primary mb-1">Refresh All</p>
+              Reads each server's existing local apt cache — no network calls to package repositories.
+              Fast but may not reflect the very latest upstream package versions.
+            </div>
+          </div>
+        </div>
+        <div className="relative group/checkall">
+          <button onClick={handleCheckAll} disabled={checkingAll} className="btn-secondary text-xs">
+            {checkingAll && checkingMode === 'check'
+              ? `Checking… ${checkProgress.done}/${checkProgress.total}`
+              : 'Check All'}
+          </button>
+          <div className="absolute bottom-full left-0 mb-1.5 w-64 hidden group-hover/checkall:block pointer-events-none z-20">
+            <div className="bg-surface border border-border rounded shadow-lg p-2.5 text-xs text-text-muted leading-snug">
+              <p className="font-medium text-text-primary mb-1">Check All</p>
+              Runs <span className="font-mono">apt-get update</span> on every server to fetch the latest package index from upstream repositories, then reports available upgrades.
+              Use this to get an accurate, up-to-date view.
+            </div>
+          </div>
+        </div>
         {serversWithUpdates.length > 0 && (
           <button onClick={() => setShowUpgradeAll(true)} className="btn-amber text-xs">
             Upgrade All ({serversWithUpdates.length})
@@ -473,9 +512,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Updates summary table */}
+      {/* Fleet-wide updates summary modal */}
       {showUpdatesSummary && serversWithUpdates.length > 0 && (
-        <UpdatesSummary servers={serversWithUpdates} />
+        <UpdatesSummaryModal servers={serversWithUpdates} onClose={() => setShowUpdatesSummary(false)} />
       )}
 
 
@@ -576,8 +615,11 @@ export default function Dashboard() {
 // ---------------------------------------------------------------------------
 // Updates summary table
 // ---------------------------------------------------------------------------
-function UpdatesSummary({ servers }: { servers: Server[] }) {
-  // Sort: most updates first, security at top
+// ---------------------------------------------------------------------------
+// Fleet-wide pending updates modal
+// ---------------------------------------------------------------------------
+function UpdatesSummaryModal({ servers, onClose }: { servers: Server[]; onClose: () => void }) {
+  // Sort: most security updates first, then by total update count
   const sorted = [...servers].sort((a, b) => {
     const secDiff = (b.latest_check?.security_packages ?? 0) - (a.latest_check?.security_packages ?? 0)
     if (secDiff !== 0) return secDiff
@@ -587,68 +629,135 @@ function UpdatesSummary({ servers }: { servers: Server[] }) {
   const totalPkgs = servers.reduce((sum, s) => sum + (s.latest_check?.packages_available ?? 0), 0)
   const totalSec = servers.reduce((sum, s) => sum + (s.latest_check?.security_packages ?? 0), 0)
 
-  return (
-    <div className="card overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-xs font-mono text-text-muted">
-          {servers.length} servers · {totalPkgs} packages
-          {totalSec > 0 && <span className="text-red ml-2">· {totalSec} security</span>}
-        </span>
+  // Fetch packages for each server as the modal opens
+  const [pkgMap, setPkgMap] = useState<Record<number, PackageInfo[] | null>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    async function fetchAll() {
+      for (const s of sorted) {
+        try {
+          const res = await serversApi.packages(s.id)
+          if (!cancelled) {
+            setPkgMap(prev => ({ ...prev, [s.id]: res.packages }))
+          }
+        } catch {
+          if (!cancelled) setPkgMap(prev => ({ ...prev, [s.id]: null }))
+        }
+      }
+    }
+    fetchAll()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Close on Escape
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(2px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="bg-surface border border-border rounded-lg shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-sm text-text-primary font-medium">Pending Updates</span>
+            <span className="text-xs text-text-muted font-mono">
+              {servers.length} server{servers.length !== 1 ? 's' : ''} · {totalPkgs} package{totalPkgs !== 1 ? 's' : ''}
+              {totalSec > 0 && <span className="text-red ml-2">· {totalSec} security</span>}
+            </span>
+          </div>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors text-lg leading-none">×</button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="overflow-y-auto flex-1 divide-y divide-border/40">
+          {sorted.map(s => {
+            const c = s.latest_check!
+            const pkgs = pkgMap[s.id]
+            const loading = !(s.id in pkgMap)
+            const secPkgs = pkgs?.filter(p => p.is_security).sort((a, b) => a.name.localeCompare(b.name)) ?? []
+            const regPkgs = pkgs?.filter(p => !p.is_security).sort((a, b) => a.name.localeCompare(b.name)) ?? []
+
+            return (
+              <div key={s.id} className="px-4 py-3 space-y-2">
+                {/* Server header */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Link
+                    to={`/servers/${s.id}`}
+                    onClick={onClose}
+                    className="font-mono text-sm font-medium text-text-primary hover:text-cyan transition-colors"
+                  >
+                    {s.name}
+                  </Link>
+                  <span className="text-xs text-text-muted font-mono">{s.hostname}</span>
+                  {s.group_name && (
+                    <span
+                      className="badge text-xs"
+                      style={{ background: (s.group_color || '#3b82f6') + '22', color: s.group_color || '#3b82f6', border: `1px solid ${s.group_color || '#3b82f6'}44` }}
+                    >
+                      {s.group_name}
+                    </span>
+                  )}
+                  <span className="text-xs font-mono text-amber ml-auto shrink-0">
+                    {c.packages_available} update{c.packages_available !== 1 ? 's' : ''}
+                    {c.security_packages > 0 && <span className="text-red ml-1">· {c.security_packages} security</span>}
+                  </span>
+                </div>
+
+                {/* Flags */}
+                {(c.reboot_required || c.held_packages > 0 || c.autoremove_count > 0) && (
+                  <div className="flex gap-1 flex-wrap">
+                    {c.reboot_required && <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot required</span>}
+                    {c.held_packages > 0 && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">{c.held_packages} held</span>}
+                    {c.autoremove_count > 0 && <span className="badge bg-surface-2 text-text-muted border border-border text-xs">{c.autoremove_count} autoremovable</span>}
+                  </div>
+                )}
+
+                {/* Package list */}
+                {loading && (
+                  <div className="text-xs text-text-muted font-mono animate-pulse">Loading packages…</div>
+                )}
+                {pkgs === null && (
+                  <div className="text-xs text-red font-mono">Failed to load package list</div>
+                )}
+                {pkgs && pkgs.length === 0 && (
+                  <div className="text-xs text-text-muted font-mono">No package details available</div>
+                )}
+                {pkgs && pkgs.length > 0 && (
+                  <div className="space-y-0.5">
+                    {secPkgs.map(p => (
+                      <div key={p.name} className="flex items-baseline gap-2 text-xs font-mono py-0.5 px-2 rounded bg-red/5">
+                        <span className="text-red shrink-0">🔒</span>
+                        <span className="text-text-primary font-medium">{p.name}</span>
+                        <span className="text-text-muted shrink-0">{p.current_version} → <span className="text-green">{p.available_version}</span></span>
+                        {p.is_phased && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs shrink-0">phased</span>}
+                      </div>
+                    ))}
+                    {regPkgs.map(p => (
+                      <div key={p.name} className="flex items-baseline gap-2 text-xs font-mono py-0.5 px-2 rounded hover:bg-surface-2/40">
+                        <span className="w-4 shrink-0" />
+                        <span className="text-text-primary">{p.name}</span>
+                        <span className="text-text-muted shrink-0">{p.current_version} → <span className="text-text-primary">{p.available_version}</span></span>
+                        {p.is_phased && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs shrink-0">phased</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-text-muted text-xs">
-              <th className="px-3 py-2 text-left font-normal">Server</th>
-              <th className="px-3 py-2 text-left font-normal">Hostname</th>
-              <th className="px-3 py-2 text-right font-normal">Updates</th>
-              <th className="px-3 py-2 text-right font-normal">Security</th>
-              <th className="px-3 py-2 text-right font-normal">Held</th>
-              <th className="px-3 py-2 text-left font-normal">Flags</th>
-              <th className="px-3 py-2 text-right font-normal">Checked</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(s => {
-              const c = s.latest_check!
-              return (
-                <tr key={s.id} className="border-b border-border/50 hover:bg-surface-2/50 transition-colors">
-                  <td className="px-3 py-2">
-                    <Link to={`/servers/${s.id}`} className="font-mono text-text-primary hover:text-green">
-                      {s.name}
-                    </Link>
-                    {/* Show primary group */}
-                    {s.group_name && (
-                      <span className="ml-2 badge text-xs" style={{ background: (s.group_color || '#3b82f6') + '22', color: s.group_color || '#3b82f6', border: `1px solid ${s.group_color || '#3b82f6'}44` }}>
-                        {s.group_name}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs text-text-muted">{s.hostname}</td>
-                  <td className="px-3 py-2 text-right font-mono text-amber font-medium">{c.packages_available}</td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {c.security_packages > 0
-                      ? <span className="text-red font-medium">{c.security_packages}</span>
-                      : <span className="text-text-muted">—</span>}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-xs text-text-muted">
-                    {c.held_packages > 0 ? c.held_packages : '—'}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-1 flex-wrap">
-                      {c.reboot_required && <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot</span>}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-xs text-text-muted">
-                    {relativeTime(c.checked_at || null)}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -736,6 +845,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
   const status = checking ? 'checking' : serverStatus(s)
   const c = s.latest_check
   const [showInstall, setShowInstall] = useState(false)
+  const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
 
   // Use the first group color for left border accent
   const primaryGroupColor = (s.groups ?? [])[0]?.color || s.group_color || null
@@ -909,7 +1019,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
           >
             + Install
           </button>
-          {c?.reboot_required && (
+          {(c?.reboot_required || alwaysShowReboot) && (
             <span onClick={e => e.stopPropagation()}>
               <RebootButton serverId={s.id} serverName={s.name} />
             </span>

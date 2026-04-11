@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -69,6 +70,9 @@ function ServersTab() {
   const [showAddTag, setShowAddTag] = useState(false)
   const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[], ssh_private_key: '', notes: '' })
   const [showAddSshKey, setShowAddSshKey] = useState(false)
+  const [generatingKey, setGeneratingKey] = useState(false)
+  const [generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null)
+  const [copiedPublicKey, setCopiedPublicKey] = useState(false)
   const [groupForm, setGroupForm] = useState({ name: '', color: '#3b82f6' })
   const [tagForm, setTagForm] = useState({ name: '', color: '#6366f1' })
   const [formError, setFormError] = useState('')
@@ -203,6 +207,7 @@ function ServersTab() {
       })
       setForm({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [], tagIds: [], ssh_private_key: '', notes: '' })
       setShowAddSshKey(false)
+      setGeneratedPublicKey(null)
       setShowAddServer(false)
       load()
     } catch (err: unknown) {
@@ -427,7 +432,7 @@ function ServersTab() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium text-text-muted uppercase tracking-wide">Servers</h2>
-          <button className="btn-secondary text-xs" onClick={() => setShowAddServer(!showAddServer)}>+ Add Server</button>
+          <button className="btn-secondary text-xs" onClick={() => { setShowAddServer(true); setFormError(''); setGeneratedPublicKey(null); setShowAddSshKey(false) }}>+ Add Server</button>
         </div>
 
         {/* CSV strip */}
@@ -469,112 +474,186 @@ function ServersTab() {
           </label>
         </div>
 
-        {showAddServer && (
-          <form onSubmit={handleAddServer} className="card p-4 mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div>
-              <label className="label">Display Name</label>
-              <input className="input" placeholder="my-server" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required />
-            </div>
-            <div>
-              <label className="label">Hostname / IP</label>
-              <input className="input" placeholder="192.168.1.10" value={form.hostname} onChange={e => setForm(f => ({ ...f, hostname: e.target.value }))} required />
-            </div>
-            <div>
-              <label className="label">SSH User</label>
-              <input className="input" placeholder="ubuntu" value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))} required />
-            </div>
-            <div>
-              <label className="label">Port</label>
-              <input className="input" type="number" value={form.ssh_port} onChange={e => setForm(f => ({ ...f, ssh_port: e.target.value }))} />
-            </div>
-            <div className="col-span-full">
-              <label className="label">Groups</label>
-              <div className="flex flex-wrap gap-1.5">
-                {groupList.map(g => {
-                  const sel = form.groupIds.includes(g.id)
-                  const c = g.color || '#3b82f6'
-                  return (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => setForm(f => ({
-                        ...f,
-                        groupIds: sel ? f.groupIds.filter(id => id !== g.id) : [...f.groupIds, g.id]
-                      }))}
-                      className="px-2 py-0.5 rounded text-xs border transition-opacity"
-                      style={{
-                        background: sel ? c + '33' : 'transparent',
-                        color: c,
-                        borderColor: sel ? c + '88' : c + '44',
-                        opacity: sel ? 1 : 0.6,
-                      }}
-                    >
-                      {g.name}
-                    </button>
-                  )
-                })}
-                {groupList.length === 0 && <span className="text-xs text-text-muted">No groups yet — create them in the Groups section above</span>}
+        {showAddServer && createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(2px)' }}
+            onClick={e => { if (e.target === e.currentTarget) setShowAddServer(false) }}
+          >
+            <div className="bg-surface border border-border rounded-lg shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+              {/* Modal header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+                <span className="font-mono text-sm font-medium text-text-primary">Add Server</span>
+                <button onClick={() => setShowAddServer(false)} className="text-text-muted hover:text-text-primary transition-colors text-lg leading-none">×</button>
               </div>
-            </div>
-            <div className="col-span-full">
-              <label className="label">Tags</label>
-              <div className="flex flex-wrap gap-1.5">
-                {tagList.map(t => {
-                  const sel = form.tagIds.includes(t.id)
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => setForm(f => ({
-                        ...f,
-                        tagIds: sel ? f.tagIds.filter(id => id !== t.id) : [...f.tagIds, t.id]
-                      }))}
-                      className="px-2 py-0.5 rounded text-xs border transition-opacity"
-                      style={{
-                        background: sel ? t.color + '33' : 'transparent',
-                        color: t.color,
-                        borderColor: sel ? t.color + '88' : t.color + '44',
-                        opacity: sel ? 1 : 0.6,
-                      }}
-                    >
-                      {t.name}
-                    </button>
-                  )
-                })}
-                {tagList.length === 0 && <span className="text-xs text-text-muted">No tags yet — create them in the Tags section above</span>}
-              </div>
-            </div>
-            <div className="col-span-full">
-              <button type="button" className="text-xs text-text-muted hover:text-text-primary" onClick={() => setShowAddSshKey(v => !v)}>
-                {showAddSshKey ? '▾' : '▸'} Per-server SSH key <span className="opacity-60">(optional — overrides global key)</span>
-              </button>
-              {showAddSshKey && (
-                <div className="mt-2 space-y-1">
-                  <textarea
-                    className="input w-full font-mono text-xs h-28 resize-y"
-                    placeholder="-----BEGIN ... PRIVATE KEY-----&#10;...&#10;-----END ... PRIVATE KEY-----"
-                    value={form.ssh_private_key}
-                    onChange={e => setForm(f => ({ ...f, ssh_private_key: e.target.value }))}
-                  />
-                  <p className="text-xs text-text-muted">Stored encrypted at rest. Leave empty to use the global <span className="font-mono">SSH_PRIVATE_KEY</span>.</p>
+
+              {/* Scrollable form body */}
+              <form onSubmit={handleAddServer} className="overflow-y-auto flex-1 p-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Display Name</label>
+                    <input className="input" placeholder="my-server" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required />
+                  </div>
+                  <div>
+                    <label className="label">Hostname / IP</label>
+                    <input className="input" placeholder="192.168.1.10" value={form.hostname} onChange={e => setForm(f => ({ ...f, hostname: e.target.value }))} required />
+                  </div>
+                  <div>
+                    <label className="label">SSH User</label>
+                    <input className="input" placeholder="ubuntu" value={form.username} onChange={e => setForm(f => ({ ...f, username: e.target.value }))} required />
+                  </div>
+                  <div>
+                    <label className="label">Port</label>
+                    <input className="input" type="number" value={form.ssh_port} onChange={e => setForm(f => ({ ...f, ssh_port: e.target.value }))} />
+                  </div>
                 </div>
-              )}
+
+                <div>
+                  <label className="label">Groups</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {groupList.map(g => {
+                      const sel = form.groupIds.includes(g.id)
+                      const c = g.color || '#3b82f6'
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => setForm(f => ({
+                            ...f,
+                            groupIds: sel ? f.groupIds.filter(id => id !== g.id) : [...f.groupIds, g.id]
+                          }))}
+                          className="px-2 py-0.5 rounded text-xs border transition-opacity"
+                          style={{
+                            background: sel ? c + '33' : 'transparent',
+                            color: c,
+                            borderColor: sel ? c + '88' : c + '44',
+                            opacity: sel ? 1 : 0.6,
+                          }}
+                        >
+                          {g.name}
+                        </button>
+                      )
+                    })}
+                    {groupList.length === 0 && <span className="text-xs text-text-muted">No groups yet — create them in the Groups section.</span>}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="label">Tags</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tagList.map(t => {
+                      const sel = form.tagIds.includes(t.id)
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setForm(f => ({
+                            ...f,
+                            tagIds: sel ? f.tagIds.filter(id => id !== t.id) : [...f.tagIds, t.id]
+                          }))}
+                          className="px-2 py-0.5 rounded text-xs border transition-opacity"
+                          style={{
+                            background: sel ? t.color + '33' : 'transparent',
+                            color: t.color,
+                            borderColor: sel ? t.color + '88' : t.color + '44',
+                            opacity: sel ? 1 : 0.6,
+                          }}
+                        >
+                          {t.name}
+                        </button>
+                      )
+                    })}
+                    {tagList.length === 0 && <span className="text-xs text-text-muted">No tags yet — create them in the Tags section.</span>}
+                  </div>
+                </div>
+
+                {/* SSH key section */}
+                <div className="border border-border/60 rounded p-3 bg-surface/40 space-y-2">
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 w-full text-left text-sm font-medium text-text-primary hover:text-cyan transition-colors"
+                    onClick={() => { setShowAddSshKey(v => !v); setGeneratedPublicKey(null) }}
+                  >
+                    <span className="text-base">🔑</span>
+                    <span>{showAddSshKey ? '▾' : '▸'} Per-server SSH key</span>
+                    <span className="ml-auto text-xs font-normal text-text-muted">optional — overrides the global key</span>
+                  </button>
+                  {showAddSshKey && (
+                    <div className="space-y-2">
+                      {/* Generate key pair button */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={generatingKey}
+                          onClick={async () => {
+                            setGeneratingKey(true)
+                            setGeneratedPublicKey(null)
+                            setCopiedPublicKey(false)
+                            try {
+                              const kp = await serversApi.generateSshKey()
+                              setForm(f => ({ ...f, ssh_private_key: kp.private_key }))
+                              setGeneratedPublicKey(kp.public_key)
+                            } catch {
+                              // ignore — user can paste manually
+                            } finally {
+                              setGeneratingKey(false)
+                            }
+                          }}
+                          className="btn-secondary text-xs"
+                        >
+                          {generatingKey ? 'Generating…' : '⚡ Generate Key Pair'}
+                        </button>
+                        <span className="text-xs text-text-muted">or paste an existing private key below</span>
+                      </div>
+
+                      <textarea
+                        className="input w-full font-mono text-xs h-28 resize-y"
+                        placeholder="-----BEGIN ... PRIVATE KEY-----&#10;...&#10;-----END ... PRIVATE KEY-----"
+                        value={form.ssh_private_key}
+                        onChange={e => { setForm(f => ({ ...f, ssh_private_key: e.target.value })); setGeneratedPublicKey(null) }}
+                      />
+                      <p className="text-xs text-text-muted">Stored encrypted at rest. Leave empty to use the global <span className="font-mono">SSH_PRIVATE_KEY</span>.</p>
+
+                      {/* Public key output */}
+                      {generatedPublicKey && (
+                        <div className="space-y-1 border border-green/30 rounded p-2 bg-green/5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-green font-medium">Public key — add this to <span className="font-mono">~/.ssh/authorized_keys</span> on the server:</span>
+                            <button
+                              type="button"
+                              onClick={() => { navigator.clipboard.writeText(generatedPublicKey); setCopiedPublicKey(true); setTimeout(() => setCopiedPublicKey(false), 2000) }}
+                              className="text-xs btn-secondary py-0.5 px-2 shrink-0"
+                            >
+                              {copiedPublicKey ? '✓ Copied' : 'Copy'}
+                            </button>
+                          </div>
+                          <pre className="text-xs font-mono text-text-muted break-all whitespace-pre-wrap">{generatedPublicKey}</pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="label">Notes <span className="text-text-muted font-normal">(optional)</span></label>
+                  <textarea
+                    className="input w-full text-xs h-16 resize-y"
+                    placeholder="Free-text notes about this server…"
+                    value={form.notes}
+                    onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                  />
+                </div>
+
+                {formError && <p className="text-red text-sm">{formError}</p>}
+
+                <div className="flex gap-2 pt-1">
+                  <button type="submit" className="btn-primary">Add Server</button>
+                  <button type="button" className="btn-secondary" onClick={() => setShowAddServer(false)}>Cancel</button>
+                </div>
+              </form>
             </div>
-            <div className="col-span-full">
-              <label className="label">Notes <span className="text-text-muted font-normal">(optional)</span></label>
-              <textarea
-                className="input w-full text-xs h-16 resize-y"
-                placeholder="Free-text notes about this server…"
-                value={form.notes}
-                onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-              />
-            </div>
-            {formError && <p className="col-span-full text-red text-sm">{formError}</p>}
-            <div className="col-span-full flex gap-2">
-              <button type="submit" className="btn-primary">Add Server</button>
-              <button type="button" className="btn-secondary" onClick={() => setShowAddServer(false)}>Cancel</button>
-            </div>
-          </form>
+          </div>,
+          document.body,
         )}
 
         <div className="card overflow-hidden overflow-x-auto">
@@ -1056,16 +1135,37 @@ function DisplayPreferencesSection() {
   const [defaultSort, setDefaultSort] = useState(
     () => localStorage.getItem('dashboard:sortBy') ?? 'status'
   )
+  const [alwaysShowReboot, setAlwaysShowReboot] = useState(
+    () => localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
+  )
 
   function handleSortChange(v: string) {
     setDefaultSort(v)
     localStorage.setItem('dashboard:sortBy', v)
   }
 
+  function handleAlwaysShowRebootChange(v: boolean) {
+    setAlwaysShowReboot(v)
+    localStorage.setItem('dashboard:alwaysShowReboot', String(v))
+  }
+
   return (
     <section className="card p-4 space-y-3">
       <h2 className="text-sm font-medium text-text-primary">Display</h2>
       <p className="text-xs text-text-muted">These preferences are stored locally in your browser and apply only to this device.</p>
+      <div>
+        <label className="label">Always show Reboot button</label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={alwaysShowReboot}
+            onChange={e => handleAlwaysShowRebootChange(e.target.checked)}
+            className="w-4 h-4 accent-green"
+          />
+          <span className="text-sm text-text-primary">Show Reboot button regardless of reboot-required state</span>
+        </label>
+        <p className="text-xs text-text-muted mt-1">When enabled, the Reboot button is always visible on server cards and the server detail page, not only when the system reports a reboot is needed.</p>
+      </div>
       <div>
         <label className="label">Default dashboard sort order</label>
         <select className="input w-48" value={defaultSort} onChange={e => handleSortChange(e.target.value)}>

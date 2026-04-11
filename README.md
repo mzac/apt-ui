@@ -1,4 +1,4 @@
-# apt-dashboard
+# apt-ui
 
 A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` package management across a fleet of Ubuntu / Debian / Raspbian servers. Runs as a single Docker container.
 
@@ -6,7 +6,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 > **This project was entirely written by [Claude](https://claude.ai) (Anthropic's AI assistant) via [Claude Code](https://claude.ai/code).** All code, configuration, and documentation — from the FastAPI backend and asyncssh integration to the React frontend and Docker setup — was generated through an iterative, conversation-driven development process with no manual coding.
 
-📐 [Architecture](ARCHITECTURE.md) · 🔒 [Security Policy](SECURITY.md)
+📐 [Architecture](ARCHITECTURE.md) · 🔒 [Security Policy](SECURITY.md) · 📋 [Changelog](CHANGELOG.md)
 
 ---
 
@@ -14,14 +14,18 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ### Dashboard & Fleet View
 - **Fleet overview** — server card grid with update counts, security update highlights (shown in red), reboot-required and held-package badges, staleness indicators, and hardware stats at a glance
-- **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly
+- **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly; clicking the Updates or Security count opens a fleet-wide pending updates modal
+- **Fleet-wide pending updates modal** — lists every pending package across all servers grouped by server; security packages first (🔒) with version deltas; phased-update badges; fetched on demand
+- **Check All / Refresh All** — Check All runs `apt-get update` then reports upgrades; Refresh All reads the existing local apt cache without hitting upstream repositories (faster); hover tooltips explain the difference
 - **Server groups & tags** — colour-coded groups (servers can belong to multiple); freeform tags with auto-tagging by OS and virtualisation type
 - **Sorting & search** — sort by name, update count, security count, or status; full-text search including tags; default sort persisted in `localStorage`
 - **Docker host detection** — detects when a managed server is the Docker host running the dashboard; shows a badge and blocks upgrades of container-runtime packages (Docker, containerd, Podman, runc, LXD, etc.) to prevent killing the container mid-upgrade
 - **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
+- **Version in footer** — running app version displayed in the page footer; baked in at Docker build time from the release tag
+- **GitHub link in nav** — quick link to the repository from the top navigation bar
 
 ### Package Management
-- **Upgradable packages** — full list with version deltas, repository source, security flag, and phased-update flag; hover tooltips show package description and reboot likelihood
+- **Upgradable packages** — full list with version deltas, repository source, security flag, and dedicated phased-update column; hover tooltips show package description and reboot likelihood
 - **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
 - **Upgrade dry-run** — preview exactly what `apt-get upgrade` would change before committing
 - **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines update in place
@@ -42,6 +46,12 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Raspberry Pi EEPROM firmware** — detects firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5; apply with one click (stages update for next reboot)
 - **Server notes** — free-text notes field visible in the server detail header
 - **Interactive shell** — optional SSH terminal tab (disabled by default; enable via `ENABLE_TERMINAL=true`)
+- **Always show Reboot button** — optional preference (Settings → Preferences → Display) to show the Reboot button at all times, not only when a reboot is flagged as required
+
+### Server Management
+- **Add Server modal** — Add Server form opens as a scrollable portal modal; works on mobile
+- **SSH key generation** — generate a dedicated Ed25519 key pair for a server directly from the Add Server form; private key is auto-populated and the public key is displayed with a one-click Copy button
+- **Per-server SSH key** — highlighted section with 🔑 icon makes it easy to spot when adding a server
 
 ### Automation & Scheduling
 - **Scheduled checks** — configurable cron schedule for automatic fleet-wide update checks

@@ -269,21 +269,42 @@ async def _gather_stats(server: Server) -> dict:
     }
 
 
-async def check_server(server: Server, db: AsyncSession) -> UpdateCheck:
+async def check_server(
+    server: Server,
+    db: AsyncSession,
+    skip_apt_update: bool = False,
+) -> UpdateCheck:
     """
-    Run a full update check on *server*, persist the result, return the UpdateCheck row.
-    """
-    logger.info("Checking updates on %s (%s)", server.name, server.hostname)
+    Run an update check on *server*, persist the result, return the UpdateCheck row.
 
-    # Run apt update + list --upgradable + held + reboot concurrently with stats
-    apt_update_task = run_command(
-        server,
-        ("" if server.username == "root" else "sudo ") + "apt-get update -q 2>&1",
-        timeout=120,
+    When skip_apt_update=True the ``apt-get update`` step is skipped and the
+    existing local apt cache on the remote server is used directly.  This is
+    faster but may not reflect the very latest package versions from upstream
+    repositories.
+    """
+    logger.info(
+        "%s updates on %s (%s)",
+        "Refreshing (no apt-get update)" if skip_apt_update else "Checking",
+        server.name,
+        server.hostname,
     )
+
     stats_task = _gather_stats(server)
 
-    apt_update_result, stats = await asyncio.gather(apt_update_task, stats_task)
+    if skip_apt_update:
+        # Skip apt-get update — just gather stats, then query the local cache
+        stats = await stats_task
+        # Use a dummy success result so the rest of the function proceeds normally
+        from backend.ssh_manager import CommandResult
+        apt_update_result = CommandResult(stdout="", stderr="", exit_code=0, success=True)
+    else:
+        # Run apt update concurrently with stats collection
+        apt_update_task = run_command(
+            server,
+            ("" if server.username == "root" else "sudo ") + "apt-get update -q 2>&1",
+            timeout=120,
+        )
+        apt_update_result, stats = await asyncio.gather(apt_update_task, stats_task)
 
     if not apt_update_result.success and apt_update_result.exit_code == 255:
         # SSH connection failure
@@ -451,10 +472,12 @@ async def check_all_servers(
     db: AsyncSession,
     concurrency: int = 5,
     progress_callback=None,
+    skip_apt_update: bool = False,
 ):
     """Check all enabled servers with a concurrency limit.
 
     progress_callback: optional async callable(server, status) called on start/finish.
+    skip_apt_update: when True, skip ``apt-get update`` and use the local apt cache.
     """
     semaphore = asyncio.Semaphore(concurrency)
     results = {}
@@ -468,7 +491,7 @@ async def check_all_servers(
                 # across concurrent coroutines causes silent write failures.
                 from backend.database import AsyncSessionLocal
                 async with AsyncSessionLocal() as server_db:
-                    results[s.id] = await check_server(s, server_db)
+                    results[s.id] = await check_server(s, server_db, skip_apt_update=skip_apt_update)
                 status = results[s.id].status
             except Exception as exc:
                 logger.error("Error checking %s: %s", s.name, exc)

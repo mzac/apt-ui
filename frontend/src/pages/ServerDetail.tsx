@@ -63,6 +63,7 @@ export default function ServerDetail() {
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
   const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
+  const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
   const [rebootMsg, setRebootMsg] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
   const { addJob, updateJob } = useJobStore()
@@ -148,12 +149,12 @@ export default function ServerDetail() {
           <button onClick={handleCheck} disabled={checking} className="btn-secondary text-xs">
             {checking ? 'Checking…' : 'Check Now'}
           </button>
-          {c?.reboot_required && rebootState === 'idle' && (
+          {(c?.reboot_required || alwaysShowReboot) && rebootState === 'idle' && (
             <button onClick={() => setRebootState('confirm')} className="btn-secondary text-xs text-amber border-amber/40 hover:border-amber/70">
               ↻ Reboot
             </button>
           )}
-          {c?.reboot_required && rebootState === 'confirm' && (
+          {(c?.reboot_required || alwaysShowReboot) && rebootState === 'confirm' && (
             <>
               <span className="text-xs text-amber font-mono self-center">Reboot {server.name}?</span>
               <button onClick={handleReboot} className="btn-danger text-xs">Yes, reboot</button>
@@ -698,6 +699,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                   <th className="text-left px-3 py-2">Current</th>
                   <th className="text-left px-3 py-2">Available</th>
                   <th className="text-left px-3 py-2">Repo</th>
+                  <th className="text-left px-3 py-2">Phased</th>
                   <th className="px-3 py-2 w-8"></th>
                 </tr>
               </thead>
@@ -724,11 +726,13 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                       {p.is_security && <span className="text-red mr-1" title="Security update">🔒</span>}
                       {reboot && <span className="text-amber mr-1" title="Likely requires reboot">↺</span>}
                       {p.name}
-                      {p.is_phased && <span className="ml-1 text-text-muted">[phased]</span>}
                     </td>
                     <td className="px-3 py-1.5 font-mono text-text-muted">{p.current_version}</td>
                     <td className="px-3 py-1.5 font-mono text-text-primary">→ {p.available_version}</td>
                     <td className="px-3 py-1.5 font-mono text-text-muted text-xs">{p.repository}</td>
+                    <td className="px-3 py-1.5 text-center">
+                      {p.is_phased && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">phased</span>}
+                    </td>
                     <td className="px-3 py-1.5 text-right" onClick={e => e.stopPropagation()}>
                       {(p.description || reboot) && (
                         <span className="relative group/info inline-block">

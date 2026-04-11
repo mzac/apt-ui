@@ -28,6 +28,22 @@ async def trigger_check(
     return {"id": check.id, "status": check.status, "packages_available": check.packages_available}
 
 
+@router.post("/{server_id}/refresh")
+async def trigger_refresh(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Like /check but skips apt-get update — uses the server's existing local apt cache."""
+    result = await db.execute(select(Server).where(Server.id == server_id))
+    server = result.scalar_one_or_none()
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
+
+    check = await check_server(server, db, skip_apt_update=True)
+    return {"id": check.id, "status": check.status, "packages_available": check.packages_available}
+
+
 
 @router.get("/{server_id}/packages")
 async def get_packages(
