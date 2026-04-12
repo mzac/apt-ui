@@ -165,6 +165,7 @@ class ServerOut(BaseModel):
     last_apt_update: Optional[datetime] = None    # mtime of apt package cache on remote
     notes: Optional[str] = None                   # free-text notes for this server
     is_docker_host: bool = False                  # true when this server is the Docker host running this container
+    apt_proxy: Optional[str] = None               # apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else None
 
     model_config = {"from_attributes": True}
 

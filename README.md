@@ -13,7 +13,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 ## Features
 
 ### Dashboard & Fleet View
-- **Fleet overview** — server card grid with update counts, security update highlights (shown in red), reboot-required and held-package badges, staleness indicators, and hardware stats at a glance
+- **Fleet overview** — server card grid with update counts, security update highlights (shown in red), reboot-required and held-package badges, staleness indicators, and hardware stats at a glance; cards show colour-coded group/tag labels (capped at 4) and a plain-text actionable status strip (proxy, docker host, reboot required, eeprom update, auto-security disabled, held/removable package counts)
 - **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly; clicking the Updates or Security count opens a fleet-wide pending updates modal
 - **Fleet-wide pending updates modal** — lists every pending package across all servers grouped by server; security packages first (🔒) with version deltas; phased-update badges; fetched on demand
 - **Check All / Refresh All** — Check All runs `apt-get update` then reports upgrades; Refresh All reads the existing local apt cache without hitting upstream repositories (faster); hover tooltips explain the difference
@@ -43,6 +43,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 ### Server Detail
 - **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / LXC / Docker via `systemd-detect-virt`
 - **Auto security updates** — per-server toggle for `unattended-upgrades`; state shown as a shield badge (green = enabled, amber = disabled/not installed); streams live SSH output when toggling
+- **apt proxy management** — detects and displays the configured apt HTTP proxy per server; toggle panel lets you set a manual proxy URL (writes to `/etc/apt/apt.conf.d/01proxy`) or install `auto-apt-proxy` for zero-config DNS SRV discovery; disable removes the config and/or uninstalls the package; live SSH output streamed in the UI
 - **Raspberry Pi EEPROM firmware** — detects firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5; apply with one click (stages update for next reboot)
 - **Server notes** — free-text notes field visible in the server detail header
 - **Interactive shell** — optional SSH terminal tab (disabled by default; enable via `ENABLE_TERMINAL=true`)
@@ -52,6 +53,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Add Server modal** — Add Server form opens as a scrollable portal modal; works on mobile
 - **SSH key generation** — generate a dedicated Ed25519 key pair for a server directly from the Add Server form; private key is auto-populated and the public key is displayed with a one-click Copy button
 - **Per-server SSH key** — highlighted section with 🔑 icon makes it easy to spot when adding a server
+- **Bulk delete servers** — multi-select checkboxes in Settings → Servers with a floating bulk-action bar for deleting multiple servers at once; header checkbox with indeterminate state for select-all
 
 ### Automation & Scheduling
 - **Scheduled checks** — configurable cron schedule for automatic fleet-wide update checks
@@ -64,7 +66,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Per-channel per-trigger toggles** — independently enable each event on each channel; daily summary includes reboot and EEPROM firmware status
 
 ### Infrastructure
-- **apt-cacher-ng monitoring** — add local apt cache servers; compact cards in the fleet summary bar show hit rate, hits/misses, and data served
+- **apt-cacher-ng monitoring** — add local apt cache servers; compact cards in the fleet summary bar show hit rate, hits/misses, and data served; clicking a card opens a full detail modal with charts and log analysis
 - **Tailscale integration** — optional sidecar joins the container to your tailnet; supports `tailscale serve` for automatic HTTPS; connection status visible in Settings → Infrastructure
 
 ---
@@ -310,7 +312,7 @@ graph TB
 
     subgraph container["Docker Container  (:8000)"]
         direction TB
-        API["FastAPI  —  14 routers · 50+ REST endpoints · 15 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
+        API["FastAPI  —  14 routers · 50+ REST endpoints · 16 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
         BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook"]
         DB[("SQLite  /data/apt-dashboard.db\n13 tables · 38 migrations")]
         SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]

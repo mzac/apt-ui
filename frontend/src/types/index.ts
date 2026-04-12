@@ -70,6 +70,7 @@ export interface Server {
   last_apt_update: string | null          // ISO datetime when apt cache was last refreshed on the server
   notes: string | null                    // free-text admin notes
   is_docker_host: boolean                 // true when this server is the Docker host running this container
+  apt_proxy: string | null               // apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else null
 }
 
 export interface PackageInfo {

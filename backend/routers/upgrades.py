@@ -289,6 +289,111 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# WebSocket — apt proxy (enable / disable apt HTTP proxy config)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/apt-proxy/{server_id}")
+async def ws_apt_proxy(websocket: WebSocket, server_id: int):
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+
+        enable: bool = params.get("enable", True)
+        proxy_url: str = params.get("proxy_url", "")
+        # mode: "manual" (write URL to 01proxy) or "auto" (install auto-apt-proxy package)
+        mode: str = params.get("mode", "manual")
+        sudo = "" if server.username == "root" else "sudo "
+        conf_file = "/etc/apt/apt.conf.d/01proxy"
+
+        if not enable:
+            # Disable: remove manual config file and uninstall auto-apt-proxy if present
+            cmd = (
+                f"{sudo}rm -f {conf_file}; "
+                f"if dpkg -l auto-apt-proxy 2>/dev/null | grep -q '^ii'; then "
+                f"  DEBIAN_FRONTEND=noninteractive {sudo}apt-get remove -y auto-apt-proxy 2>&1; "
+                f"fi; "
+                f"echo 'apt proxy configuration removed'"
+            )
+        elif mode == "auto":
+            # Install auto-apt-proxy — discovers proxy via DNS SRV/_apt_proxy._tcp or WPAD
+            cmd = (
+                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y auto-apt-proxy 2>&1; "
+                f"{sudo}rm -f {conf_file}"  # remove any manual config that would override auto
+            )
+        else:
+            # Manual: write the proxy URL to the conventional 01proxy file
+            cmd = (
+                f"if dpkg -l auto-apt-proxy 2>/dev/null | grep -q '^ii'; then "
+                f"  DEBIAN_FRONTEND=noninteractive {sudo}apt-get remove -y auto-apt-proxy 2>&1; "
+                f"fi; "
+                f"printf 'Acquire::http::Proxy \"{proxy_url}\";\\n' "
+                f"| {sudo}tee {conf_file}"
+            )
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            from backend.ssh_manager import run_command_stream
+            await send_fn({"type": "status", "data": "connecting"})
+            result = await run_command_stream(server, cmd, send_fn)
+            success = result.exit_code == 0
+            if not enable:
+                new_val = None
+            elif mode == "auto":
+                new_val = "auto-apt-proxy" if success else None
+            else:
+                new_val = proxy_url if (proxy_url and success) else None
+
+            if success:
+                # Persist the new proxy value to the latest stats row
+                from backend.models import ServerStats
+                from sqlalchemy import select as _sel
+                stats_res = await db.execute(
+                    _sel(ServerStats)
+                    .where(ServerStats.server_id == server_id)
+                    .order_by(ServerStats.recorded_at.desc())
+                    .limit(1)
+                )
+                stats_row = stats_res.scalar_one_or_none()
+                if stats_row:
+                    stats_row.apt_proxy = new_val
+                    await db.commit()
+
+            await send_fn({"type": "complete", "data": {"success": success, "apt_proxy": new_val}})
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # EEPROM firmware update (Raspberry Pi 4 / Pi 400 / CM4 / Pi 5)
 # ---------------------------------------------------------------------------
 

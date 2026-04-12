@@ -4,6 +4,20 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.04.11-02] — 2026-04-11
+
+### Features
+
+- **apt proxy detection & management** — apt-ui now detects and displays the configured apt HTTP proxy on each managed server ([#16](https://github.com/mzac/apt-ui/issues/16)). The proxy URL (or `auto-apt-proxy`) is collected during check-all and shown as a `⚡ proxy` indicator on dashboard server cards. A new "apt HTTP Proxy" panel in the server edit form lets you enable/disable the proxy with two modes: **Manual URL** (writes `Acquire::http::Proxy` to `/etc/apt/apt.conf.d/01proxy`) or **auto-apt-proxy** (installs the `auto-apt-proxy` Debian package, which uses DNS SRV `_apt_proxy._tcp` for zero-config proxy discovery on networks with the appropriate DNS record). Disabling removes the config file and/or uninstalls the package. SSH terminal output is streamed live in the UI. Proxy state is stored in `server_stats.apt_proxy`.
+- **Clickable apt-cacher-ng compact cards** — the apt-cacher-ng server cards in the fleet summary bar are now clickable ([#25](https://github.com/mzac/apt-ui/issues/25)). Clicking any card opens a full detail modal overlaying the dashboard, showing the complete `AptCacheWidget` view with hit rate chart and log analysis. The modal closes with Escape or a backdrop click. Cards also now correctly display data-served totals even when the daily log analysis table has no rows (i.e. on fresh instances before the first log rotation).
+- **Bulk delete servers in Settings** — the server table in Settings now supports multi-select checkboxes ([#20](https://github.com/mzac/apt-ui/issues/20)). A header checkbox selects/deselects all (with indeterminate state when partially selected). A floating bulk-action bar appears above the table when any servers are selected, showing the count and a "Delete Selected" button with confirmation. Selected rows are highlighted. Individual delete still works as before.
+
+### Improvements
+
+- **Dashboard card visual hierarchy** — server cards now separate user-defined labels (groups and tags, shown as colour-coded badge boxes, capped at 4 with `+N` overflow) from actionable status indicators (plain coloured text: `⚡ proxy`, `🐳 docker`, `↻ reboot required`, `⬆ eeprom update`, `🛡 no-auto`, held-package count, removable-package count). Up-to-date indicators (eeprom current, auto-security enabled) are no longer shown — only items that require attention are surfaced. Tag overflow is capped to a single `flex-nowrap` row to keep card heights consistent across the fleet.
+
+---
+
 ## [2026.04.11-01] — 2026-04-11
 
 ### Features

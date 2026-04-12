@@ -121,6 +121,17 @@ async def _gather_stats(server: Server) -> dict:
         "mem": "free -m 2>/dev/null | awk '/^Mem:/{print $2}' || awk '/^MemTotal:/{printf \"%d\", $2/1024}' /proc/meminfo 2>/dev/null || echo ''",
         # All IPs on the server — used to detect if this machine is the Docker host
         "host_ips": "hostname -I 2>/dev/null || ip addr show | grep -oP 'inet \\K[0-9.]+' | tr '\\n' ' ' || echo ''",
+        # Detect apt HTTP proxy (apt-cacher-ng or similar).
+        # `apt-config dump` is the authoritative source; fall back to grepping conf files.
+        "apt_proxy": (
+            "proxy=$(apt-config dump Acquire::http::Proxy 2>/dev/null | "
+            "  sed -n 's/Acquire::http::Proxy \"\\(.*\\)\";/\\1/p' | head -1); "
+            "if [ -z \"$proxy\" ]; then "
+            "  proxy=$(grep -rh 'Acquire::http::Proxy' /etc/apt/apt.conf /etc/apt/apt.conf.d/ 2>/dev/null | "
+            "    grep -v '^[[:space:]]*#' | sed 's/.*\"\\(.*\\)\".*/\\1/' | head -1); "
+            "fi; "
+            "echo \"$proxy\""
+        ),
         # Detect unattended-upgrades state: not_installed / disabled / enabled
         "auto_sec": (
             "if ! dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then "
@@ -251,6 +262,10 @@ async def _gather_stats(server: Server) -> dict:
         if ips:
             host_ips_json = json.dumps(ips)
 
+    # apt HTTP proxy URL (e.g. http://192.168.1.10:3142/ for apt-cacher-ng)
+    apt_proxy_raw = results.get("apt_proxy")
+    apt_proxy = apt_proxy_raw.stdout.strip() if apt_proxy_raw and apt_proxy_raw.stdout.strip() else None
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -266,6 +281,7 @@ async def _gather_stats(server: Server) -> dict:
         "eeprom_current_version": eeprom_current_version,
         "eeprom_latest_version": eeprom_latest_version,
         "host_ips": host_ips_json,
+        "apt_proxy": apt_proxy,
     }
 
 
@@ -395,6 +411,7 @@ async def check_server(
         eeprom_current_version=stats.get("eeprom_current_version"),
         eeprom_latest_version=stats.get("eeprom_latest_version"),
         host_ips=stats.get("host_ips"),
+        apt_proxy=stats.get("apt_proxy"),
     )
     db.add(stat_row)
 

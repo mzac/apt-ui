@@ -100,6 +100,9 @@ function ServersTab() {
   const [editingTag, setEditingTag] = useState<number | null>(null)
   const [editTagForm, setEditTagForm] = useState({ name: '', color: '#6366f1' })
   const tagInputRef = useRef<HTMLInputElement>(null)
+  // Multi-select / bulk operations
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const load = useCallback(async () => {
     const [s, g, t] = await Promise.all([serversApi.list(), groupsApi.list(), tagsApi.list()])
@@ -242,7 +245,37 @@ function ServersTab() {
   async function handleDeleteServer(id: number) {
     if (!confirm('Delete this server and all its history?')) return
     await serversApi.remove(id)
+    setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
     load()
+  }
+
+  async function handleBulkDelete() {
+    const count = selectedIds.size
+    if (!confirm(`Delete ${count} server${count === 1 ? '' : 's'} and all their history? This cannot be undone.`)) return
+    setBulkDeleting(true)
+    try {
+      await Promise.all([...selectedIds].map(id => serversApi.remove(id)))
+      setSelectedIds(new Set())
+      load()
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds(prev => {
+      const n = new Set(prev)
+      n.has(id) ? n.delete(id) : n.add(id)
+      return n
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === serverList.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(serverList.map(s => s.id)))
+    }
   }
 
   async function handleDeleteGroup(id: number) {
@@ -656,10 +689,34 @@ function ServersTab() {
           document.body,
         )}
 
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-3 px-3 py-2 bg-red/5 border border-red/20 rounded-lg text-sm">
+            <span className="text-text-muted">{selectedIds.size} server{selectedIds.size === 1 ? '' : 's'} selected</span>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting}
+              className="btn-danger text-xs py-0.5"
+            >
+              {bulkDeleting ? 'Deleting…' : `Delete ${selectedIds.size}`}
+            </button>
+            <button onClick={() => setSelectedIds(new Set())} className="text-xs text-text-muted hover:text-text-primary">Clear selection</button>
+          </div>
+        )}
+
         <div className="card overflow-hidden overflow-x-auto">
           <table className="w-full text-sm min-w-[640px]">
             <thead>
               <tr className="border-b border-border text-text-muted text-xs uppercase">
+                <th className="px-3 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    className="w-3.5 h-3.5 accent-green"
+                    checked={serverList.length > 0 && selectedIds.size === serverList.length}
+                    ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < serverList.length }}
+                    onChange={toggleSelectAll}
+                    title="Select all"
+                  />
+                </th>
                 <th className="text-left px-3 py-2">Name</th>
                 <th className="text-left px-3 py-2">Hostname</th>
                 <th className="text-left px-3 py-2">User / Port</th>
@@ -673,6 +730,9 @@ function ServersTab() {
               {serverList.map((s, i) => editingServer === s.id ? (
                 /* ── Inline edit row ── */
                 <tr key={s.id} className="border-b border-border/50 bg-surface-2/50">
+                  <td className="px-3 py-2">
+                    <input type="checkbox" className="w-3.5 h-3.5 accent-green" checked={selectedIds.has(s.id)} onChange={() => toggleSelect(s.id)} />
+                  </td>
                   <td className="px-2 py-2">
                     <input className="input w-full text-xs py-1" value={editForm.name}
                       onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} autoFocus />
@@ -806,7 +866,10 @@ function ServersTab() {
                 </tr>
               ) : (
                 /* ── Normal display row ── */
-                <tr key={s.id} className={`border-b border-border/50 ${i % 2 === 0 ? '' : 'bg-surface-2/30'}`}>
+                <tr key={s.id} className={`border-b border-border/50 ${selectedIds.has(s.id) ? 'bg-green/5' : i % 2 === 0 ? '' : 'bg-surface-2/30'}`}>
+                  <td className="px-3 py-2">
+                    <input type="checkbox" className="w-3.5 h-3.5 accent-green" checked={selectedIds.has(s.id)} onChange={() => toggleSelect(s.id)} />
+                  </td>
                   <td className="px-3 py-2 font-mono">{s.name}</td>
                   <td className="px-3 py-2 font-mono text-text-muted">{s.hostname}</td>
                   <td className="px-3 py-2 font-mono text-text-muted text-xs">
@@ -856,7 +919,7 @@ function ServersTab() {
                 </tr>
               ))}
               {serverList.length === 0 && (
-                <tr><td colSpan={7} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
               )}
             </tbody>
           </table>

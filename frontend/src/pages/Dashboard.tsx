@@ -97,6 +97,7 @@ export default function Dashboard() {
   const [checkingMode, setCheckingMode] = useState<'check' | 'refresh' | null>(null)
   const [checkProgress, setCheckProgress] = useState<{ done: number; total: number; current: string[] }>({ done: 0, total: 0, current: [] })
   const [showUpdatesSummary, setShowUpdatesSummary] = useState(false)
+  const [showAptCacheDetail, setShowAptCacheDetail] = useState(false)
   const [reachability, setReachability] = useState<Record<number, boolean | null>>({})
   const [confirmDisable, setConfirmDisable] = useState<Server | null>(null)
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -354,7 +355,7 @@ export default function Dashboard() {
                 </button>
               )
             })}
-            <AptCacheCompactCards />
+            <AptCacheCompactCards onOpenDetail={() => setShowAptCacheDetail(true)} />
           </div>
           {statusFilter && (
             <div className="flex items-center gap-2">
@@ -515,6 +516,11 @@ export default function Dashboard() {
       {/* Fleet-wide updates summary modal */}
       {showUpdatesSummary && serversWithUpdates.length > 0 && (
         <UpdatesSummaryModal servers={serversWithUpdates} onClose={() => setShowUpdatesSummary(false)} />
+      )}
+
+      {/* apt-cacher-ng detail modal */}
+      {showAptCacheDetail && (
+        <AptCacheDetailModal onClose={() => setShowAptCacheDetail(false)} />
       )}
 
 
@@ -845,7 +851,6 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
   const status = checking ? 'checking' : serverStatus(s)
   const c = s.latest_check
   const [showInstall, setShowInstall] = useState(false)
-  const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
 
   // Use the first group color for left border accent
   const primaryGroupColor = (s.groups ?? [])[0]?.color || s.group_color || null
@@ -919,66 +924,69 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
         </div>
       </div>
 
-      {/* Bottom row: tags/groups/badges left, auto-sec right */}
+      {/* Bottom section: label tags, then actionable status strip */}
       {(() => {
         const groups = (s.groups ?? []).length > 0 ? s.groups! : (s.group_name ? [{ id: -1, name: s.group_name, color: s.group_color ?? '#3b82f6' }] : [])
-        const hasBadges = groups.length > 0 || (s.tags ?? []).length > 0 || c?.reboot_required || (c?.held_packages ?? 0) > 0 || (c?.autoremove_count ?? 0) > 0 || s.auto_security_updates || s.eeprom_update_available != null
-        if (!hasBadges) return null
+        const allLabels = [
+          ...groups.map(g => ({ key: `g${g.id}`, name: g.name, color: g.color || '#3b82f6' })),
+          ...(s.tags ?? []).map(t => ({ key: `t${t.id}`, name: t.name, color: t.color || '#6366f1' })),
+        ]
+        const shownLabels = allLabels.slice(0, 4)
+        const overflow = allLabels.length - shownLabels.length
+
+        const statusItems: React.ReactNode[] = [
+          s.is_docker_host
+            ? <span key="docker" className="text-purple" title="Docker host — upgrading container runtimes may disrupt this dashboard">🐳 docker</span>
+            : null,
+          s.apt_proxy
+            ? <span key="proxy" className="text-cyan" title={`apt proxy: ${s.apt_proxy === 'auto-apt-proxy' ? 'auto-apt-proxy (DNS)' : s.apt_proxy}`}>⚡ proxy</span>
+            : null,
+          c?.reboot_required
+            ? <span key="reboot" className="text-amber">↻ reboot</span>
+            : null,
+          s.eeprom_update_available === 'update_available'
+            ? <span key="eeprom" className="text-amber" title="EEPROM firmware update available">⬆ eeprom</span>
+            : null,
+          s.eeprom_update_available === 'update_staged'
+            ? <span key="eeprom-s" className="text-blue" title="EEPROM update staged — reboot to apply">⬆ eeprom*</span>
+            : null,
+          (s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed')
+            ? <span key="autosec" className="text-red/80" title={s.auto_security_updates === 'not_installed' ? 'unattended-upgrades not installed' : 'Auto security updates disabled'}>🛡 no-auto</span>
+            : null,
+          c && c.held_packages > 0
+            ? <span key="held" className="text-blue">{c.held_packages} held</span>
+            : null,
+          c && c.autoremove_count > 0
+            ? <button key="remove" className="text-amber/80 hover:text-amber" onClick={e => { e.stopPropagation(); navigate(`/servers/${s.id}`, { state: { tab: 'Packages' } }) }}>
+                {c.autoremove_count} removable
+              </button>
+            : null,
+        ].filter(Boolean)
+
+        if (!shownLabels.length && !overflow && !statusItems.length) return null
+
         return (
-          <div className="flex items-end justify-between gap-2 min-h-0">
-            {/* Left: groups, tags, status badges — wrap leftward */}
-            <div className="flex flex-wrap gap-1 min-w-0">
-              {groups.map(g => (
-                <span key={g.id} className="badge text-xs"
-                  style={{ background: (g.color || '#3b82f6') + '22', color: g.color || '#3b82f6', border: `1px solid ${g.color || '#3b82f6'}44` }}>
-                  {g.name}
-                </span>
-              ))}
-              {(s.tags ?? []).map(t => (
-                <span key={t.id} className="badge text-xs"
-                  style={{ background: (t.color || '#6366f1') + '22', color: t.color || '#6366f1', border: `1px solid ${t.color || '#6366f1'}44` }}>
-                  {t.name}
-                </span>
-              ))}
-              {s.is_docker_host && (
-                <span className="badge bg-purple/10 text-purple border border-purple/30 text-xs" title="This server is the Docker host running this container — upgrading Docker/containerd here may disrupt the dashboard">🐳 docker host</span>
-              )}
-              {c?.reboot_required && (
-                <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs">↻ reboot</span>
-              )}
-              {s.eeprom_update_available === 'up_to_date' && (
-                <span className="badge bg-green/10 text-green border border-green/30 text-xs" title="EEPROM firmware up to date">✓ eeprom</span>
-              )}
-              {s.eeprom_update_available === 'update_available' && (
-                <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs" title="EEPROM firmware update available">⬆ eeprom</span>
-              )}
-              {s.eeprom_update_available === 'update_staged' && (
-                <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs" title="EEPROM update staged — reboot to apply">⬆ eeprom*</span>
-              )}
-              {s.eeprom_update_available === 'frozen' && (
-                <span className="badge bg-surface-2 text-text-muted border border-border text-xs" title="EEPROM updates frozen (rpi-eeprom-update -f)">◼ eeprom</span>
-              )}
-              {c && c.held_packages > 0 && (
-                <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">{c.held_packages} held</span>
-              )}
-              {c && c.autoremove_count > 0 && (
-                <button
-                  className="badge bg-amber/10 text-amber border border-amber/30 text-xs cursor-pointer hover:bg-amber/20"
-                  onClick={e => { e.stopPropagation(); navigate(`/servers/${s.id}`, { state: { tab: 'Packages' } }) }}
-                >
-                  {c.autoremove_count} remove
-                </button>
-              )}
-            </div>
-            {/* Right: auto-sec badge pinned to bottom-right */}
-            <div className="shrink-0">
-              {s.auto_security_updates === 'enabled' && (
-                <span className="badge bg-green/10 text-green border border-green/30 text-xs" title="Auto security updates enabled">🛡 auto-sec</span>
-              )}
-              {(s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed') && (
-                <span className="badge bg-red/10 text-red border border-red/30 text-xs" title={s.auto_security_updates === 'not_installed' ? 'unattended-upgrades not installed' : 'Auto security updates disabled'}>🛡 no-auto-sec</span>
-              )}
-            </div>
+          <div className="space-y-1">
+            {/* Label row: groups + tags, capped at 4 */}
+            {(shownLabels.length > 0 || overflow > 0) && (
+              <div className="flex gap-1 flex-nowrap overflow-hidden items-center">
+                {shownLabels.map(item => (
+                  <span key={item.key} className="badge text-xs shrink-0"
+                    style={{ background: item.color + '22', color: item.color, border: `1px solid ${item.color}44` }}>
+                    {item.name}
+                  </span>
+                ))}
+                {overflow > 0 && (
+                  <span className="text-[10px] text-text-muted font-mono shrink-0">+{overflow}</span>
+                )}
+              </div>
+            )}
+            {/* Status strip: plain colored text, no borders — only actionable items */}
+            {statusItems.length > 0 && (
+              <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] font-mono">
+                {statusItems}
+              </div>
+            )}
           </div>
         )
       })()}
@@ -1019,7 +1027,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
           >
             + Install
           </button>
-          {(c?.reboot_required || alwaysShowReboot) && (
+          {c?.reboot_required && (
             <span onClick={e => e.stopPropagation()}>
               <RebootButton serverId={s.id} serverName={s.name} />
             </span>
@@ -1169,7 +1177,34 @@ function useAptCacheData() {
   return { servers, loading, reload: load }
 }
 
-function AptCacheCompactCards() {
+function AptCacheDetailModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center pt-16 px-4"
+      style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="card w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <h2 className="font-mono text-sm font-medium text-text-primary">apt-cacher-ng</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-lg leading-none">✕</button>
+        </div>
+        <div className="overflow-y-auto p-4">
+          <AptCacheWidget />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function AptCacheCompactCards({ onOpenDetail }: { onOpenDetail: () => void }) {
   const { servers, loading } = useAptCacheData()
   if (loading || servers.length === 0) return null
 
@@ -1183,7 +1218,7 @@ function AptCacheCompactCards() {
           : pct == null ? '#22c55e'
           : pct >= 50 ? '#22c55e' : pct >= 25 ? '#f59e0b' : '#ef4444'
         return (
-          <div key={s.id} className="card px-3 py-2 space-y-1" style={{ minWidth: 140 }} title={`${s.host}:${s.port}${!s.ok ? ` — ${s.error}` : ''}`}>
+          <div key={s.id} className="card px-3 py-2 space-y-1 cursor-pointer hover:border-text-muted transition-colors" style={{ minWidth: 140 }} title={`${s.host}:${s.port}${!s.ok ? ` — ${s.error}` : ''} — click for details`} onClick={onOpenDetail}>
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-text-muted truncate">{s.label}</span>
               <span className={`text-[10px] font-mono ${s.ok ? 'text-green' : 'text-red'}`}>{s.ok ? 'online' : 'offline'}</span>
@@ -1207,8 +1242,19 @@ function AptCacheCompactCards() {
                   <div className="text-[10px] text-text-muted font-mono">served {s.data_served_recent}</div>
                 )}
               </>
+            ) : (s.data_served_recent || s.data_served_startup) ? (
+              /* Online but no per-request log data — show transfer totals instead */
+              <>
+                <div className="text-[10px] text-text-muted uppercase tracking-wide">served to clients</div>
+                <div className="text-sm font-mono font-medium text-text-primary">
+                  {s.data_served_recent || s.data_served_startup}
+                </div>
+                {s.data_fetched_recent && (
+                  <div className="text-[10px] text-text-muted font-mono">fetched {s.data_fetched_recent}</div>
+                )}
+              </>
             ) : (
-              <div className="text-xs text-green font-mono">✓ no log data</div>
+              <div className="text-xs text-text-muted font-mono">no stats yet</div>
             )}
           </div>
         )

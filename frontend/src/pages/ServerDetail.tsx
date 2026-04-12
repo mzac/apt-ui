@@ -4,7 +4,7 @@ import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as 
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket } from '@/api/client'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createAptProxyWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket } from '@/api/client'
 import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
@@ -189,6 +189,9 @@ export default function ServerDetail() {
               apt index: {new Date(server.last_apt_update).toLocaleString()}
             </span>
           )}
+          {server.apt_proxy && (
+            <span className="text-cyan" title={`apt HTTP proxy: ${server.apt_proxy}`}>⚡ proxy: {server.apt_proxy}</span>
+          )}
         </div>
       )}
       {server.notes && (
@@ -265,6 +268,17 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
   const eepromTermRef = useRef<HTMLDivElement | null>(null)
   const autoSecTermRef = useRef<HTMLDivElement>(null)
   const autoSecWsRef = useRef<WebSocket | null>(null)
+  const [aptProxyState, setAptProxyState] = useState(server.apt_proxy)
+  const [aptProxyInput, setAptProxyInput] = useState(
+    server.apt_proxy && server.apt_proxy !== 'auto-apt-proxy' ? server.apt_proxy : ''
+  )
+  const [aptProxyMode, setAptProxyMode] = useState<'manual' | 'auto'>(
+    server.apt_proxy === 'auto-apt-proxy' ? 'auto' : 'manual'
+  )
+  const [aptProxyLines, setAptProxyLines] = useState<string[]>([])
+  const [aptProxyRunning, setAptProxyRunning] = useState(false)
+  const aptProxyTermRef = useRef<HTMLDivElement>(null)
+  const aptProxyWsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
     tagsApi.list().then(setTagList)
@@ -282,6 +296,9 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       notes: server.notes ?? '',
     })
     setAutoSecState(server.auto_security_updates)
+    setAptProxyState(server.apt_proxy)
+    setAptProxyInput(server.apt_proxy && server.apt_proxy !== 'auto-apt-proxy' ? server.apt_proxy : '')
+    setAptProxyMode(server.apt_proxy === 'auto-apt-proxy' ? 'auto' : 'manual')
   }, [server])
 
   function toggleGroup(id: number) {
@@ -342,6 +359,29 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       }, 0)
     }, () => setAutoSecRunning(false))
     autoSecWsRef.current = ws
+  }
+
+  function handleAptProxyToggle(enable: boolean) {
+    setAptProxyLines([])
+    setAptProxyRunning(true)
+    aptProxyWsRef.current?.close()
+    const ws = createAptProxyWebSocket(server.id, { enable, mode: aptProxyMode, proxy_url: aptProxyInput.trim() }, (msg) => {
+      if (msg.type === 'output') {
+        setAptProxyLines(l => applyChunk(l, msg.data as string))
+      } else if (msg.type === 'status') {
+        setAptProxyLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+      } else if (msg.type === 'error') {
+        setAptProxyLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+      } else if (msg.type === 'complete') {
+        const d = msg.data as { success: boolean; apt_proxy: string | null }
+        if (d.success) setAptProxyState(d.apt_proxy)
+        setAptProxyLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Done' : '✗ Failed'}\x1b[0m\n`])
+      }
+      setTimeout(() => {
+        if (aptProxyTermRef.current) aptProxyTermRef.current.scrollTop = aptProxyTermRef.current.scrollHeight
+      }, 0)
+    }, () => setAptProxyRunning(false))
+    aptProxyWsRef.current = ws
   }
 
   function handleEepromUpdate() {
@@ -500,6 +540,80 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
           )}
         </div>
       )}
+
+      {/* apt Proxy configuration */}
+      <div className="border border-border rounded p-3 space-y-2">
+        <div className="space-y-2">
+          <span className="text-xs text-text-muted uppercase tracking-wide">apt HTTP Proxy</span>
+          <div className="flex items-center gap-2">
+            {aptProxyState
+              ? <span className="text-xs text-cyan font-mono">⚡ {aptProxyState === 'auto-apt-proxy' ? 'auto-apt-proxy (DNS)' : aptProxyState}</span>
+              : <span className="text-xs text-text-muted font-mono">not configured</span>}
+          </div>
+          {/* Mode selector */}
+          <div className="flex gap-3 text-xs">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="apt-proxy-mode" value="manual" checked={aptProxyMode === 'manual'} onChange={() => setAptProxyMode('manual')} disabled={aptProxyRunning} className="accent-cyan" />
+              <span className="text-text-primary">Manual URL</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="apt-proxy-mode" value="auto" checked={aptProxyMode === 'auto'} onChange={() => setAptProxyMode('auto')} disabled={aptProxyRunning} className="accent-cyan" />
+              <span className="text-text-primary">auto-apt-proxy <span className="text-text-muted">(DNS / mDNS discovery)</span></span>
+            </label>
+          </div>
+          {aptProxyMode === 'manual' && (
+            <div className="flex gap-2 items-center flex-wrap">
+              <input
+                className="input text-xs py-1 w-64 font-mono"
+                placeholder="http://192.168.1.10:3142/"
+                value={aptProxyInput}
+                onChange={e => setAptProxyInput(e.target.value)}
+                disabled={aptProxyRunning}
+              />
+              <button
+                onClick={() => handleAptProxyToggle(true)}
+                disabled={aptProxyRunning || !aptProxyInput.trim()}
+                className="btn-primary text-xs py-0.5"
+              >
+                {aptProxyRunning ? '…' : aptProxyState && aptProxyState !== 'auto-apt-proxy' ? 'Update' : 'Enable'}
+              </button>
+            </div>
+          )}
+          {aptProxyMode === 'auto' && (
+            <div className="flex gap-2 items-center">
+              <button
+                onClick={() => handleAptProxyToggle(true)}
+                disabled={aptProxyRunning || aptProxyState === 'auto-apt-proxy'}
+                className="btn-primary text-xs py-0.5"
+              >
+                {aptProxyRunning ? '…' : 'Install auto-apt-proxy'}
+              </button>
+              <span className="text-xs text-text-muted">Installs package, discovers proxy via DNS SRV record or mDNS</span>
+            </div>
+          )}
+          {aptProxyState && (
+            <button
+              onClick={() => handleAptProxyToggle(false)}
+              disabled={aptProxyRunning}
+              className="btn-secondary text-xs py-0.5"
+            >
+              {aptProxyRunning ? '…' : 'Disable / Remove'}
+            </button>
+          )}
+        </div>
+        {aptProxyLines.length > 0 && (
+          <div
+            ref={aptProxyTermRef}
+            className="bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary overflow-y-auto"
+            style={{ maxHeight: '200px' }}
+          >
+            {aptProxyLines.map((line, i) => (
+              <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+            ))}
+            {aptProxyRunning && <span className="text-cyan animate-pulse">▋</span>}
+          </div>
+        )}
+      </div>
 
       {/* EEPROM firmware update (Raspberry Pi 4/400/CM4/5 only) */}
       {eepromState !== null && (

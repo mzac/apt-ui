@@ -395,6 +395,20 @@ export function createEepromUpdateWebSocket(
   return ws
 }
 
+export function createAptProxyWebSocket(
+  serverId: number,
+  params: { enable: boolean; mode?: 'manual' | 'auto'; proxy_url?: string },
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-proxy/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params)) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
 export function createAutoSecurityUpdatesWebSocket(
   serverId: number,
   params: { enable: boolean },

@@ -20,7 +20,7 @@ graph TB
         subgraph api_layer["FastAPI  —  14 Routers"]
             direction LR
             REST["REST API\n50+ endpoints\napt_repos · aptcache · auth\nconfig_io · dpkg_log · groups\nnotifications · scheduler\nservers · stats · tags\ntailscale · templates · upgrades"]
-            WS["WebSocket  (15 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nauto-security-updates\neeprom-update · shell\ntemplate-apply · apt-repos-test"]
+            WS["WebSocket  (16 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nauto-security-updates\neeprom-update · apt-proxy\nshell · template-apply · apt-repos-test"]
         end
 
         subgraph background["Background Services"]
@@ -189,6 +189,7 @@ For each server, a single check collects in parallel over SSH:
 - Reboot-required flag (`/var/run/reboot-required`)
 - EEPROM firmware status (Raspberry Pi 4/400/CM4/5 only)
 - Last `apt-get update` timestamp
+- apt HTTP proxy (`apt-config dump` + `/etc/apt/apt.conf.d/` scan)
 
 Results are stored in `update_checks` and `server_stats`. The `packages_json` field caches parsed package data as JSON to avoid re-parsing on every API call.
 
@@ -230,7 +231,7 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 | `server_tags` | Many-to-many servers ↔ tags |
 | `update_checks` | Results of each apt check per server |
 | `update_history` | Upgrade run records with full log output |
-| `server_stats` | Hardware stats, kernel, EEPROM state per check |
+| `server_stats` | Hardware stats, kernel, EEPROM state, apt proxy URL per check |
 | `notification_config` | Single-row app-wide notification settings |
 | `schedule_config` | Single-row scheduling and behaviour settings |
 | `app_config` | Key-value store (JWT secret persistence) |

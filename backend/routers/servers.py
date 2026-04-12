@@ -250,6 +250,7 @@ async def _build_server_out(
         last_apt_update=stats_row.last_apt_update if stats_row else None,
         notes=server.notes,
         is_docker_host=_server_is_docker_host(server.hostname, stats_row.host_ips if stats_row else None),
+        apt_proxy=stats_row.apt_proxy if stats_row else None,
     )
 
 
