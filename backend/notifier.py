@@ -29,7 +29,26 @@ MAX_TELEGRAM_LEN = 4000  # leave buffer below 4096
 # Low-level send helpers
 # ---------------------------------------------------------------------------
 
-async def _send_email(cfg: NotificationConfig, subject: str, html_body: str, text_body: str):
+async def _log_notification(channel: str, event_type: str, summary: str, success: bool, error: str | None = None):
+    """Write a notification attempt to the notification_log table (fire-and-forget)."""
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.models import NotificationLog
+        async with AsyncSessionLocal() as db:
+            entry = NotificationLog(
+                channel=channel,
+                event_type=event_type,
+                summary=summary,
+                success=success,
+                error_message=error,
+            )
+            db.add(entry)
+            await db.commit()
+    except Exception as exc:
+        logger.debug("_log_notification failed: %s", exc)
+
+
+async def _send_email(cfg: NotificationConfig, subject: str, html_body: str, text_body: str, event_type: str = "unknown"):
     if not cfg.email_enabled or not cfg.smtp_host or not cfg.email_to:
         return
 
@@ -53,15 +72,18 @@ async def _send_email(cfg: NotificationConfig, subject: str, html_body: str, tex
             start_tls=cfg.smtp_use_tls and not use_ssl,
         )
         logger.info("Email sent: %s", subject)
+        await _log_notification("email", event_type, subject, success=True)
     except Exception as exc:
         logger.error("Email send failed: %s", exc)
+        await _log_notification("email", event_type, subject, success=False, error=str(exc))
 
 
-async def _send_telegram(cfg: NotificationConfig, text: str):
+async def _send_telegram(cfg: NotificationConfig, text: str, event_type: str = "unknown"):
     if not cfg.telegram_enabled or not cfg.telegram_bot_token or not cfg.telegram_chat_id:
         return
 
     url = TELEGRAM_API.format(token=cfg.telegram_bot_token, method="sendMessage")
+    summary = text[:120].replace("\n", " ")
 
     # Split into chunks if too long
     chunks = []
@@ -84,8 +106,10 @@ async def _send_telegram(cfg: NotificationConfig, text: str):
                 if not resp.is_success:
                     logger.error("Telegram API error: %s", resp.text)
         logger.info("Telegram message sent (%d chunk(s))", len(chunks))
+        await _log_notification("telegram", event_type, summary, success=True)
     except Exception as exc:
         logger.error("Telegram send failed: %s", exc)
+        await _log_notification("telegram", event_type, summary, success=False, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -103,13 +127,18 @@ async def _send_webhook(cfg: NotificationConfig, event: str, payload: dict):
     if cfg.webhook_secret:
         sig = hmac.new(cfg.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
         headers["X-Hub-Signature-256"] = f"sha256={sig}"
+    summary = f"{event} → {cfg.webhook_url}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(cfg.webhook_url, content=body, headers=headers)
             if not resp.is_success:
                 logger.warning("Webhook %s returned %s", cfg.webhook_url, resp.status_code)
+                await _log_notification("webhook", event, summary, success=False, error=f"HTTP {resp.status_code}")
+            else:
+                await _log_notification("webhook", event, summary, success=True)
     except Exception as exc:
         logger.error("Webhook send failed: %s", exc)
+        await _log_notification("webhook", event, summary, success=False, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +169,9 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
     telegram_body = _build_telegram_summary(subject, server_data)
 
     if cfg.email_enabled and cfg.daily_summary_email:
-        await _send_email(cfg, subject, html_body, text_body)
+        await _send_email(cfg, subject, html_body, text_body, event_type="daily_summary")
     if cfg.telegram_enabled and cfg.daily_summary_telegram:
-        await _send_telegram(cfg, telegram_body)
+        await _send_telegram(cfg, telegram_body, event_type="daily_summary")
 
     up_to_date, with_updates, with_errors, _ = _categorize(server_data)
     if cfg.daily_summary_webhook:
@@ -556,10 +585,11 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
         )
 
     is_success = history.status == "success"
+    evt = "upgrade_complete" if is_success else "upgrade_error"
     if cfg.notify_upgrade_email if is_success else cfg.notify_error_email:
-        await _send_email(cfg, subject, html, text)
+        await _send_email(cfg, subject, html, text, event_type=evt)
     if cfg.notify_upgrade_telegram if is_success else cfg.notify_error_telegram:
-        await _send_telegram(cfg, text)
+        await _send_telegram(cfg, text, event_type=evt)
     webhook_allowed = cfg.notify_upgrade_webhook if is_success else cfg.notify_error_webhook
     if webhook_allowed:
         event = "upgrade_complete" if is_success else "upgrade_failed"
@@ -599,9 +629,9 @@ async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
     text = "\n".join(lines)
     html = "<html><body><pre style='font-family:monospace'>" + text + "</pre></body></html>"
     if cfg.notify_upgrade_email:
-        await _send_email(cfg, subject, html, text)
+        await _send_email(cfg, subject, html, text, event_type="upgrade_all_complete")
     if cfg.notify_upgrade_telegram:
-        await _send_telegram(cfg, text)
+        await _send_telegram(cfg, text, event_type="upgrade_all_complete")
     if cfg.notify_upgrade_webhook:
         await _send_webhook(cfg, "upgrade_all_complete", {
             "total": len(results),
@@ -709,9 +739,9 @@ async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSessio
     tg_text = "\n".join(tg_lines)
 
     if cfg.notify_security_email:
-        await _send_email(cfg, subject, html, text)
+        await _send_email(cfg, subject, html, text, event_type="security_updates_found")
     if cfg.notify_security_telegram:
-        await _send_telegram(cfg, tg_text)
+        await _send_telegram(cfg, tg_text, event_type="security_updates_found")
     if cfg.notify_security_webhook:
         await _send_webhook(cfg, "security_updates_found", {
             "total_security_updates": total_sec,
@@ -770,9 +800,9 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
     )
 
     if cfg.notify_reboot_email:
-        await _send_email(cfg, subject, html, text)
+        await _send_email(cfg, subject, html, text, event_type="reboot_required")
     if cfg.notify_reboot_telegram:
-        await _send_telegram(cfg, tg_text)
+        await _send_telegram(cfg, tg_text, event_type="reboot_required")
     if cfg.notify_reboot_webhook:
         await _send_webhook(cfg, "reboot_required", {
             "servers": [

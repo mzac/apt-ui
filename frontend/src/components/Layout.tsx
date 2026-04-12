@@ -118,6 +118,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/', label: 'Dashboard' },
     { to: '/history', label: 'History' },
     { to: '/templates', label: 'Templates' },
+    { to: '/compare', label: 'Compare' },
     { to: '/settings', label: 'Settings' },
   ]
 

@@ -175,6 +175,7 @@ export default function Dashboard() {
       if (statusFilter === 'autoremove') return (c?.autoremove_count ?? 0) > 0
       if (statusFilter === 'sec_disabled') return s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed'
       if (statusFilter === 'eeprom') return s.eeprom_update_available === 'update_available'
+      if (statusFilter === 'offline') return s.is_enabled && s.is_reachable === false
       return true
     })
     .sort((a, b) => {
@@ -288,6 +289,7 @@ export default function Dashboard() {
   const hasFilters = activeGroup != null || activeTag != null
   const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
   const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
+  const offlineCount = serverList.filter(s => s.is_enabled && s.is_reachable === false).length
 
   // Groups with servers (including via memberships)
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
@@ -337,6 +339,7 @@ export default function Dashboard() {
               { label: 'Autoremove', value: overview.autoremove_total, color: overview.autoremove_total > 0 ? 'text-amber' : 'text-text-muted', filter: 'autoremove' },
               { label: 'Sec off', value: secDisabledCount, color: secDisabledCount > 0 ? 'text-amber' : 'text-text-muted', filter: 'sec_disabled' },
               ...(eepromCount > 0 ? [{ label: 'EEPROM', value: eepromCount, color: 'text-amber', filter: 'eeprom' }] : []),
+              ...(offlineCount > 0 ? [{ label: 'Offline', value: offlineCount, color: 'text-red', filter: 'offline' }] : []),
             ].map(({ label, value, color, filter }) => {
               const opensModal = (filter === 'updates_available' || filter === 'security') && serversWithUpdates.length > 0
               return (
@@ -859,10 +862,16 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
 
   return (
     <div
-      className={`card p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : ''}`}
-      style={primaryGroupColor ? { borderLeft: `3px solid ${primaryGroupColor}66` } : undefined}
+      className={`card p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''}`}
+      style={primaryGroupColor ? { borderLeft: `3px solid ${s.is_reachable === false ? '#ef4444' : primaryGroupColor}66` } : (s.is_reachable === false ? { borderLeft: '3px solid #ef444466' } : undefined)}
       onClick={() => navigate(`/servers/${s.id}`)}
     >
+      {s.is_enabled && s.is_reachable === false && (
+        <div className="flex items-center gap-1.5 text-red text-[10px] font-mono bg-red/10 border border-red/20 rounded px-2 py-0.5 -mx-1 -mt-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0" />
+          offline — TCP unreachable
+        </div>
+      )}
       {/* Two-column body: left = identity, right = status/stats */}
       <div className="flex items-start gap-2">
         {/* Left: name, hostname, OS */}

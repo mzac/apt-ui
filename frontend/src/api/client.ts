@@ -1,5 +1,5 @@
 import type {
-  CheckAllProgress, FleetOverview, NotificationConfig, PackageInfo,
+  CheckAllProgress, FleetOverview, NotificationConfig, NotificationLog, PackageInfo,
   PackageSearchResult, ScheduleConfig, Server, ServerGroup, Tag, Template,
   TemplatePackage, UpdateHistory, User,
 } from '@/types'
@@ -158,6 +158,12 @@ export const servers = {
       method: 'DELETE',
       body: JSON.stringify({ path }),
     }),
+  compare: (server_ids: number[]) =>
+    post<{
+      servers: { id: number; name: string; hostname: string }[]
+      packages: Record<string, Record<string, string | null>>
+      errors: Record<string, string>
+    }>('/api/servers/compare', { server_ids }),
   uploadDeb: (id: number, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -248,6 +254,10 @@ export const notifications = {
   testEmail: () => post('/api/notifications/test/email'),
   testTelegram: () => post('/api/notifications/test/telegram'),
   detectChatId: () => get<{ chats: { id: number; title: string }[] }>('/api/notifications/telegram/detect-chat-id'),
+  history: (page = 1, limit = 50) =>
+    get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(
+      `/api/notifications/history?page=${page}&limit=${limit}`
+    ),
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +399,18 @@ export function createEepromUpdateWebSocket(
   onClose?: () => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/eeprom-update/${serverId}`
+  const ws = new WebSocket(url)
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
+export function createPveUpgradeWebSocket(
+  serverId: number,
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/pveupgrade/${serverId}`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
   ws.onclose = () => onClose?.()

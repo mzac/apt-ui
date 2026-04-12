@@ -86,6 +86,8 @@ class Server(Base):
     ssh_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted PEM key
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text admin notes
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_reachable: Mapped[bool] = mapped_column(Boolean, default=True)   # updated by ping job
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last successful TCP connect
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -264,6 +266,19 @@ class Template(Base):
     packages: Mapped[list["TemplatePackage"]] = relationship(
         "TemplatePackage", back_populates="template", cascade="all, delete-orphan"
     )
+
+
+class NotificationLog(Base):
+    """Audit trail of every notification send attempt (email / Telegram / webhook)."""
+    __tablename__ = "notification_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    channel: Mapped[str] = mapped_column(Text, nullable=False)   # email / telegram / webhook
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)  # upgrade_complete / upgrade_error / security_updates_found / reboot_required / daily_summary / test
+    summary: Mapped[str] = mapped_column(Text, nullable=False)    # subject or short description
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class TemplatePackage(Base):

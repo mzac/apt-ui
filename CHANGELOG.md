@@ -4,6 +4,22 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.04.12-01] — 2026-04-12
+
+### Features
+
+- **Server reachability monitoring** — a lightweight TCP ping job runs every 5 minutes (independent of the hourly SSH check) to detect whether each server's SSH port is reachable ([#31](https://github.com/mzac/apt-ui/issues/31)). Reachability is stored in `servers.is_reachable` + `servers.last_seen`. Offline servers get a red left-border and an "offline — TCP unreachable" banner on their dashboard card; the card is dimmed to 60% opacity. An **Offline** counter appears in the fleet summary bar when any enabled server is unreachable.
+- **Notification history log** — every outbound notification (email, Telegram, webhook) is now recorded in a new `notification_log` table ([#27](https://github.com/mzac/apt-ui/issues/27)). The **History** page now has two sub-tabs: **Upgrade History** (existing) and **Notification History** (new), showing time, channel, event type, summary, and success/failure for each notification sent.
+- **Multi-server package comparison** — new **Compare** page lets you select any combination of servers and compare their full installed package inventories side-by-side ([#28](https://github.com/mzac/apt-ui/issues/28)). Packages are fetched on demand via `dpkg-query` over SSH. Three filter modes: **Diverged** (packages where versions differ across servers, default), **Common** (same version everywhere), and **All**. Package name search. Rows where versions diverge are amber-tinted; missing packages shown as "—".
+- **Proxmox VE awareness** — servers running Proxmox VE are now detected automatically from `os_info` ([#32](https://github.com/mzac/apt-ui/issues/32)). In the Upgrade tab, a warning banner explains why `pveupgrade` is the safe upgrade path on PVE hosts, with a dedicated **Run pveupgrade** button that streams `apt-get update` + `pveupgrade --force` output live via WebSocket. In the Packages tab, PVE-managed packages (`pve-*`, `proxmox-*`, etc.) are highlighted with a 🔶 icon and an amber row background.
+
+### Bug Fixes
+
+- **Compare endpoint**: fixed `await` on a synchronous `_connect_options()` call that caused `object dict can't be used in 'await' expression` errors for all servers.
+- **Compare endpoint**: fixed `multiple values for keyword argument 'port'` caused by passing `port=` both explicitly and inside the `_connect_options` dict.
+
+---
+
 ## [2026.04.11-02] — 2026-04-11
 
 ### Features

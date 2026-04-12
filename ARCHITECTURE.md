@@ -20,19 +20,19 @@ graph TB
         subgraph api_layer["FastAPI  —  14 Routers"]
             direction LR
             REST["REST API\n50+ endpoints\napt_repos · aptcache · auth\nconfig_io · dpkg_log · groups\nnotifications · scheduler\nservers · stats · tags\ntailscale · templates · upgrades"]
-            WS["WebSocket  (16 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nauto-security-updates\neeprom-update · apt-proxy\nshell · template-apply · apt-repos-test"]
+            WS["WebSocket  (17 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nauto-security-updates\neeprom-update · apt-proxy\npveupgrade · shell\ntemplate-apply · apt-repos-test"]
         end
 
         subgraph background["Background Services"]
             direction LR
-            SCHED["APScheduler\n────────────\ncheck_all  cron\nauto_upgrade  cron\nlog_purge  03:00 daily\ndaily_summary  configurable\nreboot_check  one-shot"]
+            SCHED["APScheduler\n────────────\ncheck_all  cron\nauto_upgrade  cron\nping_all  every 5 min\nlog_purge  03:00 daily\ndaily_summary  configurable\nreboot_check  one-shot"]
             CHECKER["Update Checker\n────────────\napt list --upgradable\napt-cache show\napt-get autoremove --dry-run\nrpi-eeprom-update\nhostname -I  · df · uname\nlsb_release · systemd-detect-virt"]
             UPGRADER["Upgrade Manager\n────────────\napt-get upgrade / dist-upgrade\nDEBIAN_FRONTEND=noninteractive\nconffile action options\nper-server asyncio.Lock\npost-upgrade check trigger"]
-            NOTIFIER["Notifier\n────────────\nEmail  aiosmtplib\nTelegram  httpx Bot API\nWebhook  HMAC-SHA256\n────────────\nEvents: upgrade_complete\nupgrade_error · security_found\nreboot_required · daily_summary"]
+            NOTIFIER["Notifier\n────────────\nEmail  aiosmtplib\nTelegram  httpx Bot API\nWebhook  HMAC-SHA256\n────────────\nEvents: upgrade_complete\nupgrade_error · security_found\nreboot_required · daily_summary\n────────────\nLogs every send → notification_log"]
         end
 
         subgraph data_layer["Data Layer"]
-            DB[("SQLite\n/data/apt-dashboard.db\n────────────\n13 tables · 38 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\napt_cache_servers")]
+            DB[("SQLite\n/data/apt-dashboard.db\n────────────\n14 tables · 40 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log")]
             CRYPTO["Fernet Encryption\nAES-128-CBC + HMAC-SHA256\nPer-server SSH keys in DB\nKey: SHA-256(ENCRYPTION_KEY)\nfallback → JWT_SECRET"]
         end
 
@@ -106,8 +106,9 @@ The frontend is a **React 18 SPA** built with Vite and TypeScript, served as sta
 | Dashboard | `/` | Fleet overview, server card grid, group filters, bulk actions |
 | Server Detail | `/servers/:id` | Packages · Upgrade · Apt Repos · History · dpkg Log · Stats · Shell |
 | Settings | `/settings` | Schedule, notifications, server/group management, backup, account |
-| History | `/history` | Fleet-wide upgrade history with server/status filters |
+| History | `/history` | Fleet-wide upgrade history + notification history (sub-tabs) |
 | Templates | `/templates` | Named package sets; apply to one or more servers |
+| Compare | `/compare` | Side-by-side installed package comparison across multiple servers |
 
 ---
 
@@ -155,7 +156,7 @@ Host key verification is disabled (`known_hosts=None`). This is a deliberate tra
 
 | Category | Commands |
 |---|---|
-| Package management | `apt-get update`, `apt-get upgrade`, `apt-get dist-upgrade`, `apt-get autoremove`, `apt-get install`, `dpkg -i`, `apt-cache show/search`, `apt-mark showhold` |
+| Package management | `apt-get update`, `apt-get upgrade`, `apt-get dist-upgrade`, `apt-get autoremove`, `apt-get install`, `dpkg -i`, `apt-cache show/search`, `apt-mark showhold`, `dpkg-query -W` (package comparison), `pveupgrade --force` (Proxmox VE) |
 | System info | `uname -r`, `uptime`, `df -h /`, `dpkg --list`, `lsb_release`, `hostname -I`, `systemd-detect-virt`, `pveversion` |
 | File operations | `cat /etc/apt/sources.list*`, `sudo tee`, `sudo rm` |
 | Service control | `sudo reboot`, `unattended-upgrades`, `rpi-eeprom-update` |
@@ -173,7 +174,8 @@ Five recurring jobs and one on-demand job type run on the `AsyncIOScheduler`, al
 |---|---|---|
 | `check_all` | Cron (default `0 6 * * *`) | Checks all enabled servers; fires security/reboot notifications; sends daily summary |
 | `auto_upgrade` | Cron (configurable, disabled by default) | Upgrades all servers with pending updates up to the concurrency limit |
-| `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, and `server_stats` records older than `log_retention_days` |
+| `ping_all` | Every 5 minutes | TCP-connects to each server's SSH port (3 s timeout); updates `is_reachable` + `last_seen` without SSH |
+| `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, `server_stats`, and `notification_log` records older than `log_retention_days` |
 | `daily_summary` | Time-of-day (default 07:00) | Sends fleet summary across enabled channels |
 | `reboot_check_{id}` | One-shot (post-reboot delay) | Polls until the server responds, then triggers a check |
 
@@ -224,7 +226,7 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 | Table | Purpose |
 |---|---|
 | `users` | Authentication; bcrypt-hashed passwords |
-| `servers` | Managed server inventory; encrypted per-server SSH keys |
+| `servers` | Managed server inventory; encrypted per-server SSH keys; `is_reachable` + `last_seen` from ping job |
 | `server_groups` | Colour-coded grouping |
 | `server_group_memberships` | Many-to-many servers ↔ groups |
 | `tags` | Freeform tags; auto-created by OS/virt detection |
@@ -237,6 +239,7 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 | `app_config` | Key-value store (JWT secret persistence) |
 | `apt_cache_servers` | apt-cacher-ng server definitions |
 | `templates` / `template_packages` | Named package sets for bulk provisioning |
+| `notification_log` | Record of every outbound notification (channel, event type, summary, success/error) |
 
 ---
 

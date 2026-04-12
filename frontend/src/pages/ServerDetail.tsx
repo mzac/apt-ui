@@ -4,7 +4,7 @@ import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as 
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
-import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createAptProxyWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket } from '@/api/client'
+import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createAptProxyWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket, createPveUpgradeWebSocket } from '@/api/client'
 import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import Convert from 'ansi-to-html'
@@ -820,12 +820,13 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
               <tbody>
                 {sorted.map(p => {
                   const reboot = likelyRequiresReboot(p.name)
+                  const isPve = server.is_proxmox && /^(pve-|proxmox-|pve-kernel-|pvetest-)/.test(p.name)
                   return (
                   <tr
                     key={p.name}
                     onClick={() => toggleOne(p.name)}
                     className={`border-b border-border/30 cursor-pointer transition-colors
-                      ${selected.has(p.name) ? 'bg-green/5 border-green/20' : p.is_security ? 'bg-red/5' : ''}
+                      ${selected.has(p.name) ? 'bg-green/5 border-green/20' : p.is_security ? 'bg-red/5' : isPve ? 'bg-orange-500/5' : ''}
                       hover:bg-surface-2/60`}
                   >
                     <td className="px-3 py-1.5" onClick={e => e.stopPropagation()}>
@@ -839,6 +840,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                     <td className="px-3 py-1.5 font-mono">
                       {p.is_security && <span className="text-red mr-1" title="Security update">🔒</span>}
                       {reboot && <span className="text-amber mr-1" title="Likely requires reboot">↺</span>}
+                      {isPve && <span className="text-orange-400 mr-1" title="Proxmox VE package — use pveupgrade">🔶</span>}
                       {p.name}
                     </td>
                     <td className="px-3 py-1.5 font-mono text-text-muted">{p.current_version}</td>
@@ -1195,8 +1197,10 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [dryRunning, setDryRunning] = useState(false)
   const [showDryRun, setShowDryRun] = useState(false)
   const [runtimePkgs, setRuntimePkgs] = useState<string[]>([])
+  const [pveUpgrading, setPveUpgrading] = useState(false)
   const dryWsRef = useRef<WebSocket | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const pveWsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
   const dryTermRef = useRef<HTMLDivElement>(null)
   const { addJob, updateJob } = useJobStore()
@@ -1256,6 +1260,26 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     wsRef.current = ws
   }
 
+  function startPveUpgrade() {
+    setLines([])
+    setDone(false)
+    setRunning(true)
+    setPveUpgrading(true)
+    const jobId = `upgrade-${serverId}`
+    addJob({ id: jobId, type: 'upgrade', label: `pveupgrade ${server.name}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
+    const ws = createPveUpgradeWebSocket(serverId, (msg) => {
+      if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
+      else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
+      else if (msg.type === 'error') { setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`]); updateJob(jobId, { status: 'error', completedAt: Date.now() }) }
+      else if (msg.type === 'complete') {
+        const d = msg.data as { success: boolean }
+        setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ pveupgrade successful' : '✗ pveupgrade failed'}\x1b[0m\n`])
+        updateJob(jobId, { status: d.success ? 'complete' : 'error', completedAt: Date.now() })
+      }
+    }, () => { setRunning(false); setPveUpgrading(false); setDone(true); onRefresh(); window.dispatchEvent(new CustomEvent('apt:refresh')) })
+    pveWsRef.current = ws
+  }
+
   function startUpgrade() {
     setLines([])
     setDone(false)
@@ -1305,6 +1329,32 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
       {server.is_docker_host && runtimePkgs.length === 0 && (server.latest_check?.packages_available ?? 0) > 0 && (
         <div className="rounded border border-purple/30 bg-purple/5 px-4 py-2 text-xs text-text-muted">
           🐳 This is the Docker host. No container-runtime packages in the current upgrade list.
+        </div>
+      )}
+      {server.is_proxmox && (
+        <div className="rounded border border-orange-500/40 bg-orange-500/5 px-4 py-3 text-sm space-y-2">
+          <p className="font-semibold text-orange-400">🔶 Proxmox VE node</p>
+          <p className="text-text-muted text-xs">
+            Proxmox VE uses <code className="font-mono bg-bg px-1 rounded">pveupgrade</code> which runs{' '}
+            <code className="font-mono bg-bg px-1 rounded">apt dist-upgrade</code> with PVE-specific pre/post hooks.
+            Using plain <code className="font-mono bg-bg px-1 rounded">apt-get upgrade</code> may skip PVE meta-packages or miss
+            post-install steps. Use <strong className="text-orange-300">Run pveupgrade</strong> for safer upgrades.
+          </p>
+          {!running && (
+            <button
+              onClick={startPveUpgrade}
+              disabled={!hasUpdates}
+              className="btn text-xs px-3 py-1.5 border border-orange-500/50 text-orange-300 hover:bg-orange-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Run pveupgrade
+            </button>
+          )}
+          {pveUpgrading && running && (
+            <span className="text-xs text-orange-300 font-mono flex items-center gap-1">
+              <span className="w-3 h-3 border-2 border-orange-300 border-t-transparent rounded-full animate-spin" />
+              pveupgrade running…
+            </span>
+          )}
         </div>
       )}
       {!running && (

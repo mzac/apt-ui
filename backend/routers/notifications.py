@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user
 from backend.database import get_db
-from backend.models import NotificationConfig, User
-from backend.schemas import NotificationConfigOut, NotificationConfigUpdate
+from backend.models import NotificationConfig, NotificationLog, User
+from backend.schemas import NotificationConfigOut, NotificationConfigUpdate, NotificationLogOut
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -99,6 +99,32 @@ async def test_telegram(
         return {"detail": "Test Telegram message sent"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/history")
+async def get_notification_history(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Return paginated notification send history."""
+    offset = (page - 1) * limit
+    total_res = await db.execute(select(func.count(NotificationLog.id)))
+    total = total_res.scalar_one()
+    items_res = await db.execute(
+        select(NotificationLog)
+        .order_by(NotificationLog.sent_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    items = items_res.scalars().all()
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": [NotificationLogOut.model_validate(i) for i in items],
+    }
 
 
 @router.get("/telegram/detect-chat-id")

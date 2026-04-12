@@ -166,6 +166,9 @@ class ServerOut(BaseModel):
     notes: Optional[str] = None                   # free-text notes for this server
     is_docker_host: bool = False                  # true when this server is the Docker host running this container
     apt_proxy: Optional[str] = None               # apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else None
+    is_proxmox: bool = False                      # true when os_info starts with "Proxmox VE"
+    is_reachable: bool = True                     # updated by background TCP ping job
+    last_seen: Optional[datetime] = None          # timestamp of last successful TCP connect
 
     model_config = {"from_attributes": True}
 
@@ -390,6 +393,18 @@ class NotificationConfigUpdate(BaseModel):
     notify_reboot_email: Optional[bool] = None
     notify_reboot_telegram: Optional[bool] = None
     notify_reboot_webhook: Optional[bool] = None
+
+
+class NotificationLogOut(BaseModel):
+    id: int
+    sent_at: datetime
+    channel: str
+    event_type: str
+    summary: str
+    success: bool
+    error_message: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 # ---------------------------------------------------------------------------

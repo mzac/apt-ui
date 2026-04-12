@@ -19,6 +19,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Check All / Refresh All** — Check All runs `apt-get update` then reports upgrades; Refresh All reads the existing local apt cache without hitting upstream repositories (faster); hover tooltips explain the difference
 - **Server groups & tags** — colour-coded groups (servers can belong to multiple); freeform tags with auto-tagging by OS and virtualisation type
 - **Sorting & search** — sort by name, update count, security count, or status; full-text search including tags; default sort persisted in `localStorage`
+- **Server reachability monitoring** — lightweight TCP ping runs every 5 minutes (independent of SSH checks); offline servers show a red banner and dimmed card; Offline counter appears in the fleet summary bar
 - **Docker host detection** — detects when a managed server is the Docker host running the dashboard; shows a badge and blocks upgrades of container-runtime packages (Docker, containerd, Podman, runc, LXD, etc.) to prevent killing the container mid-upgrade
 - **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
 - **Version in footer** — running app version displayed in the page footer; baked in at Docker build time from the release tag
@@ -31,6 +32,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines update in place
 - **Package install** — search the `apt` cache and install new packages on any host directly from the UI
 - **.deb installation** — install a `.deb` file by URL (validated then `wget`'d on the remote) or by uploading from your browser (SFTP'd via asyncssh); both paths stream `dpkg -i` + `apt-get install -f` output live
+- **Multi-server package comparison** — Compare page lets you select any combination of servers and compare their full installed package inventories side-by-side; filter to diverged/common/all packages; amber-tinted rows highlight version differences
 - **Templates** — define named package sets and apply them to one or more hosts at once; useful for provisioning identical server roles
 
 ### Apt Source Management
@@ -38,10 +40,12 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ### History & Audit
 - **Upgrade history** — per-server and fleet-wide log of every upgrade run; filterable by server and status; full terminal output expandable per run
+- **Notification history** — every outbound notification (email, Telegram, webhook) is logged and visible in History → Notification History; shows channel, event type, summary, and success/failure
 - **dpkg log** — "dpkg Log" tab parses `/var/log/dpkg.log` and all rotated archives (including `.gz`) on demand; filterable by package name, action type, and time window; colour-coded install / upgrade / remove / purge badges
 
 ### Server Detail
 - **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / LXC / Docker via `systemd-detect-virt`
+- **Proxmox VE awareness** — PVE servers get a dedicated **Run pveupgrade** button in the Upgrade tab that runs `pveupgrade --force` (the safe PVE upgrade path); PVE-managed packages are highlighted with a 🔶 icon in the Packages tab
 - **Auto security updates** — per-server toggle for `unattended-upgrades`; state shown as a shield badge (green = enabled, amber = disabled/not installed); streams live SSH output when toggling
 - **apt proxy management** — detects and displays the configured apt HTTP proxy per server; toggle panel lets you set a manual proxy URL (writes to `/etc/apt/apt.conf.d/01proxy`) or install `auto-apt-proxy` for zero-config DNS SRV discovery; disable removes the config and/or uninstalls the package; live SSH output streamed in the UI
 - **Raspberry Pi EEPROM firmware** — detects firmware update availability for Pi 4 / Pi 400 / CM4 / Pi 5; apply with one click (stages update for next reboot)
@@ -307,14 +311,14 @@ npm run dev   # Vite dev server on :5173, proxies /api/* to :8000
 ```mermaid
 graph TB
     subgraph browser["Browser"]
-        SPA["React 18 SPA  —  Vite · TypeScript · Tailwind\n6 pages · 6 components · Zustand state"]
+        SPA["React 18 SPA  —  Vite · TypeScript · Tailwind\n7 pages · 6 components · Zustand state"]
     end
 
     subgraph container["Docker Container  (:8000)"]
         direction TB
-        API["FastAPI  —  14 routers · 50+ REST endpoints · 16 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
-        BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook"]
-        DB[("SQLite  /data/apt-dashboard.db\n13 tables · 38 migrations")]
+        API["FastAPI  —  14 routers · 50+ REST endpoints · 17 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
+        BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook · Notification Log"]
+        DB[("SQLite  /data/apt-dashboard.db\n14 tables · 40 migrations")]
         SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]
     end
 

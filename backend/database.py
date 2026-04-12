@@ -155,6 +155,8 @@ async def init_db():
             "ALTER TABLE notification_config ADD COLUMN notify_reboot_telegram BOOLEAN DEFAULT 1",
             "ALTER TABLE notification_config ADD COLUMN notify_reboot_webhook BOOLEAN DEFAULT 1",
             "ALTER TABLE server_stats ADD COLUMN apt_proxy TEXT",
+            "ALTER TABLE servers ADD COLUMN is_reachable BOOLEAN DEFAULT 1",
+            "ALTER TABLE servers ADD COLUMN last_seen DATETIME",
         ]
         for sql in migrations:
             try:

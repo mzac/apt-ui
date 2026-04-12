@@ -10,7 +10,7 @@ Jobs:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone  # noqa: F401 — timezone used in ping job
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -220,9 +220,49 @@ def schedule_reboot_check(server_id: int, delay_seconds: int = 60) -> None:
     )
 
 
+async def _job_ping_all():
+    """TCP-ping all enabled servers and update is_reachable / last_seen on the Server row."""
+    from backend.database import AsyncSessionLocal
+    from backend.models import Server
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Server).where(Server.is_enabled == True))
+        servers = result.scalars().all()
+
+    async def _ping(server: Server):
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(server.hostname, server.ssh_port), timeout=3.0
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            reachable = True
+        except Exception:
+            reachable = False
+
+        try:
+            async with AsyncSessionLocal() as db2:
+                res = await db2.execute(select(Server).where(Server.id == server.id))
+                s = res.scalar_one_or_none()
+                if s:
+                    s.is_reachable = reachable
+                    if reachable:
+                        s.last_seen = datetime.now(timezone.utc).replace(tzinfo=None)
+                    await db2.commit()
+        except Exception as exc:
+            logger.debug("Ping update failed for server %d: %s", server.id, exc)
+
+    await asyncio.gather(*[_ping(s) for s in servers], return_exceptions=True)
+    logger.debug("Ping-all: checked %d servers", len(servers))
+
+
 async def _job_log_purge():
     from backend.database import AsyncSessionLocal
-    from backend.models import ScheduleConfig, UpdateCheck, UpdateHistory, ServerStats
+    from backend.models import ScheduleConfig, UpdateCheck, UpdateHistory, ServerStats, NotificationLog
     from sqlalchemy import select, delete
     from datetime import timedelta
 
@@ -237,10 +277,11 @@ async def _job_log_purge():
         checks = await db.execute(delete(UpdateCheck).where(UpdateCheck.checked_at < cutoff))
         history = await db.execute(delete(UpdateHistory).where(UpdateHistory.started_at < cutoff))
         stats = await db.execute(delete(ServerStats).where(ServerStats.recorded_at < cutoff))
+        notif_logs = await db.execute(delete(NotificationLog).where(NotificationLog.sent_at < cutoff))
         await db.commit()
         logger.info(
-            "Log purge: removed %d checks, %d history, %d stats older than %d days",
-            checks.rowcount, history.rowcount, stats.rowcount, days,
+            "Log purge: removed %d checks, %d history, %d stats, %d notif-logs older than %d days",
+            checks.rowcount, history.rowcount, stats.rowcount, notif_logs.rowcount, days,
         )
 
 
@@ -285,6 +326,14 @@ async def configure_jobs():
         _job_log_purge,
         CronTrigger(hour=3, minute=0, timezone=TZ),
         id="log_purge",
+        replace_existing=True,
+    )
+
+    # TCP ping runs every 5 minutes unconditionally
+    _scheduler.add_job(
+        _job_ping_all,
+        CronTrigger(minute="*/5", timezone=TZ),
+        id="ping_all",
         replace_existing=True,
     )
 

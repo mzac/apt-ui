@@ -106,10 +106,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Groups | `backend/routers/groups.py` |
 | Tags | `backend/routers/tags.py` |
 | Update checks | `backend/routers/updates.py` |
-| Upgrade WebSockets (15 streams) | `backend/routers/upgrades.py` |
+| Upgrade WebSockets (16 streams, incl. pveupgrade) | `backend/routers/upgrades.py` |
 | Fleet stats + history | `backend/routers/stats.py` |
 | Schedule config | `backend/routers/scheduler.py` |
-| Notification config + test | `backend/routers/notifications.py` |
+| Notification config + test + history log | `backend/routers/notifications.py` |
 | JSON/CSV import-export | `backend/routers/config_io.py` |
 | Package templates | `backend/routers/templates.py` |
 | apt-cacher-ng monitoring | `backend/routers/aptcache.py` |
@@ -123,9 +123,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 |---|---|
 | Dashboard | `frontend/src/pages/Dashboard.tsx` |
 | Server detail (Packages / Upgrade / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
-| Fleet-wide history | `frontend/src/pages/History.tsx` |
+| Fleet-wide history (Upgrade History / Notification History sub-tabs) | `frontend/src/pages/History.tsx` |
 | Settings | `frontend/src/pages/Settings.tsx` |
 | Package templates | `frontend/src/pages/Templates.tsx` |
+| Multi-server package comparison | `frontend/src/pages/Compare.tsx` |
 | Login | `frontend/src/pages/Login.tsx` |
 
 ---
@@ -135,7 +136,6 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 See [TODO.md](TODO.md) for the backlog. Notable items:
 
 - **Naming inconsistency**: the project is `apt-ui` but many files still reference `apt-dashboard` (docker container name, cookie name `apt_dashboard_token`, etc.). This is a known pending cleanup.
-- History page bug: clicking a row causes a React render error — `packages_upgraded` objects are rendered directly instead of as strings.
 
 ---
 

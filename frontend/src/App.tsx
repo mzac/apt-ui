@@ -9,6 +9,7 @@ import ServerDetail from '@/pages/ServerDetail'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
 import Templates from '@/pages/Templates'
+import Compare from '@/pages/Compare'
 
 export default function App() {
   const { init } = useAuthStore()
@@ -67,6 +68,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Templates />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/compare"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Compare />
               </Layout>
             </RequireAuth>
           }

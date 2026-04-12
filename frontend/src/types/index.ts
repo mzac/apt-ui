@@ -71,6 +71,9 @@ export interface Server {
   notes: string | null                    // free-text admin notes
   is_docker_host: boolean                 // true when this server is the Docker host running this container
   apt_proxy: string | null               // apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else null
+  is_proxmox: boolean                    // true when os_info starts with "Proxmox VE"
+  is_reachable: boolean                  // updated by background TCP ping job (every 5 min)
+  last_seen: string | null               // ISO timestamp of last successful TCP connect
 }
 
 export interface PackageInfo {
@@ -231,6 +234,16 @@ export interface AptCacheStats extends AptCacheServer {
   data_served_startup: string
   data_served_recent: string
   daily: AptCacheDailyRow[]
+}
+
+export interface NotificationLog {
+  id: number
+  sent_at: string
+  channel: string       // email / telegram / webhook
+  event_type: string    // upgrade_complete / upgrade_error / security_updates_found / reboot_required / daily_summary / test
+  summary: string
+  success: boolean
+  error_message: string | null
 }
 
 export interface TailscaleStatus {

@@ -251,6 +251,9 @@ async def _build_server_out(
         notes=server.notes,
         is_docker_host=_server_is_docker_host(server.hostname, stats_row.host_ips if stats_row else None),
         apt_proxy=stats_row.apt_proxy if stats_row else None,
+        is_proxmox=bool(server.os_info and server.os_info.startswith("Proxmox VE")),
+        is_reachable=server.is_reachable,
+        last_seen=server.last_seen,
     )
 
 
@@ -658,6 +661,81 @@ async def get_reachability(
         await asyncio.gather(*[_check(s) for s in stale])
 
     return {s.id: _reachability_cache[s.id][0] for s in servers if s.id in _reachability_cache}
+
+
+@router.post("/compare")
+async def compare_server_packages(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Compare installed packages across multiple servers via SSH (on-demand).
+
+    Accepts: { "server_ids": [1, 2, 3] }
+    Returns: {
+      "servers": [{"id": 1, "name": "...", "hostname": "..."}],
+      "packages": { "pkg-name": {"1": "1.2.3", "2": null} },
+      "errors": {"3": "Connection failed"}
+    }
+    where package version is null when not installed on that server.
+    """
+    import asyncssh as _asyncssh
+    from backend.ssh_manager import _connect_options
+
+    server_ids: list[int] = body.get("server_ids", [])
+    if not server_ids:
+        return {"servers": [], "packages": {}, "errors": {}}
+
+    # Fetch server records
+    result = await db.execute(select(Server).where(Server.id.in_(server_ids)))
+    servers_list = result.scalars().all()
+    server_map = {s.id: s for s in servers_list}
+
+    installed: dict[int, dict[str, str]] = {}
+    errors: dict[str, str] = {}
+
+    async def _fetch(server: Server):
+        try:
+            opts = _connect_options(server)
+            async with _asyncssh.connect(**opts) as conn:
+                result = await conn.run(
+                    "dpkg-query -W -f='${Package}\\t${Version}\\n' 2>/dev/null",
+                    timeout=30,
+                )
+                pkgs: dict[str, str] = {}
+                for line in (result.stdout or "").splitlines():
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2 and parts[0]:
+                        pkgs[parts[0]] = parts[1]
+                installed[server.id] = pkgs
+        except Exception as exc:
+            errors[str(server.id)] = str(exc)
+
+    await asyncio.gather(*[_fetch(server_map[sid]) for sid in server_ids if sid in server_map])
+
+    # Compute union of all packages
+    all_pkg_names: set[str] = set()
+    for pkgs in installed.values():
+        all_pkg_names.update(pkgs.keys())
+
+    # Build per-package-per-server version map; null = not installed
+    packages: dict[str, dict[str, str | None]] = {}
+    for pkg in sorted(all_pkg_names):
+        row: dict[str, str | None] = {}
+        for sid in server_ids:
+            if sid in installed:
+                row[str(sid)] = installed[sid].get(pkg)  # None if absent
+            # servers with errors are omitted from the matrix
+        packages[pkg] = row
+
+    return {
+        "servers": [
+            {"id": s.id, "name": s.name, "hostname": s.hostname}
+            for s in servers_list
+        ],
+        "packages": packages,
+        "errors": errors,
+    }
 
 
 @router.post("/{server_id}/test")

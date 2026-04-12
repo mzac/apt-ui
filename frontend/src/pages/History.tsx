@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { stats as statsApi, servers as serversApi } from '@/api/client'
-import type { UpdateHistory, Server } from '@/types'
+import { stats as statsApi, servers as serversApi, notifications as notifApi } from '@/api/client'
+import type { UpdateHistory, Server, NotificationLog } from '@/types'
 
 type HistoryItem = UpdateHistory & { server_name: string }
 
@@ -23,7 +23,7 @@ function duration(item: HistoryItem): string {
   return `${Math.floor(secs / 60)}m ${secs % 60}s`
 }
 
-export default function History() {
+function UpdateHistory() {
   const [items, setItems] = useState<HistoryItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -55,9 +55,8 @@ export default function History() {
   const totalPages = Math.ceil(total / perPage)
 
   return (
-    <div className="max-w-5xl mx-auto space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-mono text-text-primary">Upgrade History</h1>
         <span className="text-sm text-text-muted font-mono">{total} total entries</span>
       </div>
 
@@ -204,6 +203,122 @@ export default function History() {
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+function NotificationHistory() {
+  const [items, setItems] = useState<NotificationLog[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const limit = 50
+
+  useEffect(() => {
+    setLoading(true)
+    notifApi.history(page, limit)
+      .then(r => { setItems(r.items); setTotal(r.total) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [page])
+
+  function relTime(iso: string) {
+    const diff = Date.now() - new Date(iso).getTime()
+    const s = Math.floor(diff / 1000)
+    if (s < 60) return `${s}s ago`
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+    return new Date(iso).toLocaleDateString()
+  }
+
+  const channelBadge = (ch: string) => {
+    const map: Record<string, string> = { email: 'text-blue', telegram: 'text-cyan', webhook: 'text-purple' }
+    return <span className={`text-[10px] font-mono uppercase tracking-wide ${map[ch] ?? 'text-text-muted'}`}>{ch}</span>
+  }
+
+  const totalPages = Math.ceil(total / limit)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-text-muted font-mono">{total} total entries</span>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-12 text-text-muted text-sm">No notifications sent yet.</div>
+      ) : (
+        <>
+          <div className="card overflow-hidden">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="border-b border-border text-text-muted text-left">
+                  <th className="px-3 py-2 font-normal">Time</th>
+                  <th className="px-3 py-2 font-normal">Channel</th>
+                  <th className="px-3 py-2 font-normal">Event</th>
+                  <th className="px-3 py-2 font-normal">Summary</th>
+                  <th className="px-3 py-2 font-normal">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30">
+                {items.map(item => (
+                  <tr key={item.id} className="hover:bg-surface/50">
+                    <td className="px-3 py-2 text-text-muted whitespace-nowrap" title={item.sent_at}>{relTime(item.sent_at)}</td>
+                    <td className="px-3 py-2">{channelBadge(item.channel)}</td>
+                    <td className="px-3 py-2 text-text-muted whitespace-nowrap">{item.event_type.replace(/_/g, ' ')}</td>
+                    <td className="px-3 py-2 text-text-primary max-w-xs truncate" title={item.summary}>{item.summary}</td>
+                    <td className="px-3 py-2">
+                      {item.success
+                        ? <span className="text-green">✓</span>
+                        : <span className="text-red" title={item.error_message ?? undefined}>✗</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="btn-secondary text-xs">← Prev</button>
+              <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
+              <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="btn-secondary text-xs">Next →</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+const TABS = ['Upgrade History', 'Notification History'] as const
+type Tab = typeof TABS[number]
+
+export default function History() {
+  const [tab, setTab] = useState<Tab>('Upgrade History')
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-4">
+      <h1 className="text-lg font-mono text-text-primary">History</h1>
+
+      <div className="flex gap-1 border-b border-border">
+        {TABS.map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 ${
+              tab === t
+                ? 'border-green text-text-primary'
+                : 'border-transparent text-text-muted hover:text-text-primary'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'Upgrade History' && <UpdateHistory />}
+      {tab === 'Notification History' && <NotificationHistory />}
     </div>
   )
 }

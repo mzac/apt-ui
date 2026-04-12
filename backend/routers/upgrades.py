@@ -462,6 +462,88 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Proxmox VE upgrade — runs pveupgrade (wrapper around apt dist-upgrade with
+# PVE-specific pre/post hooks) instead of plain apt-get upgrade.
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/pveupgrade/{server_id}")
+async def ws_pveupgrade(websocket: WebSocket, server_id: int):
+    """Run pveupgrade on a Proxmox VE node, streaming output live."""
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_dashboard_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        server_result = await db.execute(select(Server).where(Server.id == server_id))
+        server = server_result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+
+        sudo = "" if server.username == "root" else "sudo "
+
+        async def send_fn(msg: dict):
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            from backend.ssh_manager import run_command_stream
+
+            await send_fn({"type": "status", "data": "connecting"})
+
+            # First ensure apt cache is fresh
+            await send_fn({"type": "status", "data": "updating_apt"})
+            await run_command_stream(
+                server,
+                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get update -q",
+                send_fn,
+                timeout=120,
+            )
+
+            # Run pveupgrade non-interactively
+            await send_fn({"type": "status", "data": "upgrading"})
+            result = await run_command_stream(
+                server,
+                f"DEBIAN_FRONTEND=noninteractive {sudo}pveupgrade --force 2>&1",
+                send_fn,
+                timeout=600,
+            )
+            success = result.exit_code == 0
+
+            await send_fn({"type": "complete", "data": {"success": success}})
+
+            if success:
+                from backend.update_checker import check_server
+                from backend.database import AsyncSessionLocal as ASL
+
+                async def _bg():
+                    async with ASL() as bg_db:
+                        from sqlalchemy import select as _sel
+                        srv = (await bg_db.execute(_sel(Server).where(Server.id == server_id))).scalar_one_or_none()
+                        if srv:
+                            await check_server(srv, bg_db)
+
+                asyncio.create_task(_bg())
+
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Dry-run preview — shows what would be upgraded without actually upgrading
 # ---------------------------------------------------------------------------
 
