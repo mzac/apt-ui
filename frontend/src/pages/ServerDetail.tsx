@@ -720,7 +720,12 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   const checkedAt = server.latest_check?.checked_at
   useEffect(() => { loadPackages() }, [loadPackages, checkedAt])
 
-  const sorted = [...packages]
+  const upgradable = packages.filter(p => !p.is_new)
+  const newPkgs = packages.filter(p => p.is_new)
+  const hasNewKernels = newPkgs.some(p => p.is_kernel)
+  const keptBackCount = upgradable.filter(p => p.needs_dist_upgrade).length
+
+  const sorted = [...upgradable]
     .filter(p => !filterSec || p.is_security)
     .sort((a, b) => {
       if (sortCol === 'security') return (b.is_security ? 1 : 0) - (a.is_security ? 1 : 0)
@@ -764,6 +769,23 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
         <p className="text-text-muted text-sm py-8 text-center">No pending updates.</p>
       ) : (
         <>
+          {/* Dist-upgrade required banner */}
+          {(keptBackCount > 0 || newPkgs.length > 0) && (
+            <div className="rounded border border-amber/30 bg-amber/5 px-3 py-2 text-xs space-y-1">
+              <p className="font-medium text-amber">
+                {keptBackCount > 0
+                  ? `⚠ ${keptBackCount} package${keptBackCount > 1 ? 's' : ''} require dist-upgrade to install`
+                  : `⚠ ${newPkgs.length} new package${newPkgs.length > 1 ? 's' : ''} will be installed as dependencies`}
+              </p>
+              <p className="text-text-muted">
+                {keptBackCount > 0
+                  ? <>Packages marked <span className="font-mono text-amber">kept back</span> have new dependencies and cannot be installed with a plain upgrade. Use the <span className="font-mono">Upgrade</span> tab and select the <span className="font-mono">dist-upgrade</span> action.</>
+                  : <>These packages are pulled in as new dependencies when upgrading (e.g. a new kernel version). Use the <span className="font-mono">Upgrade</span> tab with the <span className="font-mono">dist-upgrade</span> action to install them. A reboot will be required; old packages can be removed via autoremove afterward.</>
+                }
+              </p>
+            </div>
+          )}
+
           {/* Toolbar */}
           <div className="flex items-center gap-2 flex-wrap">
             <select className="input w-auto text-xs py-1" value={sortCol} onChange={e => setSortCol(e.target.value as any)}>
@@ -781,11 +803,11 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
             </div>
             <span className="text-xs text-text-muted ml-auto">{sorted.length} packages</span>
             <button
-              onClick={() => { setSelected(new Set(packages.map(p => p.name))); setUpgradeModal(true) }}
-              disabled={packages.length === 0}
+              onClick={() => { setSelected(new Set(upgradable.map(p => p.name))); setUpgradeModal(true) }}
+              disabled={upgradable.length === 0}
               className="btn-amber text-xs"
             >
-              Upgrade All ({packages.length})
+              Upgrade All ({upgradable.length})
             </button>
             {someChecked && (
               <button
@@ -826,7 +848,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                     key={p.name}
                     onClick={() => toggleOne(p.name)}
                     className={`border-b border-border/30 cursor-pointer transition-colors
-                      ${selected.has(p.name) ? 'bg-green/5 border-green/20' : p.is_security ? 'bg-red/5' : isPve ? 'bg-orange-500/5' : ''}
+                      ${selected.has(p.name) ? 'bg-green/5 border-green/20' : p.is_security ? 'bg-red/5' : p.needs_dist_upgrade ? 'bg-amber/5' : isPve ? 'bg-orange-500/5' : ''}
                       hover:bg-surface-2/60`}
                   >
                     <td className="px-3 py-1.5" onClick={e => e.stopPropagation()}>
@@ -848,6 +870,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                     <td className="px-3 py-1.5 font-mono text-text-muted text-xs">{p.repository}</td>
                     <td className="px-3 py-1.5 text-center">
                       {p.is_phased && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">phased</span>}
+                      {p.needs_dist_upgrade && <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs" title="Requires dist-upgrade — has new dependencies">kept back</span>}
                     </td>
                     <td className="px-3 py-1.5 text-right" onClick={e => e.stopPropagation()}>
                       {(p.description || reboot) && (
@@ -862,6 +885,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                 <p className="text-text-muted/70">{p.repository}</p>
                                 {p.is_security && <p className="text-red">🔒 Security update</p>}
                                 {p.is_phased && <p className="text-text-muted">Phased rollout</p>}
+                                {p.needs_dist_upgrade && <p className="text-amber">⚠ Kept back — requires dist-upgrade</p>}
                                 {reboot && <p className="text-amber">↺ Likely requires reboot</p>}
                               </div>
                             </div>
@@ -876,6 +900,49 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
             </table>
           </div>
         </>
+      )}
+
+      {newPkgs.length > 0 && (
+        <div>
+          <h3 className="text-xs text-text-muted uppercase tracking-wide mb-2">
+            New Packages ({newPkgs.length})
+            <span className="ml-2 normal-case font-normal text-text-muted/70">— will be installed as dependencies when upgrading</span>
+          </h3>
+          <div className="card overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border text-text-muted uppercase text-xs">
+                  <th className="text-left px-3 py-2">Package</th>
+                  <th className="px-3 py-2 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {newPkgs.map(p => (
+                  <tr key={p.name} className={`border-b border-border/30 ${p.is_kernel ? 'bg-cyan/5' : ''}`}>
+                    <td className="px-3 py-1.5 font-mono">
+                      {p.is_kernel && <span className="text-cyan mr-1" title="New kernel package">🐧</span>}
+                      {p.name}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {p.description && (
+                        <span className="relative group/info inline-block">
+                          <span className="text-text-muted/50 hover:text-cyan cursor-default select-none text-xs font-mono">ⓘ</span>
+                          <div className="absolute right-0 bottom-full mb-1 z-50 hidden group-hover/info:block w-72 pointer-events-none">
+                            <div className="bg-surface border border-border rounded shadow-lg p-3 text-xs space-y-1.5">
+                              <p className="font-mono font-medium text-text-primary">{p.name}</p>
+                              <p className="text-text-muted leading-snug">{p.description}</p>
+                              <p className="text-cyan text-xs">New install (dependency)</p>
+                            </div>
+                          </div>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {held.length > 0 && (

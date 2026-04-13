@@ -83,6 +83,9 @@ export interface PackageInfo {
   repository: string
   is_security: boolean
   is_phased: boolean
+  is_new?: boolean             // new install pulled in as a dep (e.g. new kernel version)
+  is_kernel?: boolean          // matches linux-image/headers/modules-* pattern
+  needs_dist_upgrade?: boolean // kept back by apt-get upgrade; requires dist-upgrade
   description?: string
 }
 

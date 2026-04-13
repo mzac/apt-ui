@@ -31,6 +31,43 @@ _APT_LINE_RE = re.compile(
     r"(?:\s+\((?P<phased>\d+)%\))?"
 )
 
+# Kernel package patterns for Debian/Ubuntu (new installs pulled in by meta-packages)
+_KERNEL_PKG_RE = re.compile(
+    r"^linux-(image|headers|modules|modules-extra|tools|buildinfo|libc-dev|source|doc)-\d"
+)
+
+
+def _parse_dist_upgrade_dry_run(output: str) -> tuple[list[str], list[str]]:
+    """Parse 'apt-get dist-upgrade --dry-run' output.
+
+    Returns:
+        new_packages  — names of packages that will be freshly installed
+                        (e.g. new kernel version pulled in by linux-generic upgrade)
+        kept_back     — names of packages that apt-get upgrade leaves untouched
+                        because they have new dependencies (require dist-upgrade)
+    """
+    new_packages: list[str] = []
+    kept_back: list[str] = []
+
+    # Scan for both sections in one pass
+    section: str | None = None
+    for line in output.splitlines():
+        if "The following NEW packages will be installed:" in line:
+            section = "new"
+            continue
+        if "The following packages have been kept back:" in line:
+            section = "kept"
+            continue
+        if section:
+            if line.startswith("  "):
+                if section == "new":
+                    new_packages.extend(line.split())
+                else:
+                    kept_back.extend(line.split())
+            else:
+                section = None
+    return new_packages, kept_back
+
 
 def _parse_autoremove_packages(output: str) -> list[str]:
     """Extract package names from apt-get --dry-run autoremove output."""
@@ -339,25 +376,59 @@ async def check_server(
         await db.refresh(check)
         return check
 
-    # Parallel: list upgradable, held packages, reboot required, autoremove dry-run
+    sudo = "" if server.username == "root" else "sudo "
+
+    # Parallel: list upgradable, held packages, reboot required, autoremove dry-run,
+    # and upgrade dry-run (to detect new packages pulled in as dependencies, e.g. new kernels)
     list_task = run_command(server, "apt list --upgradable 2>/dev/null", timeout=60)
     held_task = run_command(server, "apt-mark showhold 2>/dev/null", timeout=30)
     reboot_task = run_command(server, "test -f /var/run/reboot-required && echo yes || echo no", timeout=10)
-    autoremove_task = run_command(server, "apt-get --dry-run autoremove 2>/dev/null", timeout=60)
+    autoremove_task = run_command(server, f"{sudo}apt-get --dry-run autoremove 2>/dev/null", timeout=60)
+    # dist-upgrade dry-run: detects both NEW packages (e.g. new kernel version) and
+    # packages that apt-get upgrade leaves "kept back" because they have new dependencies.
+    upgrade_dry_task = run_command(
+        server,
+        f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get dist-upgrade --dry-run 2>/dev/null",
+        timeout=60,
+    )
 
-    list_result, held_result, reboot_result, autoremove_result = await asyncio.gather(
-        list_task, held_task, reboot_task, autoremove_task
+    list_result, held_result, reboot_result, autoremove_result, upgrade_dry_result = await asyncio.gather(
+        list_task, held_task, reboot_task, autoremove_task, upgrade_dry_task
     )
 
     packages = _parse_apt_upgradable(list_result.stdout)
+
+    # Append new packages (not yet installed) discovered from the upgrade dry-run.
+    # These are pulled in as dependencies of upgraded meta-packages (e.g. new kernel
+    # version triggered by upgrading linux-generic) and don't appear in apt list --upgradable.
+    if upgrade_dry_result.success:
+        new_pkg_names, kept_back_names = _parse_dist_upgrade_dry_run(upgrade_dry_result.stdout)
+        # Mark kept-back packages in the upgradable list so the UI can flag them
+        kept_back_set = set(kept_back_names)
+        for p in packages:
+            if p["name"] in kept_back_set:
+                p["needs_dist_upgrade"] = True
+        # Append new packages (pulled in as deps by dist-upgrade)
+        for pkg_name in new_pkg_names:
+            packages.append({
+                "name": pkg_name,
+                "current_version": "",
+                "available_version": "",
+                "repository": "",
+                "is_security": False,
+                "is_phased": False,
+                "is_new": True,
+                "is_kernel": bool(_KERNEL_PKG_RE.match(pkg_name)),
+            })
+
     security_count = sum(1 for p in packages if p["is_security"])
-    regular_count = sum(1 for p in packages if not p["is_security"])
+    regular_count = sum(1 for p in packages if not p.get("is_new") and not p["is_security"])
 
     held_list = [h.strip() for h in held_result.stdout.splitlines() if h.strip()] if held_result.success else []
     reboot_required = reboot_result.stdout.strip() == "yes"
     autoremove_packages = _parse_autoremove_packages(autoremove_result.stdout) if autoremove_result.success else []
 
-    # Fetch short descriptions for all upgradable packages (one SSH call)
+    # Fetch short descriptions for all packages (upgradable + new); one SSH call
     if packages:
         pkg_names = " ".join(p["name"] for p in packages[:150])  # cap at 150 packages
         desc_result = await run_command(
@@ -377,7 +448,7 @@ async def check_server(
         server_id=server.id,
         checked_at=datetime.utcnow(),
         status="success",
-        packages_available=len(packages),
+        packages_available=sum(1 for p in packages if not p.get("is_new")),
         security_packages=security_count,
         regular_packages=regular_count,
         held_packages=len(held_list),

@@ -28,6 +28,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 ### Package Management
 - **Upgradable packages** — full list with version deltas, repository source, security flag, and dedicated phased-update column; hover tooltips show package description and reboot likelihood
 - **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
+- **New dependency detection** — during every check, `apt-get dist-upgrade --dry-run` runs in parallel to detect packages that will be installed as new dependencies (e.g. a new kernel version triggered by upgrading `linux-generic`); these appear in a dedicated "New Packages" section with an amber banner directing to the dist-upgrade action; packages kept back by plain upgrade are flagged with a "kept back" badge
 - **Upgrade dry-run** — preview exactly what `apt-get upgrade` would change before committing
 - **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines update in place
 - **Package install** — search the `apt` cache and install new packages on any host directly from the UI

@@ -4,6 +4,22 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.04.13-01] — 2026-04-13
+
+### Features
+
+- **New dependency package detection** — the Packages tab now runs `apt-get dist-upgrade --dry-run` in parallel during every check to detect packages that will be installed as new dependencies (e.g. a new kernel version pulled in when upgrading `linux-generic`) ([#33](https://github.com/mzac/apt-ui/issues/33)). These do not appear in `apt list --upgradable` and were previously invisible in the UI. Changes:
+  - A **New Packages** section appears below the upgradable packages table listing each new dependency with a 🐧 icon for kernel packages
+  - An amber warning banner appears when new dependency packages are detected, explaining that `dist-upgrade` is required and that a reboot will be needed after a kernel install
+  - Packages that `apt-get upgrade` leaves "kept back" (because they have new dependencies) are flagged with an amber **kept back** badge and amber row tint; the banner text adapts to explain the distinction
+
+### Bug Fixes
+
+- **Compare page**: fixed `object dict can't be used in 'await' expression` caused by incorrectly awaiting the synchronous `_connect_options()` helper
+- **Compare page**: fixed `multiple values for keyword argument 'port'` caused by passing `port=` both explicitly and inside the dict returned by `_connect_options()`
+
+---
+
 ## [2026.04.12-01] — 2026-04-12
 
 ### Features

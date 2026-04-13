@@ -96,6 +96,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - Dashboard sort order persists to `localStorage` key `dashboard:sortBy`. Theme persists to `localStorage` key `apt:theme`.
 - 401 responses anywhere in `api/client.ts` redirect to `/login?expired=1`.
 - `reachability_ttl_minutes` in `schedule_config`: servers that fail to connect during check-all are skipped for subsequent runs until the TTL expires, preventing SSH timeouts from slowing the whole fleet.
+- `check_server` runs `apt-get dist-upgrade --dry-run` in parallel alongside `apt list --upgradable`. This is necessary because new dependency packages (e.g. a new kernel version pulled in when upgrading `linux-generic`) do not appear in `apt list --upgradable` at all — they are only visible via dist-upgrade. The dry-run also detects "kept back" packages (upgradable but blocked by plain `apt-get upgrade`). Results stored as `is_new`, `is_kernel`, and `needs_dist_upgrade` flags in `packages_json`.
 
 ### Router → file mapping
 
