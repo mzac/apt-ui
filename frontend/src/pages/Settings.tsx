@@ -28,7 +28,25 @@ function pickDistinctColor(existingColors: string[]): string {
 // ---------------------------------------------------------------------------
 export default function Settings() {
   const { user } = useAuthStore()
-  const [tab, setTab] = useState<Tab>('Servers')
+
+  // Initial tab can be supplied via ?tab=<name> — used by the command palette
+  // and other deep links. Falls back to 'Servers' for any unknown value.
+  const initialTab: Tab = (() => {
+    const param = new URLSearchParams(window.location.search).get('tab')
+    if (param && (TABS as readonly string[]).includes(param)) return param as Tab
+    return 'Servers'
+  })()
+  const [tab, setTab] = useState<Tab>(initialTab)
+
+  // Re-sync if the query string changes (e.g. user opens the palette twice)
+  useEffect(() => {
+    function onPopState() {
+      const param = new URLSearchParams(window.location.search).get('tab')
+      if (param && (TABS as readonly string[]).includes(param)) setTab(param as Tab)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   // Hide admin-only tabs for read-only users
   const visibleTabs = TABS.filter(t => {
