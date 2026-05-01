@@ -3,7 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useTheme } from '@/hooks/useTheme'
-import { servers as serversApi, releaseCheck as releaseCheckApi } from '@/api/client'
+import { servers as serversApi, releaseCheck as releaseCheckApi, security as securityApi } from '@/api/client'
+import type { CveSummary } from '@/types'
 import type { ReleaseCheckResult } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
 import CommandPalette from './CommandPalette'
@@ -79,6 +80,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     releaseCheckApi.status().then(setReleaseInfo).catch(() => {})
   }, [])
+
+  // CVE summary (issue #54) — drives the "Security" nav badge when criticals > 0.
+  const [cveSummary, setCveSummary] = useState<CveSummary | null>(null)
+  useEffect(() => {
+    securityApi.summary().then(setCveSummary).catch(() => {})
+  }, [])
   function dismissRelease() {
     if (releaseInfo?.latest) {
       sessionStorage.setItem('apt-ui:release-dismissed', releaseInfo.latest)
@@ -140,12 +147,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (!bellOpen) markSeen()
   }
 
-  const nav = [
+  const nav: { to: string; label: string; badge?: number; badgeColor?: string }[] = [
     { to: '/', label: 'Dashboard' },
     { to: '/history', label: 'History' },
     { to: '/templates', label: 'Templates' },
     { to: '/compare', label: 'Compare' },
     { to: '/search', label: 'Search' },
+    {
+      to: '/security',
+      label: 'Security',
+      badge: cveSummary?.critical ?? 0,
+      badgeColor: 'bg-red/20 text-red border-red/40',
+    },
     { to: '/reports', label: 'Reports' },
     { to: '/settings', label: 'Settings' },
   ]
@@ -158,17 +171,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ⬡ <span className="hidden sm:inline">apt-ui</span>
         </Link>
         <nav className="flex gap-0.5 flex-1 overflow-x-auto min-w-0">
-          {nav.map(({ to, label }) => (
+          {nav.map(({ to, label, badge, badgeColor }) => (
             <Link
               key={to}
               to={to}
-              className={`px-2 sm:px-3 py-1 rounded text-xs sm:text-sm whitespace-nowrap transition-colors ${
+              className={`px-2 sm:px-3 py-1 rounded text-xs sm:text-sm whitespace-nowrap transition-colors flex items-center gap-1.5 ${
                 pathname === to
                   ? 'bg-surface-2 text-text-primary'
                   : 'text-text-muted hover:text-text-primary'
               }`}
             >
               {label}
+              {badge !== undefined && badge > 0 && (
+                <span
+                  className={`badge border text-[10px] font-mono px-1.5 py-0 leading-tight ${
+                    badgeColor ?? 'bg-amber/10 text-amber border-amber/30'
+                  }`}
+                  title={`${badge} critical CVE${badge === 1 ? '' : 's'}`}
+                >
+                  {badge}
+                </span>
+              )}
             </Link>
           ))}
         </nav>
