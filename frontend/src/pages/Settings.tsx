@@ -1121,6 +1121,7 @@ function MaintenanceWindowsSection() {
   const [servers, setServers] = useState<Server[]>([])
   const [editing, setEditing] = useState<Partial<MaintenanceWindow> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showSubscribe, setShowSubscribe] = useState(false)
 
   async function reload() {
     try {
@@ -1181,8 +1182,16 @@ function MaintenanceWindowsSection() {
             Auto-upgrade and (with confirmation) Upgrade All skip servers inside an active deny window.
           </p>
         </div>
-        <button onClick={newWindow} className="btn-secondary text-xs">+ Add window</button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowSubscribe(true)} className="btn-secondary text-xs" title="Subscribe to maintenance windows in your calendar app">Subscribe in Calendar</button>
+          <button onClick={newWindow} className="btn-secondary text-xs">+ Add window</button>
+        </div>
       </div>
+
+      {showSubscribe && createPortal(
+        <CalendarSubscribeModal onClose={() => setShowSubscribe(false)} />,
+        document.body,
+      )}
 
       {error && <p className="text-xs text-red font-mono">{error}</p>}
 
@@ -1329,6 +1338,162 @@ function MaintenanceWindowsSection() {
         </div>
       )}
     </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Calendar subscription modal (issue #59)
+// ---------------------------------------------------------------------------
+
+function CalendarSubscribeModal({ onClose }: { onClose: () => void }) {
+  const [tokens, setTokens] = useState<import('@/api/client').ApiTokenSummary[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [newName, setNewName] = useState('apt-ui calendar feed')
+  const [creating, setCreating] = useState(false)
+  const [createdToken, setCreatedToken] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function reload() {
+    try {
+      const t = await auth.listTokens()
+      setTokens(t)
+      if (t.length && selectedId == null) setSelectedId(t[0].id)
+    } catch {
+      setTokens([])
+    }
+  }
+  useEffect(() => { reload() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
+
+  async function createToken(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (!newName.trim()) {
+      setError('Name required')
+      return
+    }
+    setCreating(true)
+    try {
+      const t = await auth.createToken(newName.trim())
+      setCreatedToken(t.token)
+      await reload()
+    } catch (err: unknown) {
+      setError((err as Error).message)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // The URL only contains an actual usable token immediately after creation
+  // (we never receive the raw value of pre-existing tokens — it isn't stored).
+  // For pre-existing tokens, render a placeholder reminding the user to paste
+  // the token they saved when minting it.
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const tokenForUrl = createdToken ?? '<paste-your-api-token-here>'
+  const url = `${origin}/api/calendar.ics?token=${tokenForUrl}`
+
+  function copyUrl() {
+    if (!navigator.clipboard) return
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {})
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-lg w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-mono text-sm text-text-primary">Subscribe in Calendar</h3>
+          <button onClick={onClose} className="text-text-muted hover:text-red">✕</button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <p className="text-xs text-text-muted">
+            Paste this URL into Apple Calendar, Google Calendar, or Thunderbird as a
+            new calendar subscription. Each enabled maintenance window appears as a
+            recurring event.
+          </p>
+
+          {tokens.length === 0 && !createdToken ? (
+            <form onSubmit={createToken} className="space-y-3 rounded border border-border/40 p-3">
+              <p className="text-xs text-text-muted">
+                You don&apos;t have any API tokens yet. Create one to use as the calendar feed credential.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  className="input flex-1 text-sm"
+                  maxLength={100}
+                  autoFocus
+                />
+                <button type="submit" disabled={creating || !newName.trim()} className="btn-primary text-sm">
+                  {creating ? '…' : 'Create token'}
+                </button>
+              </div>
+              {error && <p className="text-red text-xs">{error}</p>}
+            </form>
+          ) : !createdToken ? (
+            <div className="space-y-2">
+              <label className="label">Use existing API token</label>
+              <select
+                value={selectedId ?? ''}
+                onChange={e => setSelectedId(e.target.value ? parseInt(e.target.value) : null)}
+                className="input text-sm"
+              >
+                {tokens.map(t => (
+                  <option key={t.id} value={t.id}>{t.name} ({t.prefix}…)</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-amber/80 mt-1">
+                The raw token value is shown only once at creation — paste yours into the URL below
+                in place of <span className="font-mono">&lt;paste-your-api-token-here&gt;</span>.
+                If you don&apos;t have it saved, mint a new token below.
+              </p>
+              <form onSubmit={createToken} className="flex items-center gap-2 pt-2 border-t border-border/30">
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={e => setNewName(e.target.value)}
+                  className="input flex-1 text-sm"
+                  placeholder="New token name"
+                  maxLength={100}
+                />
+                <button type="submit" disabled={creating || !newName.trim()} className="btn-secondary text-sm">
+                  {creating ? '…' : 'Mint new token'}
+                </button>
+              </form>
+              {error && <p className="text-red text-xs">{error}</p>}
+            </div>
+          ) : (
+            <div className="rounded border border-amber/40 bg-amber/5 p-3 space-y-1">
+              <p className="text-xs text-amber font-medium">Token created — copy now, it will not be shown again.</p>
+              <code className="block font-mono text-xs text-text-primary bg-bg/50 p-2 rounded break-all select-all">{createdToken}</code>
+            </div>
+          )}
+
+          <div>
+            <label className="label">Calendar feed URL</label>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 font-mono text-xs text-text-primary bg-bg/50 p-2 rounded break-all select-all">{url}</code>
+              <button onClick={copyUrl} className="btn-secondary text-xs">{copied ? 'Copied!' : 'Copy'}</button>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-text-muted/80">
+            The URL contains the token because calendar clients can&apos;t send custom
+            <span className="font-mono"> Authorization </span>
+            headers. Treat it like a password and revoke the token if it leaks.
+          </p>
+
+          <div className="flex justify-end pt-3 border-t border-border/30">
+            <button onClick={onClose} className="btn-secondary text-sm">Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
