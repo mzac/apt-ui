@@ -367,6 +367,15 @@ class NotificationConfigOut(BaseModel):
     notify_reboot_email: bool = True
     notify_reboot_telegram: bool = True
     notify_reboot_webhook: bool = True
+    # Slack (issue #53)
+    slack_enabled: bool = False
+    slack_webhook_url: Optional[str] = None
+    slack_channel: Optional[str] = None
+    daily_summary_slack: bool = True
+    notify_upgrade_slack: bool = True
+    notify_error_slack: bool = True
+    notify_security_slack: bool = True
+    notify_reboot_slack: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -407,6 +416,15 @@ class NotificationConfigUpdate(BaseModel):
     notify_reboot_email: Optional[bool] = None
     notify_reboot_telegram: Optional[bool] = None
     notify_reboot_webhook: Optional[bool] = None
+    # Slack (issue #53)
+    slack_enabled: Optional[bool] = None
+    slack_webhook_url: Optional[str] = None
+    slack_channel: Optional[str] = None
+    daily_summary_slack: Optional[bool] = None
+    notify_upgrade_slack: Optional[bool] = None
+    notify_error_slack: Optional[bool] = None
+    notify_security_slack: Optional[bool] = None
+    notify_reboot_slack: Optional[bool] = None
 
 
 class NotificationLogOut(BaseModel):

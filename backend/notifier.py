@@ -1,7 +1,7 @@
 """
-Unified notification module — email (aiosmtplib) + Telegram (httpx).
+Unified notification module — email (aiosmtplib) + Telegram (httpx) + Slack (httpx) + webhook.
 
-Both channels are optional and controlled by notification_config in the DB.
+All channels are optional and controlled by notification_config in the DB.
 """
 
 import hashlib
@@ -122,6 +122,79 @@ async def _send_telegram(cfg: NotificationConfig, text: str, event_type: str = "
 
 
 # ---------------------------------------------------------------------------
+# Slack (incoming webhook + Block Kit)
+# ---------------------------------------------------------------------------
+
+# Slack rejects messages > 40k chars; section block text limited to 3000.
+# We chunk long code-fence bodies to stay within those limits.
+MAX_SLACK_TEXT_LEN = 2900
+
+
+def _slack_blocks(header: str, body: str | None = None, code_body: str | None = None) -> list[dict]:
+    """Build a minimal Block Kit payload — header + section text and/or code-fenced section.
+
+    The plain `body` is rendered as Slack mrkdwn; `code_body` is wrapped in a triple-backtick
+    fence and used for command output / package lists. Both are optional.
+    """
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": header[:150], "emoji": True}}
+    ]
+    if body:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": body[:2900]},
+        })
+    if code_body:
+        # Truncate to fit Slack's per-block limit. Leave space for the fence and ellipsis.
+        truncated = code_body
+        if len(truncated) > MAX_SLACK_TEXT_LEN:
+            truncated = truncated[:MAX_SLACK_TEXT_LEN] + "\n…(truncated)"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"```{truncated}```"},
+        })
+    return blocks
+
+
+async def _send_slack(
+    cfg: NotificationConfig,
+    header: str,
+    body: str | None = None,
+    code_body: str | None = None,
+    event_type: str = "unknown",
+):
+    """POST a Block Kit message to the configured Slack incoming-webhook URL."""
+    if not cfg.slack_enabled or not cfg.slack_webhook_url:
+        return
+
+    payload: dict = {
+        "blocks": _slack_blocks(header, body=body, code_body=code_body),
+        # `text` is a fallback for notification previews / older clients.
+        "text": header,
+    }
+    if cfg.slack_channel:
+        payload["channel"] = cfg.slack_channel
+
+    summary = header[:120].replace("\n", " ")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(cfg.slack_webhook_url, json=payload)
+            if not resp.is_success:
+                logger.error("Slack webhook returned %s: %s", resp.status_code, resp.text[:200])
+                await _log_notification(
+                    "slack", event_type, summary,
+                    success=False,
+                    error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                )
+                return
+        logger.info("Slack message sent: %s", summary)
+        await _log_notification("slack", event_type, summary, success=True)
+    except Exception as exc:
+        logger.error("Slack send failed: %s", exc)
+        await _log_notification("slack", event_type, summary, success=False, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
 
@@ -181,11 +254,20 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
     html_body = _build_html_summary(subject, server_data, today_str)
     text_body = _build_text_summary(subject, server_data)
     telegram_body = _build_telegram_summary(subject, server_data)
+    slack_summary, slack_details = _build_slack_summary(server_data)
 
     if cfg.email_enabled and cfg.daily_summary_email:
         await _send_email(cfg, subject, html_body, text_body, event_type="daily_summary")
     if cfg.telegram_enabled and cfg.daily_summary_telegram:
         await _send_telegram(cfg, telegram_body, event_type="daily_summary")
+    if cfg.slack_enabled and cfg.daily_summary_slack:
+        await _send_slack(
+            cfg,
+            header=f"Apt Dashboard — Daily Summary ({today})",
+            body=slack_summary,
+            code_body=slack_details if slack_details else None,
+            event_type="daily_summary",
+        )
 
     up_to_date, with_updates, with_errors, _ = _categorize(server_data)
     if cfg.daily_summary_webhook:
@@ -515,6 +597,52 @@ def _build_telegram_summary(subject: str, server_data: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_slack_summary(server_data: list[dict]) -> tuple[str, str]:
+    """Build (mrkdwn body, code-fenced details) for the Slack daily summary."""
+    up_to_date, with_updates, with_errors, _ = _categorize(server_data)
+    reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
+    eeprom_servers = [
+        sd for sd in server_data
+        if sd.get("stats") and sd["stats"].eeprom_update_available in ("update_available", "update_staged")
+    ]
+
+    summary_lines = [
+        f"*Total:* {len(server_data)}  ·  "
+        f"*Up to date:* {len(up_to_date)}  ·  "
+        f"*With updates:* {len(with_updates)}  ·  "
+        f"*Errors:* {len(with_errors)}"
+    ]
+    if reboot_servers:
+        summary_lines.append(
+            "↻ *Reboot required:* " + ", ".join(sd["server"].name for sd in reboot_servers)
+        )
+    if eeprom_servers:
+        summary_lines.append(
+            "🔧 *EEPROM updates:* " + ", ".join(sd["server"].name for sd in eeprom_servers)
+        )
+
+    detail_lines: list[str] = []
+    for sd in with_updates:
+        s, chk = sd["server"], sd["check"]
+        reboot_flag = " [REBOOT]" if chk.reboot_required else ""
+        detail_lines.append(
+            f"{s.name} ({s.hostname}) — {chk.packages_available} updates "
+            f"({chk.security_packages} security){reboot_flag}"
+        )
+        for p in sd["packages"][:8]:
+            tag = "[SEC] " if p.get("is_security") else ""
+            detail_lines.append(
+                f"  {tag}{p['name']}: {p['current_version']} → {p['available_version']}"
+            )
+        if len(sd["packages"]) > 8:
+            detail_lines.append(f"  …and {len(sd['packages']) - 8} more")
+    for sd in with_errors:
+        detail_lines.append(
+            f"[ERROR] {sd['server'].name}: {sd['check'].error_message or 'unknown error'}"
+        )
+    return "\n".join(summary_lines), "\n".join(detail_lines)
+
+
 # ---------------------------------------------------------------------------
 # Event-driven notifications
 # ---------------------------------------------------------------------------
@@ -605,6 +733,21 @@ async def notify_upgrade_complete(cfg: NotificationConfig, server: Server, histo
         await _send_email(cfg, subject, html, text, event_type=evt)
     if cfg.notify_upgrade_telegram if is_success else cfg.notify_error_telegram:
         await _send_telegram(cfg, text, event_type=evt)
+    slack_allowed = cfg.notify_upgrade_slack if is_success else cfg.notify_error_slack
+    if slack_allowed:
+        if is_success:
+            slack_header = f"✓ Upgrade complete on {server.name}"
+            slack_body = (
+                f"*Host:* `{server.hostname}`  ·  "
+                f"*Action:* `{history.action or 'upgrade'}`  ·  "
+                f"*Packages:* {len(pkgs)}"
+            )
+            slack_code = "\n".join(_pkg_label(p) for p in pkgs) if pkgs else None
+        else:
+            slack_header = f"✗ Upgrade FAILED on {server.name}"
+            slack_body = f"*Host:* `{server.hostname}` — check the dashboard for details."
+            slack_code = None
+        await _send_slack(cfg, slack_header, body=slack_body, code_body=slack_code, event_type=evt)
     webhook_allowed = cfg.notify_upgrade_webhook if is_success else cfg.notify_error_webhook
     if webhook_allowed:
         event = "upgrade_complete" if is_success else "upgrade_failed"
@@ -647,6 +790,20 @@ async def notify_upgrade_all_complete(cfg: NotificationConfig, results: list):
         await _send_email(cfg, subject, html, text, event_type="upgrade_all_complete")
     if cfg.notify_upgrade_telegram:
         await _send_telegram(cfg, text, event_type="upgrade_all_complete")
+    if cfg.notify_upgrade_slack:
+        slack_header = f"Upgrade-all complete — {len(successes)} ok, {len(failures)} failed"
+        slack_body = (
+            f"*Total processed:* {len(results)}  ·  "
+            f"*Succeeded:* {len(successes)}  ·  "
+            f"*Failed:* {len(failures)}"
+        )
+        await _send_slack(
+            cfg,
+            slack_header,
+            body=slack_body,
+            code_body=text if text else None,
+            event_type="upgrade_all_complete",
+        )
     if cfg.notify_upgrade_webhook:
         await _send_webhook(cfg, "upgrade_all_complete", {
             "total": len(results),
@@ -757,6 +914,24 @@ async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSessio
         await _send_email(cfg, subject, html, text, event_type="security_updates_found")
     if cfg.notify_security_telegram:
         await _send_telegram(cfg, tg_text, event_type="security_updates_found")
+    if cfg.notify_security_slack:
+        slack_header = f"🔒 Security Updates — {total_sec} on {len(sec_servers)} server(s)"
+        slack_body_lines = []
+        slack_code_lines = []
+        for sd in sec_servers:
+            s, chk = sd["server"], sd["check"]
+            slack_body_lines.append(f"• *{s.name}* (`{s.hostname}`) — {chk.security_packages} security update(s)")
+            for p in [pp for pp in sd["packages"] if pp.get("is_security")][:5]:
+                slack_code_lines.append(
+                    f"{s.name}: {p['name']} {p['current_version']} → {p['available_version']}"
+                )
+        await _send_slack(
+            cfg,
+            slack_header,
+            body="\n".join(slack_body_lines),
+            code_body="\n".join(slack_code_lines) if slack_code_lines else None,
+            event_type="security_updates_found",
+        )
     if cfg.notify_security_webhook:
         await _send_webhook(cfg, "security_updates_found", {
             "total_security_updates": total_sec,
@@ -818,6 +993,12 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
         await _send_email(cfg, subject, html, text, event_type="reboot_required")
     if cfg.notify_reboot_telegram:
         await _send_telegram(cfg, tg_text, event_type="reboot_required")
+    if cfg.notify_reboot_slack:
+        slack_header = f"↻ Reboot Required — {len(reboot_servers)} server(s)"
+        slack_body = "\n".join(
+            f"• *{sd['server'].name}* (`{sd['server'].hostname}`)" for sd in reboot_servers
+        )
+        await _send_slack(cfg, slack_header, body=slack_body, event_type="reboot_required")
     if cfg.notify_reboot_webhook:
         await _send_webhook(cfg, "reboot_required", {
             "servers": [

@@ -101,6 +101,28 @@ async def test_telegram(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.post("/test/slack")
+async def test_slack(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    cfg = await _get_cfg(db)
+    if not cfg.slack_enabled or not cfg.slack_webhook_url:
+        raise HTTPException(status_code=400, detail="Slack is not configured")
+
+    from backend.notifier import _send_slack
+    try:
+        await _send_slack(
+            cfg,
+            header="✅ Apt Dashboard test message",
+            body="Slack notifications are working — you'll receive fleet alerts here.",
+            event_type="test",
+        )
+        return {"detail": "Test Slack message sent"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/history")
 async def get_notification_history(
     page: int = Query(1, ge=1),

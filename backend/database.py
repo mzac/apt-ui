@@ -193,6 +193,15 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN staged_rollout_enabled BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN ring_promotion_delay_hours INTEGER DEFAULT 24",
             "ALTER TABLE server_stats ADD COLUMN snapshot_capability TEXT",
+            # Slack notifications (issue #53)
+            "ALTER TABLE notification_config ADD COLUMN slack_enabled BOOLEAN DEFAULT 0",
+            "ALTER TABLE notification_config ADD COLUMN slack_webhook_url TEXT",
+            "ALTER TABLE notification_config ADD COLUMN slack_channel TEXT",
+            "ALTER TABLE notification_config ADD COLUMN daily_summary_slack BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_upgrade_slack BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_error_slack BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_security_slack BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_reboot_slack BOOLEAN DEFAULT 1",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:

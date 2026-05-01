@@ -202,6 +202,15 @@ export interface NotificationConfig {
   notify_reboot_email: boolean
   notify_reboot_telegram: boolean
   notify_reboot_webhook: boolean
+  // Slack (issue #53)
+  slack_enabled: boolean
+  slack_webhook_url: string | null
+  slack_channel: string | null
+  daily_summary_slack: boolean
+  notify_upgrade_slack: boolean
+  notify_error_slack: boolean
+  notify_security_slack: boolean
+  notify_reboot_slack: boolean
 }
 
 export interface TemplatePackage {
@@ -263,7 +272,7 @@ export interface AptCacheStats extends AptCacheServer {
 export interface NotificationLog {
   id: number
   sent_at: string
-  channel: string       // email / telegram / webhook
+  channel: string       // email / telegram / slack / webhook
   event_type: string    // upgrade_complete / upgrade_error / security_updates_found / reboot_required / daily_summary / test
   summary: string
   success: boolean
