@@ -336,6 +336,11 @@ class ScheduleConfig(Base):
     weekly_digest_day_of_week: Mapped[int] = mapped_column(Integer, default=0)  # 0=Mon … 6=Sun (APScheduler day_of_week)
     weekly_digest_hour: Mapped[int] = mapped_column(Integer, default=9)
     weekly_digest_minute: Mapped[int] = mapped_column(Integer, default=0)
+    # Rolling reboot orchestration (issue #56) — fleet-wide rolling reboot of
+    # servers with reboot_required, processed by ring in batches with waits.
+    reboot_batch_size: Mapped[int] = mapped_column(Integer, default=3)
+    reboot_batch_wait_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    reboot_timeout_minutes: Mapped[int] = mapped_column(Integer, default=10)
     # conffile_action controls what apt-get does when a package ships a new version
     # of a config file that has been locally modified:
     #   confdef_confold — use the package's default answer; if none, keep existing (safest)

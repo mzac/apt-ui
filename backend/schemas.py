@@ -314,6 +314,10 @@ class ScheduleConfigOut(BaseModel):
     weekly_digest_hour: int = 9
     weekly_digest_minute: int = 0
     next_weekly_digest_time: Optional[datetime] = None
+    # Rolling reboot orchestration (issue #56)
+    reboot_batch_size: int = 3
+    reboot_batch_wait_minutes: int = 5
+    reboot_timeout_minutes: int = 10
 
     model_config = {"from_attributes": True}
 
@@ -337,6 +341,10 @@ class ScheduleConfigUpdate(BaseModel):
     weekly_digest_day_of_week: Optional[int] = None
     weekly_digest_hour: Optional[int] = None
     weekly_digest_minute: Optional[int] = None
+    # Rolling reboot orchestration (issue #56)
+    reboot_batch_size: Optional[int] = None
+    reboot_batch_wait_minutes: Optional[int] = None
+    reboot_timeout_minutes: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

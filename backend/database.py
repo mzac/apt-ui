@@ -210,6 +210,10 @@ async def init_db():
             "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_email BOOLEAN DEFAULT 1",
             "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_telegram BOOLEAN DEFAULT 1",
             "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_webhook BOOLEAN DEFAULT 1",
+            # Rolling reboot orchestration (issue #56)
+            "ALTER TABLE schedule_config ADD COLUMN reboot_batch_size INTEGER DEFAULT 3",
+            "ALTER TABLE schedule_config ADD COLUMN reboot_batch_wait_minutes INTEGER DEFAULT 5",
+            "ALTER TABLE schedule_config ADD COLUMN reboot_timeout_minutes INTEGER DEFAULT 10",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:

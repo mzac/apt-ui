@@ -1256,6 +1256,282 @@ async def ws_autoremove_all(websocket: WebSocket):
 
 
 # ---------------------------------------------------------------------------
+# WebSocket — rolling reboot orchestration (issue #56)
+# ---------------------------------------------------------------------------
+
+async def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Best-effort TCP connect — mirrors the helper used by `_job_ping_all`."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+async def _group_servers_by_ring(servers: list[Server], db: AsyncSession) -> dict[str, list[Server]]:
+    """Group *servers* by their ``ring:*`` tag (alphabetical), defaulting to
+    ``ring:default`` when no ring tag is present. Mirrors the helper used by the
+    auto-upgrade staged-rollout job in ``backend/scheduler.py`` (issue #41).
+    """
+    from backend.models import Tag, ServerTag
+
+    rings: dict[str, list[Server]] = {}
+    for s in servers:
+        tag_res = await db.execute(
+            select(Tag.name)
+            .join(ServerTag, ServerTag.tag_id == Tag.id)
+            .where(ServerTag.server_id == s.id, Tag.name.like("ring:%"))
+        )
+        ring_tags = sorted([r for (r,) in tag_res.all()])
+        ring = ring_tags[0] if ring_tags else "ring:default"
+        rings.setdefault(ring, []).append(s)
+    return rings
+
+
+@router.websocket("/api/ws/reboot-all")
+async def ws_reboot_all(websocket: WebSocket):
+    """Rolling reboot across the fleet (issue #56).
+
+    - Servers are processed grouped by ``ring:*`` tag in alphabetical order
+      (``ring:default`` for untagged), mirroring the staged-rollout helper
+      shared with auto-upgrade.
+    - Within each ring, servers are rebooted in batches of ``reboot_batch_size``.
+      After each batch we wait ``reboot_batch_wait_minutes`` before the next
+      batch (skipped after the final batch of the final ring).
+    - For every server we stream phase updates: ``rebooting`` → ``waiting`` →
+      ``back`` (or ``failed`` on timeout / SSH error).
+    - The rollout aborts before promoting to the next batch if any server in
+      the just-completed batch failed to come back, or if its most recent
+      ``update_history`` row is in the ``error`` state.
+    """
+    await websocket.accept()
+    logger_local = logging.getLogger(__name__)
+
+    token = websocket.cookies.get("apt_ui_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+
+        explicit_ids = params.get("server_ids") or None
+
+        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        upgrade_concurrency = cfg.upgrade_concurrency if cfg else 5
+        # Fall back to upgrade_concurrency if reboot_batch_size hasn't been set
+        batch_size = (cfg.reboot_batch_size if cfg and cfg.reboot_batch_size else upgrade_concurrency) or 3
+        if batch_size < 1:
+            batch_size = 1
+        batch_wait_seconds = max(0, (cfg.reboot_batch_wait_minutes if cfg else 5)) * 60
+        reboot_timeout_seconds = max(60, (cfg.reboot_timeout_minutes if cfg else 10) * 60)
+
+        # Default target set: all enabled servers with reboot_required=True
+        if explicit_ids:
+            srv_res = await db.execute(
+                select(Server).where(
+                    Server.id.in_(explicit_ids),
+                    Server.is_enabled == True,
+                )
+            )
+            servers = list(srv_res.scalars().all())
+        else:
+            srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+            all_enabled = list(srv_res.scalars().all())
+            # Filter to those whose latest check has reboot_required=True
+            servers = []
+            for s in all_enabled:
+                chk_res = await db.execute(
+                    select(UpdateCheck)
+                    .where(UpdateCheck.server_id == s.id)
+                    .order_by(UpdateCheck.checked_at.desc())
+                    .limit(1)
+                )
+                chk = chk_res.scalar_one_or_none()
+                if chk and chk.reboot_required:
+                    servers.append(s)
+
+        if not servers:
+            await websocket.send_json({
+                "type": "complete",
+                "data": {"success": True, "message": "No servers require reboot"},
+            })
+            await websocket.close()
+            return
+
+        rings = await _group_servers_by_ring(servers, db)
+
+    ring_names = sorted(rings.keys())
+
+    async def send(msg: dict):
+        try:
+            await websocket.send_json(msg)
+        except Exception:
+            pass
+
+    await send({
+        "type": "plan",
+        "data": {
+            "rings": [
+                {"name": rn, "servers": [{"id": s.id, "name": s.name} for s in rings[rn]]}
+                for rn in ring_names
+            ],
+            "batch_size": batch_size,
+            "batch_wait_minutes": batch_wait_seconds // 60,
+            "reboot_timeout_minutes": reboot_timeout_seconds // 60,
+        },
+    })
+
+    aborted = False
+
+    async def _reboot_one(server: Server):
+        """Trigger reboot via SSH and stream the per-server phases."""
+        await send({"server_id": server.id, "server_name": server.name, "type": "status", "phase": "rebooting"})
+        sudo = "" if server.username == "root" else "sudo "
+        try:
+            # Same pattern as POST /api/servers/{id}/reboot — exit 255 is normal
+            # because SSH drops as the server reboots.
+            result = await run_command(server, f"{sudo}reboot", timeout=15)
+            if result.exit_code not in (0, 255):
+                await send({
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "type": "error",
+                    "data": result.stderr or "Reboot command failed",
+                })
+                await send({"server_id": server.id, "server_name": server.name, "type": "complete",
+                            "data": {"success": False, "phase": "failed"}})
+                return False
+        except Exception as exc:
+            await send({"server_id": server.id, "server_name": server.name, "type": "error",
+                        "data": f"reboot SSH error: {exc}"})
+            await send({"server_id": server.id, "server_name": server.name, "type": "complete",
+                        "data": {"success": False, "phase": "failed"}})
+            return False
+
+        # Schedule the post-reboot check (same as the per-server REST endpoint)
+        try:
+            from backend.scheduler import schedule_reboot_check
+            schedule_reboot_check(server.id)
+        except Exception as exc:
+            logger_local.warning("Could not schedule post-reboot check for %s: %s", server.name, exc)
+
+        # Poll TCP-reachability up to the configured timeout. Wait a small
+        # initial delay so we don't catch the server before sshd shuts down.
+        await send({"server_id": server.id, "server_name": server.name, "type": "status", "phase": "waiting"})
+        await asyncio.sleep(15)
+        deadline = asyncio.get_event_loop().time() + reboot_timeout_seconds
+        poll_interval = 10
+        while asyncio.get_event_loop().time() < deadline:
+            if await _tcp_reachable(server.hostname, server.ssh_port, timeout=3.0):
+                await send({"server_id": server.id, "server_name": server.name,
+                            "type": "status", "phase": "back"})
+                await send({"server_id": server.id, "server_name": server.name,
+                            "type": "complete", "data": {"success": True, "phase": "back"}})
+                return True
+            await asyncio.sleep(poll_interval)
+
+        await send({"server_id": server.id, "server_name": server.name,
+                    "type": "status", "phase": "failed"})
+        await send({"server_id": server.id, "server_name": server.name,
+                    "type": "complete", "data": {"success": False, "phase": "failed"}})
+        return False
+
+    async def _check_recent_history_errors(server_ids: list[int]) -> bool:
+        """Return True if any of *server_ids* has a recent error in update_history."""
+        from backend.models import UpdateHistory
+        from datetime import datetime, timedelta, timezone as _tz
+        if not server_ids:
+            return False
+        try:
+            async with AsyncSessionLocal() as ndb:
+                # Use a generous window — covers the upgrade that triggered the reboot.
+                cutoff = datetime.now(_tz.utc).replace(tzinfo=None) - timedelta(hours=2)
+                res = await ndb.execute(
+                    select(UpdateHistory).where(
+                        UpdateHistory.server_id.in_(server_ids),
+                        UpdateHistory.started_at >= cutoff,
+                        UpdateHistory.status == "error",
+                    )
+                )
+                return len(list(res.scalars().all())) > 0
+        except Exception:
+            return False
+
+    try:
+        for ring_idx, ring_name in enumerate(ring_names):
+            if aborted:
+                break
+            ring_servers = rings[ring_name]
+            await send({"type": "ring_start", "data": {
+                "name": ring_name,
+                "server_count": len(ring_servers),
+                "ring_index": ring_idx,
+                "ring_total": len(ring_names),
+            }})
+
+            # Process this ring in batches of batch_size
+            for batch_start in range(0, len(ring_servers), batch_size):
+                if aborted:
+                    break
+                batch = ring_servers[batch_start:batch_start + batch_size]
+                await send({"type": "batch_start", "data": {
+                    "ring": ring_name,
+                    "size": len(batch),
+                    "server_ids": [s.id for s in batch],
+                }})
+
+                results = await asyncio.gather(*[_reboot_one(s) for s in batch])
+                batch_failed = not all(results)
+
+                # Inspect update_history for errors on the just-rebooted servers
+                history_failed = await _check_recent_history_errors([s.id for s in batch])
+
+                if batch_failed or history_failed:
+                    await send({"type": "abort", "data": {
+                        "ring": ring_name,
+                        "reason": "history_errors" if history_failed and not batch_failed
+                                  else ("reboot_timeout" if batch_failed and not history_failed
+                                        else "reboot_timeout_and_history_errors"),
+                    }})
+                    aborted = True
+                    break
+
+                # Wait between batches — skip after the very last batch of the
+                # very last ring.
+                last_batch = (batch_start + batch_size) >= len(ring_servers)
+                last_ring = ring_idx == len(ring_names) - 1
+                if not (last_batch and last_ring) and batch_wait_seconds > 0:
+                    await send({"type": "batch_wait", "data": {"seconds": batch_wait_seconds}})
+                    await asyncio.sleep(batch_wait_seconds)
+
+        await send({"type": "complete", "data": {"success": not aborted, "aborted": aborted}})
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        await send({"type": "error", "data": str(exc)})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # .deb file installation — URL validation
 # ---------------------------------------------------------------------------
 

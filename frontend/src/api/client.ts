@@ -568,6 +568,19 @@ export function createAutoremoveAllWebSocket(
   return ws
 }
 
+export function createRebootAllWebSocket(
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+  params?: { server_ids?: number[] },
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/reboot-all`
+  const ws = new WebSocket(url)
+  ws.onopen = () => { ws.send(JSON.stringify(params ?? {})) }
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
 export function createInstallWebSocket(
   serverId: number,
   packages: string[],

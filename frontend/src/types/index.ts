@@ -201,6 +201,9 @@ export interface ScheduleConfig {
   weekly_digest_hour: number
   weekly_digest_minute: number
   next_weekly_digest_time: string | null
+  reboot_batch_size: number              // issue #56
+  reboot_batch_wait_minutes: number      // issue #56
+  reboot_timeout_minutes: number         // issue #56
 }
 
 export interface NotificationConfig {
