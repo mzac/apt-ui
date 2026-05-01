@@ -347,6 +347,15 @@ async def configure_jobs():
         replace_existing=True,
     )
 
+    # Daily CVE feed refresh (issue #37)
+    from backend.cve_matcher import daily_refresh_job
+    _scheduler.add_job(
+        daily_refresh_job,
+        CronTrigger(hour=4, minute=15, timezone=TZ),
+        id="cve_refresh",
+        replace_existing=True,
+    )
+
 
 def _remove_jobs():
     for job_id in ("check_all", "auto_upgrade"):

@@ -177,12 +177,12 @@ export const servers = {
       packages: Record<string, Record<string, string | null>>
       errors: Record<string, string>
     }>('/api/servers/compare', { server_ids }),
-  searchPackage: (name: string) =>
+  searchPackage: (name: string, mode: 'exact' | 'contains' | 'starts-with' | 'ends-with' | 'regex' = 'contains') =>
     post<{
       servers: { id: number; name: string; hostname: string }[]
-      results: Record<string, { installed: boolean; version: string | null }>
+      matches: Record<string, Record<string, string>>  // pkg → { server_id: version }
       errors: Record<string, string>
-    }>('/api/servers/search-package', { name }),
+    }>('/api/servers/search-package', { name, mode }),
   health: (id: number) =>
     get<{
       failed_services: { unit: string; load: string; active: string; sub: string; description: string }[]
@@ -271,6 +271,27 @@ export const stats = {
 export const scheduler = {
   status: () => get<ScheduleConfig>('/api/scheduler/status'),
   update: (data: Partial<ScheduleConfig>) => put<ScheduleConfig>('/api/scheduler/config', data),
+}
+
+export interface MaintenanceWindow {
+  id: number
+  server_id: number | null   // null = global
+  name: string
+  start_minutes: number       // 0..1439
+  end_minutes: number         // 0..1439
+  days_of_week: number        // bitmask: bit 0=Mon ... bit 6=Sun
+  enabled: boolean
+  created_at: string
+}
+
+export const maintenance = {
+  list: () => get<MaintenanceWindow[]>('/api/maintenance'),
+  create: (data: Omit<MaintenanceWindow, 'id' | 'created_at'>) =>
+    post<MaintenanceWindow>('/api/maintenance', data),
+  update: (id: number, data: Partial<Omit<MaintenanceWindow, 'id' | 'created_at'>>) =>
+    put<MaintenanceWindow>(`/api/maintenance/${id}`, data),
+  remove: (id: number) => del(`/api/maintenance/${id}`),
+  active: () => get<{ blocked: Record<string, { window_id: number; name: string }>; checked_at: string }>('/api/maintenance/active'),
 }
 
 // ---------------------------------------------------------------------------

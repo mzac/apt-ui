@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.config import TZ
 from backend.database import get_db
 from backend.models import MaintenanceWindow, Server, User
@@ -90,7 +90,7 @@ async def list_windows(
 async def create_window(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     name = (body.get("name") or "").strip()
     if not name:
@@ -131,7 +131,7 @@ async def update_window(
     window_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     res = await db.execute(select(MaintenanceWindow).where(MaintenanceWindow.id == window_id))
     w = res.scalar_one_or_none()
@@ -160,7 +160,7 @@ async def update_window(
 async def delete_window(
     window_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     res = await db.execute(select(MaintenanceWindow).where(MaintenanceWindow.id == window_id))
     w = res.scalar_one_or_none()

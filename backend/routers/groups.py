@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import Server, ServerGroup, ServerGroupMembership, User
 from backend.schemas import ServerGroupCreate, ServerGroupOut, ServerGroupUpdate
@@ -56,7 +56,7 @@ async def list_groups(
 async def create_group(
     body: ServerGroupCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     existing = await db.execute(select(ServerGroup).where(ServerGroup.name == body.name))
     if existing.scalar_one_or_none():
@@ -75,7 +75,7 @@ async def update_group(
     group_id: int,
     body: ServerGroupUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     group = await _get_group_or_404(group_id, db)
 
@@ -102,7 +102,7 @@ async def update_group(
 async def delete_group(
     group_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     group = await _get_group_or_404(group_id, db)
 

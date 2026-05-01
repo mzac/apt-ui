@@ -215,6 +215,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {user && (
           <div className="flex items-center gap-2 text-sm shrink-0">
             <span className="text-text-muted font-mono text-xs hidden sm:inline">{user.username}</span>
+            {!user.is_admin && (
+              <span className="badge bg-blue/10 text-blue border border-blue/30 text-[10px]" title="Read-only — mutations are disabled">
+                read-only
+              </span>
+            )}
             <button
               onClick={logout}
               className="text-text-muted hover:text-red transition-colors text-xs"

@@ -81,6 +81,14 @@ export interface Server {
   boot_total_mb: number | null           // total MB on /boot
 }
 
+export interface CveRef {
+  usn: string                  // e.g. "1234-1"
+  url: string                  // ubuntu.com URL
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown'
+  ids: string[]                // CVE-IDs covered by this USN
+  fixed_version: string
+}
+
 export interface PackageInfo {
   name: string
   current_version: string
@@ -91,6 +99,7 @@ export interface PackageInfo {
   is_new?: boolean             // new install pulled in as a dep (e.g. new kernel version)
   is_kernel?: boolean          // matches linux-image/headers/modules-* pattern
   needs_dist_upgrade?: boolean // kept back by apt-get upgrade; requires dist-upgrade
+  cves?: CveRef[]              // matched USNs from the CVE feed (issue #37)
   description?: string
 }
 

@@ -469,6 +469,26 @@ async def check_server(
         for p in packages:
             p["description"] = descriptions.get(p["name"], "")
 
+    # Annotate with CVE matches (issue #37) — best-effort, never fails the check
+    try:
+        from backend.cve_matcher import lookup as cve_lookup
+        for p in packages:
+            usns = cve_lookup(p["name"])
+            if usns:
+                # Flatten into a small structure for the UI
+                p["cves"] = [
+                    {
+                        "usn": u["usn"],
+                        "url": u["url"],
+                        "severity": u.get("severity", "unknown"),
+                        "ids": u.get("cves", []),
+                        "fixed_version": u.get("fixed_version", ""),
+                    }
+                    for u in usns
+                ]
+    except Exception as exc:
+        logger.debug("CVE annotation skipped: %s", exc)
+
     # Update os_info on server if we got fresh data
     if stats.get("os_info") and not server.os_info:
         server.os_info = stats["os_info"]

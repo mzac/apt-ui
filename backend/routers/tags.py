@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import ServerTag, Tag, User
 from backend.schemas import TagCreate, TagOut, TagUpdate
@@ -43,7 +43,7 @@ async def list_tags(
 async def create_tag(
     body: TagCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     existing = await db.execute(select(Tag).where(Tag.name == body.name))
     if existing.scalar_one_or_none():
@@ -61,7 +61,7 @@ async def update_tag(
     tag_id: int,
     body: TagUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     tag = await _get_tag_or_404(tag_id, db)
 
@@ -87,7 +87,7 @@ async def update_tag(
 async def delete_tag(
     tag_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     tag = await _get_tag_or_404(tag_id, db)
     # server_tag associations cascade via the model relationship

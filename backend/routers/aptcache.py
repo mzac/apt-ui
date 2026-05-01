@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import AptCacheServer
 
@@ -161,7 +161,7 @@ async def list_servers(
 async def add_server(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_admin),
 ):
     s = AptCacheServer(
         label=body.get("label", body.get("host", "apt-cacher-ng")),
@@ -180,7 +180,7 @@ async def update_server(
     server_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_admin),
 ):
     result = await db.execute(select(AptCacheServer).where(AptCacheServer.id == server_id))
     s = result.scalar_one_or_none()

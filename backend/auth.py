@@ -149,6 +149,33 @@ async def get_current_user(
     return user
 
 
+async def require_admin(user=None):
+    """FastAPI dependency that 403s if the current user is not an admin.
+
+    Use as: `_: User = Depends(require_admin)` on mutation endpoints.
+    Read-only users can still call GET endpoints (which depend on get_current_user only).
+    """
+    # Resolve current user lazily — accept it via Depends below
+    from fastapi import Depends as _Depends
+    raise NotImplementedError  # placeholder; real impl below
+
+
+# Re-define using proper Depends chaining
+def _build_require_admin():
+    from fastapi import Depends
+    async def _impl(user=Depends(get_current_user)):
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required",
+            )
+        return user
+    return _impl
+
+
+require_admin = _build_require_admin()  # type: ignore[assignment]
+
+
 async def get_current_user_ws(token: str, session: AsyncSession):
     """Validate token for WebSocket handshake; returns user or None."""
     try:

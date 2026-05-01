@@ -876,12 +876,24 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                     <td className="px-3 py-1.5 text-center">
                       {p.is_phased && <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">phased</span>}
                       {p.needs_dist_upgrade && <span className="badge bg-amber/10 text-amber border border-amber/30 text-xs" title="Requires dist-upgrade — has new dependencies">kept back</span>}
+                      {p.cves && p.cves.length > 0 && (() => {
+                        const worst = p.cves.reduce((acc, c) => {
+                          const order = { critical: 4, high: 3, medium: 2, low: 1, unknown: 0 } as const
+                          return order[c.severity] > order[acc] ? c.severity : acc
+                        }, 'unknown' as typeof p.cves[number]['severity'])
+                        const cls = worst === 'critical' ? 'bg-red/15 text-red border-red/40'
+                          : worst === 'high' ? 'bg-orange-500/10 text-orange-400 border-orange-500/40'
+                          : worst === 'medium' ? 'bg-amber/10 text-amber border-amber/30'
+                          : 'bg-cyan/10 text-cyan border-cyan/30'
+                        const totalCves = p.cves.reduce((n, c) => n + c.ids.length, 0)
+                        return <span className={`badge border text-xs ${cls}`} title={`${totalCves} CVE${totalCves !== 1 ? 's' : ''} — worst severity: ${worst}`}>🛡 {totalCves}</span>
+                      })()}
                     </td>
                     <td className="px-3 py-1.5 text-right" onClick={e => e.stopPropagation()}>
-                      {(p.description || reboot) && (
+                      {(p.description || reboot || (p.cves && p.cves.length > 0)) && (
                         <span className="relative group/info inline-block">
                           <span className="text-text-muted/50 hover:text-cyan cursor-default select-none text-xs font-mono">ⓘ</span>
-                          <div className="absolute right-0 bottom-full mb-1 z-50 hidden group-hover/info:block w-72 pointer-events-none">
+                          <div className="absolute right-0 bottom-full mb-1 z-50 hidden group-hover/info:block w-80 pointer-events-auto">
                             <div className="bg-surface border border-border rounded shadow-lg p-3 text-xs space-y-1.5">
                               <p className="font-mono font-medium text-text-primary">{p.name}</p>
                               {p.description && <p className="text-text-muted leading-snug">{p.description}</p>}
@@ -893,6 +905,25 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                 {p.needs_dist_upgrade && <p className="text-amber">⚠ Kept back — requires dist-upgrade</p>}
                                 {reboot && <p className="text-amber">↺ Likely requires reboot</p>}
                               </div>
+                              {p.cves && p.cves.length > 0 && (
+                                <div className="border-t border-border/50 pt-1.5 space-y-1">
+                                  <p className="text-text-muted text-[10px] uppercase tracking-wide">Recent advisories</p>
+                                  {p.cves.slice(0, 3).map(c => (
+                                    <div key={c.usn} className="font-mono text-[11px]">
+                                      <a href={c.url} target="_blank" rel="noopener noreferrer" className={
+                                        c.severity === 'critical' ? 'text-red hover:underline'
+                                        : c.severity === 'high' ? 'text-orange-400 hover:underline'
+                                        : c.severity === 'medium' ? 'text-amber hover:underline'
+                                        : 'text-cyan hover:underline'
+                                      }>USN-{c.usn}</a>
+                                      <span className="text-text-muted/60"> — {c.severity}</span>
+                                      {c.ids.length > 0 && (
+                                        <span className="text-text-muted/70 ml-1 break-all">({c.ids.slice(0, 3).join(', ')}{c.ids.length > 3 ? '…' : ''})</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </span>

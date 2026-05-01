@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import Template, TemplatePackage, User
 from backend.schemas import (
@@ -59,7 +59,7 @@ async def list_templates(
 async def create_template(
     body: TemplateCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     template = Template(name=body.name, description=body.description)
     db.add(template)
@@ -82,7 +82,7 @@ async def update_template(
     template_id: int,
     body: TemplateUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     template = await _get_template_or_404(template_id, db)
 
@@ -100,7 +100,7 @@ async def update_template(
 async def delete_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     template = await _get_template_or_404(template_id, db)
     await db.delete(template)

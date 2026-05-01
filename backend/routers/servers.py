@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag, UpdateCheck, User
 from backend.schemas import (
@@ -396,7 +396,7 @@ async def list_servers(
 async def create_server(
     body: ServerCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     # Check hostname uniqueness
     existing = await db.execute(select(Server).where(Server.hostname == body.hostname))
@@ -486,7 +486,7 @@ async def update_server(
     server_id: int,
     body: ServerUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     server = await _get_server_or_404(server_id, db)
 
@@ -570,7 +570,7 @@ async def update_server(
 async def delete_server(
     server_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     server = await _get_server_or_404(server_id, db)
     await db.delete(server)
@@ -579,7 +579,7 @@ async def delete_server(
 
 @router.post("/generate-ssh-key")
 async def generate_ssh_key(
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     """Generate a new Ed25519 SSH key pair and return both keys as strings.
     The private key is returned in OpenSSH PEM format; the public key in
@@ -611,7 +611,7 @@ async def generate_ssh_key(
 async def clear_server_ssh_key(
     server_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     """Remove the per-server SSH key; the server will fall back to the global key."""
     server = await _get_server_or_404(server_id, db)
@@ -624,7 +624,7 @@ async def clear_server_ssh_key(
 async def reboot_server(
     server_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     server = await _get_server_or_404(server_id, db)
     sudo = "" if server.username == "root" else "sudo "
@@ -684,48 +684,90 @@ async def search_package_fleet(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Fleet-wide search: is package X installed on any enabled server?
+    """Fleet-wide package search with flexible match modes (issue #46).
 
-    Accepts: { "name": "openssl" }
+    Accepts: {
+      "name": "openssl",
+      "mode": "contains" | "exact" | "starts-with" | "ends-with" | "regex"
+    }
     Returns: {
       "servers": [{"id": 1, "name": "...", "hostname": "..."}],
-      "results": {"1": {"installed": true, "version": "1.1.1f-1ubuntu2.20"}, ...},
-      "errors": {"3": "Connection failed"}
+      "matches": {
+        "<package_name>": { "<server_id>": "version", ... }
+      },
+      "errors": { "<server_id>": "error message" }
     }
+
+    Note that *matches* is keyed by package name (not server) — multiple
+    packages can match per server.
     """
     import asyncssh as _asyncssh
     import re as _re
     from backend.ssh_manager import _connect_options
 
     pkg = (body.get("name") or "").strip()
-    # Validate package name (same regex as install endpoint, plus glob char for wildcards)
-    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-*?]*$', pkg):
-        raise HTTPException(status_code=400, detail="Invalid package name")
+    mode = (body.get("mode") or "contains").strip().lower()
+    if mode not in {"exact", "contains", "starts-with", "ends-with", "regex"}:
+        raise HTTPException(status_code=400, detail="Invalid mode")
+    if not pkg:
+        raise HTTPException(status_code=400, detail="Search term required")
+
+    # Build the dpkg-query glob and an optional Python regex post-filter
+    # We always pass dpkg-query a safe glob (only [a-zA-Z0-9.+\-*?]) to avoid
+    # shell injection — for regex mode we list everything (`*`) and filter in Python.
+    py_filter: _re.Pattern | None = None
+    if mode == "regex":
+        try:
+            py_filter = _re.compile(pkg)
+        except _re.error as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
+        glob = "*"
+    else:
+        # Validate that the user-supplied substring is "package-name-shaped"
+        if not _re.match(r'^[a-zA-Z0-9._+\-]+$', pkg):
+            raise HTTPException(status_code=400, detail="Search term may only contain letters, digits, '.', '_', '+', '-'")
+        if mode == "exact":
+            glob = pkg
+        elif mode == "starts-with":
+            glob = f"{pkg}*"
+        elif mode == "ends-with":
+            glob = f"*{pkg}"
+        else:  # contains
+            glob = f"*{pkg}*"
+
+    # Cap the number of returned matches to keep the response sane
+    MAX_MATCHES_PER_SERVER = 200
 
     res = await db.execute(select(Server).where(Server.is_enabled == True))
     servers_list = res.scalars().all()
 
-    results: dict[str, dict] = {}
+    # matches: { package_name: { server_id: version } }
+    matches: dict[str, dict[str, str]] = {}
     errors: dict[str, str] = {}
 
     async def _query(server: Server):
         try:
             opts = _connect_options(server)
             async with _asyncssh.connect(**opts) as conn:
-                # dpkg-query exits 1 when package isn't installed; suppress with || true
+                # Quote the glob carefully — it's already validated to safe chars
                 r = await conn.run(
-                    f"dpkg-query -W -f='${{Status}}\\t${{Version}}\\n' {pkg!r} 2>/dev/null || true",
-                    timeout=20,
+                    f"dpkg-query -W -f='${{Status}}\\t${{Package}}\\t${{Version}}\\n' '{glob}' 2>/dev/null || true",
+                    timeout=30,
                 )
-                installed = False
-                version: str | None = None
+                count = 0
                 for line in (r.stdout or "").splitlines():
-                    parts = line.split("\t", 1)
-                    if len(parts) == 2 and "install ok installed" in parts[0]:
-                        installed = True
-                        version = parts[1].strip() or None
+                    if count >= MAX_MATCHES_PER_SERVER:
                         break
-                results[str(server.id)] = {"installed": installed, "version": version}
+                    parts = line.split("\t", 2)
+                    if len(parts) != 3:
+                        continue
+                    status_field, name, version = parts
+                    if "install ok installed" not in status_field:
+                        continue
+                    if py_filter and not py_filter.search(name):
+                        continue
+                    matches.setdefault(name, {})[str(server.id)] = version
+                    count += 1
         except Exception as exc:
             errors[str(server.id)] = str(exc)
 
@@ -736,7 +778,7 @@ async def search_package_fleet(
             {"id": s.id, "name": s.name, "hostname": s.hostname}
             for s in servers_list
         ],
-        "results": results,
+        "matches": matches,
         "errors": errors,
     }
 
@@ -916,7 +958,7 @@ async def set_auto_security_updates(
     server_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     """Enable or disable unattended-upgrades (auto security updates) on a server via SSH."""
     server = await _get_server_or_404(server_id, db)

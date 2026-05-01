@@ -108,3 +108,30 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
 
     output = generate_latest(registry)
     return Response(content=output, media_type=CONTENT_TYPE_LATEST)
+
+
+# ---------------------------------------------------------------------------
+# CVE matcher status / manual refresh (issue #37)
+# ---------------------------------------------------------------------------
+
+from fastapi import Depends as _Depends  # noqa: E402
+
+from backend.auth import get_current_user, require_admin  # noqa: E402
+from backend.models import User  # noqa: E402
+
+
+@router.get("/api/cve/status")
+async def cve_status(_: User = _Depends(get_current_user)):
+    from backend.cve_matcher import cache_status
+    return cache_status()
+
+
+@router.post("/api/cve/refresh")
+async def cve_refresh(_: User = _Depends(require_admin)):
+    """Manually trigger a CVE feed refresh."""
+    from backend.cve_matcher import refresh_and_reload
+    payload = await refresh_and_reload()
+    return {
+        "fetched_at": payload.get("fetched_at"),
+        "package_count": payload.get("package_count", 0),
+    }

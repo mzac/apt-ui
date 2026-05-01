@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import NotificationConfig, NotificationLog, User
 from backend.schemas import NotificationConfigOut, NotificationConfigUpdate, NotificationLogOut
@@ -44,7 +44,7 @@ async def get_config(
 async def update_config(
     body: NotificationConfigUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     cfg = await _get_cfg(db)
 
@@ -70,7 +70,7 @@ async def update_config(
 @router.post("/test/email")
 async def test_email(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     cfg = await _get_cfg(db)
     if not cfg.email_enabled or not cfg.smtp_host:
@@ -87,7 +87,7 @@ async def test_email(
 @router.post("/test/telegram")
 async def test_telegram(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     cfg = await _get_cfg(db)
     if not cfg.telegram_enabled or not cfg.telegram_bot_token:

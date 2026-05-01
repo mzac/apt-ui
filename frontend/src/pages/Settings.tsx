@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi } from '@/api/client'
+import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi } from '@/api/client'
+import type { MaintenanceWindow } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
@@ -48,7 +49,12 @@ export default function Settings() {
       </div>
 
       {tab === 'Servers' && <ServersTab />}
-      {tab === 'Schedule' && <ScheduleTab />}
+      {tab === 'Schedule' && (
+        <div className="space-y-6">
+          <ScheduleTab />
+          <MaintenanceWindowsSection />
+        </div>
+      )}
       {tab === 'Preferences' && <PreferencesTab />}
       {tab === 'Notifications' && <NotificationsTab />}
       {tab === 'Infrastructure' && <InfrastructureTab />}
@@ -1069,6 +1075,212 @@ function ScheduleTab() {
 
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Schedule'}</button>
     </form>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance Windows section (issue #40)
+// ---------------------------------------------------------------------------
+
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+function minutesToHHMM(m: number): string {
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+}
+
+function hhmmToMinutes(s: string): number {
+  const [h, m] = s.split(':').map(Number)
+  return (h || 0) * 60 + (m || 0)
+}
+
+function formatDays(bitmask: number): string {
+  if (bitmask === 127) return 'Every day'
+  if (bitmask === 0b0011111) return 'Weekdays'
+  if (bitmask === 0b1100000) return 'Weekends'
+  return DAY_LABELS.filter((_, i) => bitmask & (1 << i)).join(', ')
+}
+
+function MaintenanceWindowsSection() {
+  const [windows, setWindows] = useState<MaintenanceWindow[]>([])
+  const [servers, setServers] = useState<Server[]>([])
+  const [editing, setEditing] = useState<Partial<MaintenanceWindow> | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function reload() {
+    try {
+      const [w, s] = await Promise.all([maintenanceApi.list(), serversApi.list()])
+      setWindows(w)
+      setServers(s)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    }
+  }
+  useEffect(() => { reload() }, [])
+
+  function newWindow() {
+    setEditing({
+      server_id: null,
+      name: '',
+      start_minutes: 9 * 60,   // 09:00
+      end_minutes: 17 * 60,    // 17:00
+      days_of_week: 0b0011111, // Mon-Fri
+      enabled: true,
+    })
+  }
+
+  async function save() {
+    if (!editing) return
+    setError(null)
+    try {
+      if (editing.id) {
+        await maintenanceApi.update(editing.id, editing as any)
+      } else {
+        await maintenanceApi.create(editing as any)
+      }
+      setEditing(null)
+      await reload()
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function remove(id: number) {
+    if (!confirm('Delete this maintenance window?')) return
+    await maintenanceApi.remove(id)
+    await reload()
+  }
+
+  function toggleDay(bit: number) {
+    if (!editing) return
+    const cur = editing.days_of_week ?? 0
+    setEditing({ ...editing, days_of_week: cur ^ (1 << bit) })
+  }
+
+  return (
+    <section className="card p-4 space-y-3 max-w-3xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-medium text-text-primary">Maintenance Windows</h2>
+          <p className="text-xs text-text-muted mt-0.5">
+            Auto-upgrade and (with confirmation) Upgrade All skip servers inside an active deny window.
+          </p>
+        </div>
+        <button onClick={newWindow} className="btn-secondary text-xs">+ Add window</button>
+      </div>
+
+      {error && <p className="text-xs text-red font-mono">{error}</p>}
+
+      {windows.length === 0 && !editing ? (
+        <p className="text-xs text-text-muted py-2">No maintenance windows configured.</p>
+      ) : (
+        <div className="space-y-1">
+          {windows.map(w => {
+            const scope = w.server_id == null
+              ? <span className="text-purple">Global</span>
+              : <span className="text-cyan">{servers.find(s => s.id === w.server_id)?.name ?? `server #${w.server_id}`}</span>
+            return (
+              <div key={w.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-border/30 last:border-0 font-mono">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${w.enabled ? 'bg-green' : 'bg-gray-500'}`} title={w.enabled ? 'enabled' : 'disabled'} />
+                <span className="text-text-primary truncate w-40">{w.name}</span>
+                <span className="text-text-muted shrink-0">{scope}</span>
+                <span className="text-text-muted shrink-0">{minutesToHHMM(w.start_minutes)}–{minutesToHHMM(w.end_minutes)}</span>
+                <span className="text-text-muted/70 shrink-0 hidden sm:inline">{formatDays(w.days_of_week)}</span>
+                <span className="ml-auto flex gap-2">
+                  <button onClick={() => setEditing(w)} className="text-cyan/80 hover:text-cyan">Edit</button>
+                  <button onClick={() => remove(w.id)} className="text-red/70 hover:text-red">Delete</button>
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {editing && (
+        <div className="border-t border-border/40 pt-3 mt-3 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className="label">Name</label>
+              <input
+                type="text"
+                value={editing.name ?? ''}
+                onChange={e => setEditing({ ...editing, name: e.target.value })}
+                className="input text-sm"
+                placeholder="e.g. Business hours"
+              />
+            </div>
+            <div>
+              <label className="label">Start (24h)</label>
+              <input
+                type="time"
+                value={minutesToHHMM(editing.start_minutes ?? 0)}
+                onChange={e => setEditing({ ...editing, start_minutes: hhmmToMinutes(e.target.value) })}
+                className="input text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="label">End (24h)</label>
+              <input
+                type="time"
+                value={minutesToHHMM(editing.end_minutes ?? 0)}
+                onChange={e => setEditing({ ...editing, end_minutes: hhmmToMinutes(e.target.value) })}
+                className="input text-sm font-mono"
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="label">Days</label>
+              <div className="flex gap-1 flex-wrap">
+                {DAY_LABELS.map((d, i) => {
+                  const on = !!((editing.days_of_week ?? 0) & (1 << i))
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => toggleDay(i)}
+                      className={`px-3 py-1 rounded text-xs font-mono border transition-colors ${
+                        on
+                          ? 'border-green text-green bg-green/10'
+                          : 'border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="col-span-2">
+              <label className="label">Scope</label>
+              <select
+                value={editing.server_id ?? ''}
+                onChange={e => setEditing({ ...editing, server_id: e.target.value ? parseInt(e.target.value) : null })}
+                className="input text-sm"
+              >
+                <option value="">Global (all servers)</option>
+                {servers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="col-span-2 flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="mw-enabled"
+                checked={editing.enabled !== false}
+                onChange={e => setEditing({ ...editing, enabled: e.target.checked })}
+                className="w-4 h-4 accent-green"
+              />
+              <label htmlFor="mw-enabled" className="text-sm text-text-muted">Enabled</label>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={save} disabled={!editing.name?.trim()} className="btn-primary text-sm">
+              {editing.id ? 'Save' : 'Create'}
+            </button>
+            <button onClick={() => setEditing(null)} className="btn-secondary text-sm">Cancel</button>
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 

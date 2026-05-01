@@ -75,7 +75,7 @@ def cmd_create_user(args):
         user = User(
             username=args.username,
             password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
-            is_admin=True,
+            is_admin=not args.readonly,
             created_at=datetime.utcnow(),
         )
         session.add(user)
@@ -115,6 +115,7 @@ def main():
     cu = subparsers.add_parser("create-user", help="Create a new user")
     cu.add_argument("--username", required=True, help="Username")
     cu.add_argument("--password", default=None, help="Password (prompted if omitted)")
+    cu.add_argument("--readonly", action="store_true", help="Create as read-only user (cannot mutate state)")
 
     # list-users
     subparsers.add_parser("list-users", help="List all users")

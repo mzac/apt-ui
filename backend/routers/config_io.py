@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import (
     NotificationConfig, ScheduleConfig, Server, ServerGroup, User,
@@ -129,7 +129,7 @@ class ImportRequest(BaseModel):
 async def import_config(
     body: ImportRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     data = body.data
     results: dict[str, Any] = {"groups": 0, "servers": 0, "skipped_servers": 0}
@@ -255,7 +255,7 @@ async def import_servers_csv(
     file: UploadFile = File(...),
     overwrite: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     import csv, io
     content = (await file.read()).decode("utf-8-sig")

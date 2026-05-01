@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user
+from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import ScheduleConfig, User
 from backend.schemas import ScheduleConfigOut, ScheduleConfigUpdate
@@ -45,7 +45,7 @@ async def get_status(
 async def update_config(
     body: ScheduleConfigUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     from backend.scheduler import configure_jobs, get_next_run_time
 

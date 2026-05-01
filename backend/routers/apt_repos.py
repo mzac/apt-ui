@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user, get_current_user_ws
+from backend.auth import get_current_user, require_admin, get_current_user_ws
 from backend.database import get_db
 from backend.models import Server, User
 from backend.ssh_manager import _connect_options, run_command
@@ -171,7 +171,7 @@ async def delete_apt_repo(
     server_id: int,
     body: AptRepoDeleteRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     if not _deletable_path(body.path):
         raise HTTPException(
