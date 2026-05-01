@@ -523,6 +523,17 @@ export function createAutoremoveWebSocket(
   return ws
 }
 
+export function createAutoremoveAllWebSocket(
+  onMessage: (msg: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/autoremove-all`
+  const ws = new WebSocket(url)
+  ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
+  ws.onclose = () => onClose?.()
+  return ws
+}
+
 export function createInstallWebSocket(
   serverId: number,
   packages: string[],

@@ -1195,6 +1195,67 @@ async def ws_autoremove(websocket: WebSocket, server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# WebSocket — autoremove-all (multiplexed)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/api/ws/autoremove-all")
+async def ws_autoremove_all(websocket: WebSocket):
+    await websocket.accept()
+
+    token = websocket.cookies.get("apt_ui_token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        concurrency = cfg.upgrade_concurrency if cfg else 5
+
+        srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+        servers = srv_res.scalars().all()
+
+        to_clean = []
+        for s in servers:
+            chk_res = await db.execute(
+                select(UpdateCheck)
+                .where(UpdateCheck.server_id == s.id)
+                .order_by(UpdateCheck.checked_at.desc())
+                .limit(1)
+            )
+            chk = chk_res.scalar_one_or_none()
+            if chk and (chk.autoremove_count or 0) > 0:
+                to_clean.append(s)
+
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _do(server: Server):
+        async with semaphore:
+            async with AsyncSessionLocal() as session:
+                async def send_fn(msg: dict):
+                    msg["server_id"] = server.id
+                    msg["server_name"] = server.name
+                    try:
+                        await websocket.send_json(msg)
+                    except Exception:
+                        pass
+
+                from backend.upgrade_manager import run_autoremove
+                await run_autoremove(server, session, packages=None, send_fn=send_fn)
+
+    try:
+        await asyncio.gather(*[_do(s) for s in to_clean])
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # .deb file installation — URL validation
 # ---------------------------------------------------------------------------
 

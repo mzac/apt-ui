@@ -8,6 +8,7 @@ import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
 import StatusDot from '@/components/StatusDot'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
+import AutoremoveAllModal from '@/components/AutoremoveAllModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
 import CopySshButton from '@/components/CopySshButton'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
@@ -100,6 +101,7 @@ export default function Dashboard() {
   const { addJob, updateJob } = useJobStore()
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
+  const [showAutoremoveAll, setShowAutoremoveAll] = useState(false)
   const [checkingAll, setCheckingAll] = useState(false)
   const [checkingMode, setCheckingMode] = useState<'check' | 'refresh' | null>(null)
   const [checkProgress, setCheckProgress] = useState<{ done: number; total: number; current: string[] }>({ done: 0, total: 0, current: [] })
@@ -309,6 +311,7 @@ export default function Dashboard() {
   }, [])
 
   const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
+  const serversWithAutoremove = serverList.filter(s => s.is_enabled && (s.latest_check?.autoremove_count ?? 0) > 0)
   const hasFilters = activeGroup != null || activeTag != null
   const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
   const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
@@ -365,16 +368,18 @@ export default function Dashboard() {
               ...(offlineCount > 0 ? [{ label: 'Offline', value: offlineCount, color: 'text-red', filter: 'offline' }] : []),
             ].map(({ label, value, color, filter }) => {
               const opensModal = (filter === 'updates_available' || filter === 'security') && serversWithUpdates.length > 0
+              const opensAutoremove = filter === 'autoremove' && serversWithAutoremove.length > 0
               return (
                 <button
                   key={label}
                   onClick={() => {
                     setStatusFilter(statusFilter === filter ? null : filter)
                     if (opensModal) setShowUpdatesSummary(true)
+                    if (opensAutoremove) setShowAutoremoveAll(true)
                   }}
                   className={`card px-3 py-2 text-center cursor-pointer hover:border-text-muted transition-colors ${statusFilter === filter ? 'border-green/50 bg-green/5' : ''}`}
                   style={{ minWidth: 72 }}
-                  title={opensModal ? 'Click to view pending packages' : undefined}
+                  title={opensModal ? 'Click to view pending packages' : opensAutoremove ? 'Click to autoremove on all servers' : undefined}
                 >
                   <div className={`text-xl font-mono font-medium ${color}`}>{value}</div>
                   <div className="text-xs text-text-muted">{label}</div>
@@ -623,6 +628,13 @@ export default function Dashboard() {
             onMinimize={() => setUpgradeMinimized(true)}
           />
         </div>
+      )}
+
+      {showAutoremoveAll && (
+        <AutoremoveAllModal
+          servers={serversWithAutoremove}
+          onClose={() => { setShowAutoremoveAll(false); load() }}
+        />
       )}
 
       {/* Custom disable confirmation modal */}
