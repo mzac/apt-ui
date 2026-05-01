@@ -1,5 +1,4 @@
 import hashlib
-import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -20,12 +19,9 @@ API_TOKEN_PREFIX = "aptui_"
 
 
 def generate_api_token() -> tuple[str, str, str]:
-    """Mint a new token. Returns (raw_token, hmac_hash, display_prefix).
+    """Mint a new token. Returns (raw_token, scrypt_hash, display_prefix).
 
-    The raw token is returned ONCE for display; only the keyed HMAC of the
-    token is stored. Using HMAC-SHA256 keyed with the JWT secret means a DB
-    leak alone does not let an attacker authenticate — they would also need
-    the server-side secret to forge a matching hash.
+    The raw token is shown ONCE; only the scrypt hash is stored in the DB.
     """
     raw = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
     h = hash_api_token(raw)
@@ -33,14 +29,17 @@ def generate_api_token() -> tuple[str, str, str]:
 
 
 def hash_api_token(raw: str) -> str:
-    """Compute a stable, keyed hash of an API token for DB storage / lookup.
+    """Compute a stable hash of an API token for DB storage / lookup.
 
-    HMAC-SHA256 is appropriate here because tokens are 256-bit random secrets
-    (not user-chosen passwords), so the dominant security comes from token
-    entropy. The HMAC key prevents pre-computed table attacks if the DB leaks.
+    scrypt (memory-hard KDF) is used so that a DB leak alone cannot be used
+    to brute-force tokens. A fixed salt is acceptable because tokens are
+    256-bit random secrets — the token entropy provides the primary security.
+    scrypt at n=2^14 adds ~10 ms overhead per lookup, which is fine for the
+    low-frequency create/verify path.
     """
-    key = get_jwt_secret().encode()
-    return hmac.new(key, raw.encode(), hashlib.sha256).hexdigest()
+    return hashlib.scrypt(
+        raw.encode(), salt=b"apt-ui-api-token", n=2**14, r=8, p=1
+    ).hex()
 
 _jwt_secret: str | None = None
 
