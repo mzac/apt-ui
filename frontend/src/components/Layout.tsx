@@ -6,6 +6,12 @@ import { useTheme } from '@/hooks/useTheme'
 import { servers as serversApi, releaseCheck as releaseCheckApi } from '@/api/client'
 import type { ReleaseCheckResult } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
+import CommandPalette from './CommandPalette'
+
+function isMac(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Mac|iPod|iPhone|iPad/.test(navigator.platform)
+}
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000)
@@ -211,6 +217,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           )}
         </div>
 
+        {/* Command palette hint — opens the palette via Ctrl/Cmd+K */}
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('apt:open-palette'))}
+          className="hidden sm:flex h-7 items-center gap-1 px-2 rounded border border-border text-text-muted hover:text-text-primary hover:border-text-muted/40 transition-colors text-[11px] font-mono shrink-0"
+          title="Open command palette"
+        >
+          <kbd className="text-[10px]">{isMac() ? '⌘' : 'Ctrl'}</kbd>
+          <span>K</span>
+        </button>
+
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}
@@ -281,6 +297,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       )}
 
       <main className="p-3 sm:p-4 max-w-full overflow-x-hidden">{children}</main>
+
+      {/* Global command palette — opens via Ctrl/Cmd+K or the nav hint button */}
+      <CommandPalette />
 
       <footer className="border-t border-border/40 px-4 py-2 text-center">
         <span className="text-xs text-text-muted font-mono">

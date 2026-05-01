@@ -6,6 +6,7 @@ import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheSta
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import AutoremoveAllModal from '@/components/AutoremoveAllModal'
@@ -125,6 +126,8 @@ export default function Dashboard() {
     }
   }
 
+  const seedPaletteServers = useServersStore(s => s.setServers)
+
   const load = useCallback(async () => {
     const [s, g, o] = await Promise.all([
       serversApi.list(),
@@ -135,8 +138,11 @@ export default function Dashboard() {
     setGroupList(g)
     setOverview(o)
     setInitialLoaded(true)
+    // Share the freshly-fetched list with the command palette so it doesn't
+    // need to make a duplicate request when first opened.
+    seedPaletteServers(s)
     return s
-  }, [])
+  }, [seedPaletteServers])
 
   usePolling(load, 30_000)
 

@@ -11,6 +11,7 @@ import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
 import PackageInstallModal from '@/components/PackageInstallModal'
 import CopySshButton from '@/components/CopySshButton'
+import { pushRecentServer } from '@/components/CommandPalette'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
@@ -77,6 +78,11 @@ export default function ServerDetail() {
   }, [serverId])
 
   useEffect(() => { load() }, [load])
+
+  // Track this visit in the command palette's recent-servers list
+  useEffect(() => {
+    if (!Number.isNaN(serverId)) pushRecentServer(serverId)
+  }, [serverId])
 
   useEffect(() => {
     if ((location.state as any)?.openEdit) {
