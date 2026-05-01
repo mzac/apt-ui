@@ -1132,6 +1132,58 @@ function ScheduleTab() {
           />
           <span className="text-xs text-text-muted">{(form.reachability_ttl_minutes ?? 5) === 0 ? '— disabled' : `re-checks every ${form.reachability_ttl_minutes ?? 5} min`}</span>
         </div>
+      </section>
+
+      {/* Weekly patch digest (issue #58) */}
+      <section className="card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-medium text-text-primary">Weekly Patch Digest</h2>
+            <p className="text-xs text-text-muted mt-0.5">
+              7-day fleet activity report (packages upgraded, still pending, new CVEs, health flags).
+              Per-channel toggles live in <span className="font-mono text-cyan">Notifications</span>.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.weekly_digest_enabled ?? false}
+            onChange={e => setForm(f => ({ ...f, weekly_digest_enabled: e.target.checked }))}
+            className="w-4 h-4 accent-green"
+          />
+        </div>
+        {form.weekly_digest_enabled && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="text-sm text-text-muted">Run on</label>
+            <select
+              className="input w-32"
+              value={form.weekly_digest_day_of_week ?? 0}
+              onChange={e => setForm(f => ({ ...f, weekly_digest_day_of_week: parseInt(e.target.value) }))}
+            >
+              <option value={0}>Monday</option>
+              <option value={1}>Tuesday</option>
+              <option value={2}>Wednesday</option>
+              <option value={3}>Thursday</option>
+              <option value={4}>Friday</option>
+              <option value={5}>Saturday</option>
+              <option value={6}>Sunday</option>
+            </select>
+            <label className="text-sm text-text-muted">at</label>
+            <input
+              type="time"
+              className="input w-32"
+              value={`${String(form.weekly_digest_hour ?? 9).padStart(2, '0')}:${String(form.weekly_digest_minute ?? 0).padStart(2, '0')}`}
+              onChange={e => {
+                const [h, m] = e.target.value.split(':').map(Number)
+                setForm(f => ({ ...f, weekly_digest_hour: h || 0, weekly_digest_minute: m || 0 }))
+              }}
+            />
+            {cfg.next_weekly_digest_time && (
+              <span className="text-xs text-text-muted font-mono">
+                Next: {new Date(cfg.next_weekly_digest_time).toLocaleString()}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Save button lives inside the last form section so it's clearly tied
             to the schedule above, not the unrelated Maintenance Windows section below. */}
@@ -2002,6 +2054,17 @@ function NotificationsTab() {
     }
   }
 
+  async function sendTestWeeklyDigest() {
+    setTestMsg(m => ({ ...m, weekly: '… sending' }))
+    try {
+      const r = await notifApi.testWeeklyDigest()
+      const parts = Object.entries(r.results).map(([ch, status]) => `${ch}:${status}`).join('  ')
+      setTestMsg(m => ({ ...m, weekly: `✓ ${parts}` }))
+    } catch (err: unknown) {
+      setTestMsg(m => ({ ...m, weekly: `✗ ${(err as Error).message}` }))
+    }
+  }
+
   async function detectChatId() {
     try {
       const result = await notifApi.detectChatId()
@@ -2135,6 +2198,32 @@ function NotificationsTab() {
                     className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
               </tr>
+              {/* Weekly digest (issue #58) — master enable lives in the Schedule tab */}
+              <tr>
+                <td className="py-2 pr-4">
+                  <div className="text-text-primary">Weekly digest</div>
+                  <div className="text-xs text-text-muted">
+                    7-day patch report. Toggle the cron in <span className="font-mono text-cyan">Schedule</span>.
+                  </div>
+                </td>
+                <td className="py-2 px-3 text-center text-text-muted text-xs">— see Schedule —</td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_weekly_digest_email ?? true}
+                    onChange={e => setForm(f => ({ ...f, notify_weekly_digest_email: e.target.checked }))}
+                    className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_weekly_digest_telegram ?? true}
+                    onChange={e => setForm(f => ({ ...f, notify_weekly_digest_telegram: e.target.checked }))}
+                    className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_weekly_digest_webhook ?? true}
+                    disabled={!form.webhook_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_weekly_digest_webhook: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+              </tr>
               {/* Upgrade complete */}
               <tr>
                 <td className="py-2 pr-4 text-text-primary">Upgrade complete</td>
@@ -2251,6 +2340,19 @@ function NotificationsTab() {
         <div>
           <label className="label">Daily summary time (24h)</label>
           <input type="time" className="input w-32" value={form.daily_summary_time ?? '07:00'} onChange={e => setForm(f => ({ ...f, daily_summary_time: e.target.value }))} />
+        </div>
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border/30">
+          <button type="button" onClick={sendTestWeeklyDigest} className="btn-secondary text-xs">
+            Test weekly digest
+          </button>
+          {testMsg.weekly && (
+            <span className={`text-xs font-mono ${testMsg.weekly.startsWith('✓') ? 'text-green' : testMsg.weekly.startsWith('…') ? 'text-text-muted' : 'text-red'}`}>
+              {testMsg.weekly}
+            </span>
+          )}
+          <span className="text-xs text-text-muted">
+            Composes the digest for the last 7 days and sends it via every enabled channel.
+          </span>
         </div>
       </section>
 

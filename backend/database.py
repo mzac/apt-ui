@@ -193,6 +193,14 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN staged_rollout_enabled BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN ring_promotion_delay_hours INTEGER DEFAULT 24",
             "ALTER TABLE server_stats ADD COLUMN snapshot_capability TEXT",
+            # Weekly patch digest (issue #58)
+            "ALTER TABLE schedule_config ADD COLUMN weekly_digest_enabled BOOLEAN DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN weekly_digest_day_of_week INTEGER DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN weekly_digest_hour INTEGER DEFAULT 9",
+            "ALTER TABLE schedule_config ADD COLUMN weekly_digest_minute INTEGER DEFAULT 0",
+            "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_email BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_telegram BOOLEAN DEFAULT 1",
+            "ALTER TABLE notification_config ADD COLUMN notify_weekly_digest_webhook BOOLEAN DEFAULT 1",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:

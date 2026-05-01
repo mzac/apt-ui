@@ -332,6 +332,10 @@ export const notifications = {
     put<NotificationConfig>('/api/notifications/config', data),
   testEmail: () => post('/api/notifications/test/email'),
   testTelegram: () => post('/api/notifications/test/telegram'),
+  testWeeklyDigest: () =>
+    post<{ detail: string; results: Record<'email' | 'telegram' | 'webhook', string> }>(
+      '/api/notifications/test-weekly-digest'
+    ),
   detectChatId: () => get<{ chats: { id: number; title: string }[] }>('/api/notifications/telegram/detect-chat-id'),
   history: (page = 1, limit = 50) =>
     get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(
@@ -427,6 +431,35 @@ export const reports = {
     summary: { in_sla: number; out_of_sla: number; no_security_seen: number; pct_in_sla: number | null }
     servers: { server: string; hostname: string; first_security_seen: string | null; cleared_at: string | null; days_to_clear: number | null; in_sla: boolean | null }[]
   }>(`/api/reports/security-sla?sla_days=${slaDays}&window_days=${windowDays}`),
+}
+
+// ---------------------------------------------------------------------------
+// Security / CVE inventory (issue #54)
+// ---------------------------------------------------------------------------
+
+export interface CveListParams {
+  status?: 'pending' | 'fixed' | 'all'
+  severity?: string         // CSV: "critical,high"
+  group_id?: number
+  tag?: string
+  since?: string            // ISO date
+  until?: string            // ISO date
+}
+
+export const security = {
+  list: (params?: CveListParams) => {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.severity) q.set('severity', params.severity)
+    if (params?.group_id != null) q.set('group_id', String(params.group_id))
+    if (params?.tag) q.set('tag', params.tag)
+    if (params?.since) q.set('since', params.since)
+    if (params?.until) q.set('until', params.until)
+    return get<import('@/types').CveInventoryRow[]>(
+      `/api/security/cves${q.toString() ? '?' + q : ''}`
+    )
+  },
+  summary: () => get<import('@/types').CveSummary>('/api/security/summary'),
 }
 
 export const sshAudit = {

@@ -101,6 +101,29 @@ async def test_telegram(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.post("/test-weekly-digest")
+async def test_weekly_digest(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Compose and dispatch the weekly digest immediately (issue #58).
+
+    Returns a per-channel result map (`sent` / `skipped` / `error: …`).
+    Channels marked `skipped` are either disabled or have their per-channel
+    weekly-digest toggle off in NotificationConfig.
+    """
+    cfg = await _get_cfg(db)
+    if not (cfg.email_enabled or cfg.telegram_enabled or cfg.webhook_enabled):
+        raise HTTPException(status_code=400, detail="No notification channels are enabled")
+
+    from backend.notifier import send_weekly_digest
+    try:
+        results = await send_weekly_digest(cfg, db)
+        return {"detail": "Weekly digest dispatched", "results": results}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/history")
 async def get_notification_history(
     page: int = Query(1, ge=1),

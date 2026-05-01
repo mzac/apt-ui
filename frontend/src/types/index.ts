@@ -94,6 +94,39 @@ export interface CveRef {
   fixed_version: string
 }
 
+export type CveSeverity = 'critical' | 'high' | 'medium' | 'low' | 'unknown'
+export type CveRowStatus = 'pending' | 'partial' | 'fixed'
+
+export interface CveAffectedServer {
+  id: number
+  name: string
+  hostname: string
+  installed_version: string
+  fixed_version: string
+  status: 'pending' | 'fixed'
+}
+
+export interface CveInventoryRow {
+  cve_id: string                  // e.g. "CVE-2025-12345" or "USN-1234-1" if no CVE id
+  usn_ids: string[]               // ["USN-1234-1", ...]
+  severity: CveSeverity
+  package: string
+  fixed_version: string
+  url: string
+  first_seen_in_fleet: string | null   // ISO datetime (UTC)
+  status: CveRowStatus
+  affected_servers: CveAffectedServer[]
+  affected_count: number
+  pending_count: number
+}
+
+export interface CveSummary {
+  open_total: number
+  critical: number
+  high: number
+  fixed_last_7d: number
+}
+
 export interface PackageInfo {
   name: string
   current_version: string
@@ -163,6 +196,11 @@ export interface ScheduleConfig {
   reachability_ttl_minutes: number
   staged_rollout_enabled: boolean        // issue #41
   ring_promotion_delay_hours: number     // issue #41
+  weekly_digest_enabled: boolean         // issue #58
+  weekly_digest_day_of_week: number      // 0=Mon … 6=Sun (APScheduler convention)
+  weekly_digest_hour: number
+  weekly_digest_minute: number
+  next_weekly_digest_time: string | null
 }
 
 export interface NotificationConfig {
@@ -202,6 +240,9 @@ export interface NotificationConfig {
   notify_reboot_email: boolean
   notify_reboot_telegram: boolean
   notify_reboot_webhook: boolean
+  notify_weekly_digest_email: boolean      // issue #58
+  notify_weekly_digest_telegram: boolean
+  notify_weekly_digest_webhook: boolean
 }
 
 export interface TemplatePackage {
