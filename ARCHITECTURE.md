@@ -17,9 +17,9 @@ graph TB
     subgraph container["Docker Container  (:8000)"]
         direction TB
 
-        subgraph api_layer["FastAPI  —  21 Routers"]
+        subgraph api_layer["FastAPI  —  22 Routers"]
             direction LR
-            REST["REST API\n60+ endpoints\napt_repos · aptcache · auth\nconfig_io · dpkg_log · groups\nhooks · maintenance · metrics\nnotifications · release_check\nreports · scheduler · servers\nstats · status_page · tags\ntailscale · templates · updates\nupgrades"]
+            REST["REST API\n60+ endpoints\napt_repos · aptcache · auth\ncalendar · config_io · dpkg_log\ngroups · hooks · maintenance\nmetrics · notifications · release_check\nreports · scheduler · servers\nstats · status_page · tags\ntailscale · templates · updates\nupgrades"]
             WS["WebSocket  (16 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nautoremove-all\nauto-security-updates\neeprom-update · apt-proxy\npveupgrade · shell\ntemplate-apply · apt-repos-test"]
         end
 
@@ -145,6 +145,7 @@ FastAPI handles all HTTP traffic on port 8000 — both the REST API and static f
 | `status_page` | `/status.json` | Public fleet health snapshot (opt-in; no auth when enabled) |
 | `release_check` | `/api/release/` | GitHub release polling; latest version + update-available flag |
 | `reports` | `/api/reports/` | Upgrade activity reports with CSV export |
+| `calendar` | `/api/calendar.ics` | RFC 5545 iCal feed of maintenance windows; query-param API-token auth |
 
 ---
 

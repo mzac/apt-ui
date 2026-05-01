@@ -25,6 +25,8 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Version in footer** — running app version displayed in the page footer; baked in at Docker build time from the release tag
 - **GitHub link in nav** — quick link to the repository from the top navigation bar
 - **New release banner** — cyan dismissable banner when a newer apt-ui release is available on GitHub; polls every 6 hours
+- **OS EOL countdown badges** — small 🕒 badge on each server card when the OS reaches end-of-life within 365 days (cyan ≥ 90 days, amber 30–90 days, red < 30 days or expired); hover shows the EOL date and "ESM available" note for Ubuntu LTS; fleet summary bar gains a matching "EOL soon" filter chip
+- **Command palette (Ctrl+K / ⌘K)** — global fuzzy-search modal that jumps to any server, page, settings sub-tab, recent job, or quick action (Check All, Refresh All, etc.); keyboard-only navigation
 
 ### Package Management
 - **Upgradable packages** — full list with version deltas, repository source, security flag, and dedicated phased-update column; hover tooltips show package description and reboot likelihood
@@ -73,6 +75,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Scheduled checks** — configurable cron schedule for automatic fleet-wide update checks
 - **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
 - **Maintenance windows** — define time windows when auto-upgrades are blocked; global or per-server; bitmask days-of-week + minute-of-day with midnight-wrap support; managed in Settings → Schedule
+- **iCal feed for maintenance windows** — subscribable `/api/calendar.ics` endpoint (auth via API token query param) so ops calendars (Apple Calendar / Google Calendar / Thunderbird) automatically reflect when auto-upgrades are blocked
 - **Pre/post-upgrade hooks** — shell commands that run before or after every upgrade; pre-hook failure aborts the upgrade; global or per-server scope; managed in Settings → Schedule
 - **Background job indicator** — bell icon in the top nav tracks running and recently completed jobs; click to return to a running job
 
@@ -332,7 +335,7 @@ graph TB
 
     subgraph container["Docker Container  (:8000)"]
         direction TB
-        API["FastAPI  —  21 routers · 60+ REST endpoints · 16 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
+        API["FastAPI  —  22 routers · 60+ REST endpoints · 16 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
         BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook · Notification Log"]
         DB[("SQLite  /data/apt-ui.db\n14 tables · 40 migrations")]
         SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]

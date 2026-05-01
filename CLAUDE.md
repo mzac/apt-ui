@@ -83,7 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up --build 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown. High-level:
 
 - **Single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files from `static/`.
-- **21 backend routers** in `backend/routers/` — REST + 16 WebSocket streams.
+- **22 backend routers** in `backend/routers/` — REST + 16 WebSocket streams.
 - **SQLite** at `/data/apt-ui.db` (Docker volume). Async SQLAlchemy throughout the API; sync SQLAlchemy in the CLI only.
 - **APScheduler** (`AsyncIOScheduler`) for cron-based checks, auto-upgrades, log purge, and daily summary. Reconfigured live from the DB without restart.
 - **asyncssh**: fresh connection per command, no pool. `known_hosts=None` (trusted LAN). Auth priority: per-server encrypted key → SSH agent → global `SSH_PRIVATE_KEY`.
@@ -105,6 +105,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - 401 responses anywhere in `api/client.ts` redirect to `/login?expired=1`.
 - `reachability_ttl_minutes` in `schedule_config`: servers that fail to connect during check-all are skipped for subsequent runs until the TTL expires, preventing SSH timeouts from slowing the whole fleet.
 - API token hashing uses `hashlib.scrypt` with a fixed salt (`b"apt-ui-api-token"`) for deterministic, memory-hard hashing. SHA-256 / HMAC-SHA256 are rejected by CodeQL as "insufficient" for credential storage.
+- The iCal feed at `/api/calendar.ics` authenticates via a `?token=` query parameter, not the cookie or `Authorization` header — calendar clients (Apple Calendar, Google Calendar, Thunderbird) can't carry custom headers when subscribing. Reuses the existing API token system.
+- EOL data lives in `backend/eol_data.py` as a hardcoded `{os_id: {version_id: ISO-date}}` table — no external API. Proxmox VE / Backup Server / Mail Gateway are tracked as separate keys (`proxmox-ve` / `proxmox-pbs` / `proxmox-pmg`) because they share the `-pve` kernel suffix but have distinct version cycles. The os_info detection in `backend/update_checker.py` probes `proxmox-backup-manager` and `pmgversion` before the kernel-fallback branch so PBS/PMG hosts are correctly labeled.
 - `check_server` runs `apt-get dist-upgrade --dry-run` in parallel alongside `apt list --upgradable`. This is necessary because new dependency packages (e.g. a new kernel version pulled in when upgrading `linux-generic`) do not appear in `apt list --upgradable` at all — they are only visible via dist-upgrade. The dry-run also detects "kept back" packages (upgradable but blocked by plain `apt-get upgrade`). Results stored as `is_new`, `is_kernel`, and `needs_dist_upgrade` flags in `packages_json`.
 
 ### Router → file mapping
@@ -132,6 +134,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Public /status.json endpoint | `backend/routers/status_page.py` |
 | GitHub release check (6h cache) | `backend/routers/release_check.py` |
 | Upgrade activity reports + CSV | `backend/routers/reports.py` |
+| iCal feed for maintenance windows | `backend/routers/calendar.py` |
 
 ### Frontend pages
 

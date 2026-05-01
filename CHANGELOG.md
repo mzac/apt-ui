@@ -4,13 +4,17 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.05.01-02] — 2026-05-01
 
 ### Added
 
-- **OS EOL countdown badges** ([#57](https://github.com/mzac/apt-ui/issues/57)) — server cards and the Settings → Servers table now show a 🕒 badge when the OS reaches end-of-life within 365 days (cyan ≥ 90d, amber 30–90d, red < 30d or expired). Hardcoded EOL table covers Ubuntu 20.04+, Debian 11+, Raspbian 11+, and Proxmox VE 7+. Tooltip on Ubuntu LTS hosts surfaces the "ESM available via Ubuntu Pro" note. Fleet summary bar gains a matching "EOL soon" filter chip. No new collection — reuses existing `os_info`.
+- **OS EOL countdown badges** ([#57](https://github.com/mzac/apt-ui/issues/57)) — server cards and the Settings → Servers table now show a 🕒 badge when the OS reaches end-of-life within 365 days (cyan ≥ 90d, amber 30–90d, red < 30d or expired). Hardcoded EOL table covers Ubuntu 20.04+, Debian 11+, Raspbian 11+, Proxmox VE 7+, Proxmox Backup Server 2+, and Proxmox Mail Gateway 7+. Tooltip on Ubuntu LTS hosts surfaces the "ESM available via Ubuntu Pro" note. Fleet summary bar gains a matching "EOL soon" filter chip. No new collection — reuses existing `os_info`.
 - **iCal feed for maintenance windows** ([#59](https://github.com/mzac/apt-ui/issues/59)) — subscribable RFC 5545 calendar at `GET /api/calendar.ics?token=<api_token>`. One VEVENT per enabled MaintenanceWindow with weekly RRULE matching the days-of-week bitmask; per-server windows include the server name in SUMMARY. Auth via the existing API token system (#38) — query param because calendar clients can't carry bearer headers. Settings → Maintenance Windows gains a "Subscribe in Calendar" button with an inline token mint. No new dependencies — iCal is hand-rolled.
 - **Command palette (Ctrl+K)** ([#55](https://github.com/mzac/apt-ui/issues/55)) — global fuzzy-search modal opened with Ctrl+K / Cmd+K. Searches servers (by name or hostname), pages, settings sub-tabs, recent jobs, recent servers (capped at 5, persisted to `localStorage`), and quick actions (Check All, Refresh All, New template, Add server, Logout). Self-contained matcher with prefix and word-start bonuses; no new npm deps. Keyboard-only navigation; Tab cycles category chips. A small ⌘K hint button sits in the top nav.
+
+### Fixed
+
+- **PBS / PMG hosts misidentified as Proxmox VE for EOL** — Proxmox Backup Server and Proxmox Mail Gateway hosts share the `-pve` kernel suffix with PVE, so the `os_info` detection script's kernel-fallback branch was labeling them "Proxmox VE" and matching them against the PVE EOL table (a PBS host got flagged as expired PVE 7). The script now probes `proxmox-backup-manager` and `pmgversion` before the kernel fallback, and the EOL table has separate `proxmox-ve` / `proxmox-pbs` / `proxmox-pmg` entries. Existing PBS/PMG hosts in the DB are corrected on the next Refresh All.
 
 ---
 
