@@ -1079,9 +1079,14 @@ function ScheduleTab() {
           />
           <span className="text-xs text-text-muted">{(form.reachability_ttl_minutes ?? 5) === 0 ? '— disabled' : `re-checks every ${form.reachability_ttl_minutes ?? 5} min`}</span>
         </div>
-      </section>
 
-      <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Schedule'}</button>
+        {/* Save button lives inside the last form section so it's clearly tied
+            to the schedule above, not the unrelated Maintenance Windows section below. */}
+        <div className="flex items-center justify-end gap-3 pt-3 mt-2 border-t border-border/30">
+          {saved && <span className="text-xs text-green">✓ Saved</span>}
+          <button type="submit" className="btn-primary text-sm">Save Schedule</button>
+        </div>
+      </section>
     </form>
   )
 }
