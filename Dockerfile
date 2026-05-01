@@ -27,6 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 
 WORKDIR /app
 
+# Re-declare the build-arg so it's available in stage 2 too, then bake into env
+# so the backend can report it (issue #13 — GitHub release check).
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 # Install Python dependencies
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

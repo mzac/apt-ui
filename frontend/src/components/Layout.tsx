@@ -3,7 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useTheme } from '@/hooks/useTheme'
-import { servers as serversApi } from '@/api/client'
+import { servers as serversApi, releaseCheck as releaseCheckApi } from '@/api/client'
+import type { ReleaseCheckResult } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
 
 function timeAgo(ts: number): string {
@@ -64,6 +65,25 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const bellRef = useRef<HTMLDivElement>(null)
   const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Release check (issue #13) — poll once on mount; cached server-side for 6h
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseCheckResult | null>(null)
+  const [releaseDismissed, setReleaseDismissed] = useState<string | null>(
+    () => sessionStorage.getItem('apt-ui:release-dismissed'),
+  )
+  useEffect(() => {
+    releaseCheckApi.status().then(setReleaseInfo).catch(() => {})
+  }, [])
+  function dismissRelease() {
+    if (releaseInfo?.latest) {
+      sessionStorage.setItem('apt-ui:release-dismissed', releaseInfo.latest)
+      setReleaseDismissed(releaseInfo.latest)
+    }
+  }
+  const showReleaseBanner =
+    releaseInfo?.update_available &&
+    releaseInfo.latest &&
+    releaseDismissed !== releaseInfo.latest
+
   const running = jobs.filter(j => j.status === 'running')
   const hasRunning = running.length > 0
 
@@ -120,6 +140,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/templates', label: 'Templates' },
     { to: '/compare', label: 'Compare' },
     { to: '/search', label: 'Search' },
+    { to: '/reports', label: 'Reports' },
     { to: '/settings', label: 'Settings' },
   ]
 
@@ -229,6 +250,35 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </header>
+
+      {showReleaseBanner && releaseInfo && (
+        <div className="bg-cyan/10 border-b border-cyan/30 px-4 py-2 text-sm text-cyan flex items-center gap-3">
+          <span>🎉</span>
+          <span className="font-mono">
+            apt-ui <span className="font-medium">{releaseInfo.latest}</span> is available
+            {releaseInfo.current && releaseInfo.current !== 'dev' && (
+              <span className="text-text-muted"> (you have {releaseInfo.current})</span>
+            )}
+          </span>
+          {releaseInfo.url && (
+            <a
+              href={releaseInfo.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan hover:underline text-xs"
+            >
+              View release →
+            </a>
+          )}
+          <button
+            onClick={dismissRelease}
+            className="ml-auto text-cyan/60 hover:text-cyan text-xs"
+            title="Dismiss until next session"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <main className="p-3 sm:p-4 max-w-full overflow-x-hidden">{children}</main>
 

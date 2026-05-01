@@ -104,6 +104,9 @@ from backend.routers import apt_repos as apt_repos_router
 from backend.routers import metrics as metrics_router
 from backend.routers import status_page as status_page_router
 from backend.routers import maintenance as maintenance_router
+from backend.routers import release_check as release_check_router
+from backend.routers import hooks as hooks_router
+from backend.routers import reports as reports_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -123,6 +126,9 @@ app.include_router(apt_repos_router.router)
 app.include_router(metrics_router.router)
 app.include_router(status_page_router.router)
 app.include_router(maintenance_router.router)
+app.include_router(release_check_router.router)
+app.include_router(hooks_router.router)
+app.include_router(reports_router.router)
 
 
 @app.get("/api/config/features")

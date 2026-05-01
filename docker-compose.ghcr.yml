@@ -1,5 +1,5 @@
 services:
-  apt-dashboard:
+  apt-ui:
     image: ghcr.io/mzac/apt-ui:latest
     ports:
       - "8111:8000"
@@ -14,7 +14,7 @@ services:
       # - ENCRYPTION_KEY=change-me-to-a-random-string  # encrypts per-server SSH keys in the DB (falls back to JWT_SECRET)
       # - LOG_LEVEL=INFO
     volumes:
-      - apt-dashboard-data:/data
+      - apt-ui-data:/data
       # --- Required when using SSH agent (mount the host agent socket) ---
       # - ${SSH_AUTH_SOCK}:/run/ssh-agent.sock:ro
     restart: unless-stopped
@@ -26,4 +26,4 @@ services:
       start_period: 10s
 
 volumes:
-  apt-dashboard-data:
+  apt-ui-data:

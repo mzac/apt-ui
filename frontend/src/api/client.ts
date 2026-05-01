@@ -87,8 +87,8 @@ export interface UserSummary {
 }
 
 export const auth = {
-  login: (username: string, password: string) =>
-    post<User>('/api/auth/login', { username, password }),
+  login: (username: string, password: string, totp_code?: string) =>
+    post<User>('/api/auth/login', { username, password, totp_code }),
   logout: () => post('/api/auth/logout'),
   me: () => get<User>('/api/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
@@ -97,6 +97,11 @@ export const auth = {
   createToken: (name: string) =>
     post<ApiTokenSummary & { token: string }>('/api/auth/tokens', { name }),
   revokeToken: (id: number) => del(`/api/auth/tokens/${id}`),
+  // 2FA — issue #18
+  totpSetup: () => post<{ secret: string; uri: string; qr_svg: string }>('/api/auth/2fa/setup'),
+  totpVerify: (code: string) => post<{ detail: string }>('/api/auth/2fa/verify', { code }),
+  totpDisable: (password: string) => post<{ detail: string }>('/api/auth/2fa/disable', { password }),
+  totpStatus: () => get<{ enabled: boolean }>('/api/auth/2fa/status'),
   // User management (admin only) — issue #39
   listUsers: () => get<UserSummary[]>('/api/auth/users'),
   createUser: (data: { username: string; password: string; is_admin: boolean }) =>
@@ -208,6 +213,14 @@ export const servers = {
   restartService: (id: number, unit: string) =>
     post<{ success: boolean; unit: string; stdout: string; stderr: string }>(
       `/api/servers/${id}/restart-service`, { unit }
+    ),
+  holdPackage: (id: number, pkg: string, hold: boolean) =>
+    post<{ success: boolean; package: string; hold: boolean; stdout: string; stderr: string }>(
+      `/api/servers/${id}/hold-package`, { package: pkg, hold }
+    ),
+  bulkHold: (server_ids: number[], pkg: string, hold: boolean) =>
+    post<{ package: string; hold: boolean; results: Record<string, { success: boolean; stdout: string; stderr: string }> }>(
+      '/api/servers/bulk-hold', { server_ids, package: pkg, hold }
     ),
   uploadDeb: (id: number, file: File) => {
     const form = new FormData()
@@ -347,6 +360,85 @@ export const config = {
 
 export const tailscale = {
   status: () => get<import('@/types').TailscaleStatus>('/api/tailscale/status'),
+}
+
+export interface ReleaseCheckResult {
+  current: string
+  latest: string | null
+  url?: string
+  published_at?: string | null
+  update_available: boolean
+  error: string | null
+}
+
+export const releaseCheck = {
+  status: () => get<ReleaseCheckResult>('/api/release-check'),
+}
+
+export interface UpgradeHook {
+  id: number
+  server_id: number | null  // null = global
+  name: string
+  phase: 'pre' | 'post'
+  command: string
+  sort_order: number
+  enabled: boolean
+  created_at: string
+}
+
+export const hooks = {
+  list: () => get<UpgradeHook[]>('/api/hooks'),
+  create: (data: Omit<UpgradeHook, 'id' | 'created_at'>) =>
+    post<UpgradeHook>('/api/hooks', data),
+  update: (id: number, data: Partial<Omit<UpgradeHook, 'id' | 'created_at'>>) =>
+    put<UpgradeHook>(`/api/hooks/${id}`, data),
+  remove: (id: number) => del(`/api/hooks/${id}`),
+}
+
+export interface SshAuditEntry {
+  id: number
+  server_id: number
+  server_name: string
+  started_at: string
+  duration_ms: number | null
+  initiated_by: string
+  command: string
+  exit_code: number | null
+  output_excerpt: string | null
+}
+
+export const reports = {
+  patchCoverage: () => get<{
+    generated_at: string
+    total_enabled_servers: number
+    summary: { checked_in_24h: number; checked_in_7d: number; checked_in_30d: number; pct_24h: number; pct_7d: number; pct_30d: number }
+    servers: { server: string; hostname: string; last_check: string | null; in_24h: boolean; in_7d: boolean; in_30d: boolean }[]
+  }>('/api/reports/patch-coverage'),
+  upgradeSuccessRate: (days = 30) => get<{
+    generated_at: string
+    window_days: number
+    summary: { total_success: number; total_error: number; overall_rate: number | null }
+    servers: { server: string; hostname: string; success: number; error: number; running: number; success_rate: number | null }[]
+  }>(`/api/reports/upgrade-success-rate?days=${days}`),
+  securitySla: (slaDays = 7, windowDays = 90) => get<{
+    generated_at: string
+    sla_days: number
+    window_days: number
+    summary: { in_sla: number; out_of_sla: number; no_security_seen: number; pct_in_sla: number | null }
+    servers: { server: string; hostname: string; first_security_seen: string | null; cleared_at: string | null; days_to_clear: number | null; in_sla: boolean | null }[]
+  }>(`/api/reports/security-sla?sla_days=${slaDays}&window_days=${windowDays}`),
+}
+
+export const sshAudit = {
+  list: (params?: { server_id?: number; page?: number; limit?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.server_id != null) q.set('server_id', String(params.server_id))
+    if (params?.page) q.set('page', String(params.page))
+    if (params?.limit) q.set('limit', String(params.limit))
+    return get<{ total: number; page: number; limit: number; items: SshAuditEntry[] }>(
+      `/api/servers/audit-log${q.toString() ? '?' + q : ''}`
+    )
+  },
 }
 
 export const aptcache = {

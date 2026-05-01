@@ -39,6 +39,27 @@ async def login(
             detail="Invalid credentials",
         )
 
+    # 2FA challenge (issue #18) — if user has TOTP enabled, require a valid code
+    if user.totp_enabled and user.totp_secret_enc:
+        code = (body.totp_code or "").strip()
+        if not code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="2FA code required",
+                headers={"X-2FA-Required": "true"},
+            )
+        try:
+            import pyotp
+            from backend.crypto import decrypt
+            secret = decrypt(user.totp_secret_enc)
+            totp = pyotp.TOTP(secret)
+            if not totp.verify(code, valid_window=1):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="2FA verification failed")
+
     user.last_login = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(user)
@@ -163,6 +184,96 @@ async def revoke_token(
     await db.delete(tok)
     await db.commit()
     return {"detail": "Token revoked"}
+
+
+# ---------------------------------------------------------------------------
+# TOTP 2FA (issue #18)
+# ---------------------------------------------------------------------------
+
+@router.post("/2fa/setup")
+async def totp_setup(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a fresh TOTP secret and provisioning URI for the current user.
+
+    Does NOT enable 2FA — call /2fa/verify with a valid code from the authenticator
+    to confirm enrolment. Subsequent calls overwrite the pending secret.
+    """
+    import pyotp
+    from backend.crypto import encrypt
+    secret = pyotp.random_base32()
+    uri = pyotp.totp.TOTP(secret).provisioning_uri(
+        name=current_user.username,
+        issuer_name="apt-ui",
+    )
+    # Store the pending secret encrypted; totp_enabled stays False until verify
+    res = await db.execute(select(User).where(User.id == current_user.id))
+    user = res.scalar_one()
+    user.totp_secret_enc = encrypt(secret)
+    user.totp_enabled = False
+    await db.commit()
+
+    # Render the URI as a small SVG QR code
+    import io
+    import qrcode
+    import qrcode.image.svg as qsvg
+    img = qrcode.make(uri, image_factory=qsvg.SvgImage, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf)
+    qr_svg = buf.getvalue().decode()
+
+    return {"secret": secret, "uri": uri, "qr_svg": qr_svg}
+
+
+@router.post("/2fa/verify")
+async def totp_verify(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm a TOTP enrolment by submitting a code from the authenticator."""
+    import pyotp
+    from backend.crypto import decrypt
+    code = (body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code required")
+
+    res = await db.execute(select(User).where(User.id == current_user.id))
+    user = res.scalar_one()
+    if not user.totp_secret_enc:
+        raise HTTPException(status_code=400, detail="No pending 2FA setup; call /2fa/setup first")
+
+    secret = decrypt(user.totp_secret_enc)
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    user.totp_enabled = True
+    await db.commit()
+    return {"detail": "2FA enabled"}
+
+
+@router.post("/2fa/disable")
+async def totp_disable(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable 2FA. Requires the current password to confirm."""
+    if not verify_password(body.get("password") or "", current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid password")
+    res = await db.execute(select(User).where(User.id == current_user.id))
+    user = res.scalar_one()
+    user.totp_enabled = False
+    user.totp_secret_enc = None
+    await db.commit()
+    return {"detail": "2FA disabled"}
+
+
+@router.get("/2fa/status")
+async def totp_status(current_user: User = Depends(get_current_user)):
+    return {"enabled": current_user.totp_enabled}
 
 
 # ---------------------------------------------------------------------------

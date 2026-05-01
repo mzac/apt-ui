@@ -40,6 +40,24 @@ def _get_lock(server_id: int) -> asyncio.Lock:
 _PACKAGE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$')
 
 
+async def _load_hooks(server_id: int, phase: str, db: AsyncSession):
+    """Return enabled hooks (global + per-server) for *phase*, ordered by sort_order.
+
+    Issue #29 — global hooks (server_id=NULL) run on every server; per-server
+    hooks add to that. They run sequentially in sort_order, with global hooks
+    interleaved by sort_order.
+    """
+    from backend.models import UpgradeHook
+    res = await db.execute(
+        select(UpgradeHook).where(
+            UpgradeHook.enabled == True,
+            UpgradeHook.phase == phase,
+            (UpgradeHook.server_id == server_id) | (UpgradeHook.server_id.is_(None)),
+        ).order_by(UpgradeHook.sort_order, UpgradeHook.id)
+    )
+    return list(res.scalars().all())
+
+
 def _validate_package_names(packages: list[str]) -> list[str]:
     """Return *packages* unchanged if all names are valid; raise ValueError otherwise.
 
@@ -140,6 +158,16 @@ async def upgrade_server(
                     await send_fn(msg)
 
             try:
+                # Step 0: pre-upgrade hooks (issue #29)
+                pre_hooks = await _load_hooks(server.id, "pre", db)
+                if pre_hooks:
+                    for hook in pre_hooks:
+                        if send_fn:
+                            await send_fn({"type": "output", "data": f"\n→ pre-hook: {hook.name}\n"})
+                        hr = await run_command_stream(server, hook.command, _send, timeout=600)
+                        if hr.exit_code != 0:
+                            raise RuntimeError(f"Pre-hook '{hook.name}' failed (exit {hr.exit_code}); aborting upgrade")
+
                 # Step 1: apt-get update (optional, controlled by preferences)
                 if run_apt_update:
                     if send_fn:
@@ -204,6 +232,21 @@ async def upgrade_server(
                     await send_fn({"type": "error", "data": error_msg})
                 logger.error("Upgrade failed on %s: %s", server.name, error_msg)
             finally:
+                # Post-upgrade hooks always run, success or failure (issue #29)
+                try:
+                    post_hooks = await _load_hooks(server.id, "post", db)
+                    for hook in post_hooks:
+                        if send_fn:
+                            await send_fn({"type": "output", "data": f"\n→ post-hook: {hook.name}\n"})
+                        try:
+                            await run_command_stream(server, hook.command, _send, timeout=600)
+                        except Exception as hexc:
+                            logger.warning("Post-hook '%s' on %s raised: %s", hook.name, server.name, hexc)
+                            if send_fn:
+                                await send_fn({"type": "output", "data": f"  (post-hook error: {hexc})\n"})
+                except Exception as exc:
+                    logger.warning("Loading post-hooks failed on %s: %s", server.name, exc)
+                history.log_output = "".join(log_chunks)[:1_000_000]
                 await db.commit()
                 await db.refresh(history)
 

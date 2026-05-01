@@ -69,7 +69,7 @@ export const useJobStore = create<JobStore>()(
       markSeen: () => set({ unseenCount: 0 }),
     }),
     {
-      name: 'apt-dashboard:jobs',
+      name: 'apt-ui:jobs',
       storage: createJSONStorage(() => sessionStorage),
       // On restore, mark any previously-running jobs as stale
       onRehydrateStorage: () => (state) => {

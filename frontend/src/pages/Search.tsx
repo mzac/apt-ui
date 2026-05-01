@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { servers as serversApi } from '@/api/client'
+import { useAuthStore } from '@/hooks/useAuth'
 
 type Mode = 'exact' | 'contains' | 'starts-with' | 'ends-with' | 'regex'
 
@@ -159,12 +160,14 @@ export default function Search() {
                         <div className="text-text-muted/60 font-mono text-[10px] font-normal">{s.hostname}</div>
                       </th>
                     ))}
+                    <th className="text-right px-3 py-2 text-text-muted font-normal w-32">Bulk hold</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/30">
                   {filteredPackages.map(([name, versions]) => {
                     const versionSet = new Set(Object.values(versions))
                     const diverged = versionSet.size > 1
+                    const installedServerIds = Object.keys(versions).filter(sid => versions[sid] != null).map(Number)
                     return (
                       <tr key={name} className={diverged ? 'bg-amber/5' : ''}>
                         <td className="px-3 py-1.5 text-text-primary sticky left-0 bg-inherit z-10">
@@ -182,6 +185,13 @@ export default function Search() {
                             </td>
                           )
                         })}
+                        <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                          <BulkHoldButtons
+                            packageName={name}
+                            serverIds={installedServerIds}
+                            serverNames={Object.fromEntries(result.servers.map(s => [s.id, s.name]))}
+                          />
+                        </td>
                       </tr>
                     )
                   })}
@@ -191,6 +201,69 @@ export default function Search() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Bulk hold/unhold buttons (issue #49)
+// ---------------------------------------------------------------------------
+
+function BulkHoldButtons({
+  packageName,
+  serverIds,
+  serverNames,
+}: {
+  packageName: string
+  serverIds: number[]
+  serverNames: Record<number, string>
+}) {
+  const { user } = useAuthStore()
+  const [busy, setBusy] = useState<'hold' | 'unhold' | null>(null)
+
+  if (!user?.is_admin) return <span className="text-text-muted/40">—</span>
+  if (serverIds.length === 0) return <span className="text-text-muted/40">—</span>
+
+  async function run(hold: boolean) {
+    const verb = hold ? 'Hold' : 'Unhold'
+    const names = serverIds.map(id => serverNames[id]).slice(0, 5).join(', ')
+    const more = serverIds.length > 5 ? ` and ${serverIds.length - 5} more` : ''
+    if (!confirm(`${verb} ${packageName} across ${serverIds.length} server(s): ${names}${more}?`)) return
+    setBusy(hold ? 'hold' : 'unhold')
+    try {
+      const r = await serversApi.bulkHold(serverIds, packageName, hold)
+      const failed = Object.entries(r.results).filter(([_, v]) => !v.success)
+      if (failed.length > 0) {
+        const lines = failed.map(([sid, v]) => `${serverNames[parseInt(sid)] ?? sid}: ${v.stderr || v.stdout}`)
+        alert(`${verb} failed on ${failed.length} server(s):\n\n${lines.join('\n')}`)
+      } else {
+        alert(`${verb} succeeded on all ${serverIds.length} server(s).`)
+      }
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="inline-flex gap-2 text-[11px]">
+      <button
+        onClick={() => run(true)}
+        disabled={busy !== null}
+        className="text-blue/80 hover:text-blue disabled:opacity-50"
+        title={`apt-mark hold ${packageName} on ${serverIds.length} server(s)`}
+      >
+        {busy === 'hold' ? '…' : 'Hold'}
+      </button>
+      <button
+        onClick={() => run(false)}
+        disabled={busy !== null}
+        className="text-text-muted hover:text-text-primary disabled:opacity-50"
+        title={`apt-mark unhold ${packageName} on ${serverIds.length} server(s)`}
+      >
+        {busy === 'unhold' ? '…' : 'Unhold'}
+      </button>
     </div>
   )
 }

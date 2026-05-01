@@ -160,6 +160,14 @@ async def _gather_stats(server: Server) -> dict:
         "host_ips": "hostname -I 2>/dev/null || ip addr show | grep -oP 'inet \\K[0-9.]+' | tr '\\n' ' ' || echo ''",
         # mtime of /lib/modules/<running-kernel> — close approximation of kernel install date
         "kernel_install_date": "stat -c %Y /lib/modules/$(uname -r) 2>/dev/null || echo ''",
+        # Snapshot capability detection (issue #35) — BTRFS/ZFS root or LXC container
+        "snapshot_capability": (
+            "fs=$(stat -f -c %T / 2>/dev/null || echo unknown); "
+            "if [ \"$fs\" = btrfs ]; then echo btrfs; "
+            "elif [ \"$fs\" = zfs ]; then echo zfs; "
+            "elif [ -f /.dockerenv ] || systemd-detect-virt 2>/dev/null | grep -qE '^(lxc|docker)$'; then echo container; "
+            "else echo none; fi"
+        ),
         # /boot disk usage (separate partition on most distros — kernel buildup fills it)
         "boot_disk": "df -P -BM /boot 2>/dev/null | awk 'NR==2{gsub(\"M\",\"\",$2); gsub(\"M\",\"\",$4); print $2\" \"$4}' || echo ''",
         # Detect apt HTTP proxy (apt-cacher-ng or similar).
@@ -329,6 +337,11 @@ async def _gather_stats(server: Server) -> dict:
             except ValueError:
                 pass
 
+    snap_raw = results.get("snapshot_capability")
+    snapshot_capability = (snap_raw.stdout.strip() if snap_raw and snap_raw.stdout.strip() else None) or None
+    if snapshot_capability not in ("btrfs", "zfs", "container", "none"):
+        snapshot_capability = None
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -348,6 +361,7 @@ async def _gather_stats(server: Server) -> dict:
         "kernel_install_date": kernel_install_date,
         "boot_total_mb": boot_total_mb,
         "boot_free_mb": boot_free_mb,
+        "snapshot_capability": snapshot_capability,
     }
 
 
@@ -535,6 +549,7 @@ async def check_server(
         kernel_install_date=stats.get("kernel_install_date"),
         boot_total_mb=stats.get("boot_total_mb"),
         boot_free_mb=stats.get("boot_free_mb"),
+        snapshot_capability=stats.get("snapshot_capability"),
     )
     db.add(stat_row)
 

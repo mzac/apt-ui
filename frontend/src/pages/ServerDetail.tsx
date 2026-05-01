@@ -924,6 +924,29 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                   ))}
                                 </div>
                               )}
+                              {/* Hold action (issue #26) */}
+                              {!p.is_new && (
+                                <div className="border-t border-border/50 pt-1.5">
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
+                                      if (!confirm(`Hold ${p.name} at version ${p.current_version}? It will be excluded from future upgrades.`)) return
+                                      try {
+                                        const r = await serversApi.holdPackage(serverId, p.name, true)
+                                        if (!r.success) alert(`Hold failed: ${r.stderr || r.stdout}`)
+                                        onRefresh()
+                                        loadPackages()
+                                      } catch (err: unknown) {
+                                        alert((err as Error).message)
+                                      }
+                                    }}
+                                    className="text-blue/80 hover:text-blue text-[11px] font-mono"
+                                    title="Pin this package to its current version (apt-mark hold)"
+                                  >
+                                    📌 Hold this package
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </span>
@@ -984,9 +1007,29 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
       {held.length > 0 && (
         <div>
           <h3 className="text-xs text-text-muted uppercase tracking-wide mb-2">Held Packages ({held.length})</h3>
-          <div className="card p-3 flex flex-wrap gap-1">
+          <p className="text-xs text-text-muted mb-2">These packages are pinned to their current version via <span className="font-mono">apt-mark hold</span> and will not be upgraded automatically.</p>
+          <div className="card p-3 flex flex-wrap gap-1.5">
             {held.map(h => (
-              <span key={h} className="badge bg-blue/10 text-blue border border-blue/30 text-xs font-mono">{h}</span>
+              <span key={h} className="inline-flex items-center gap-1.5 badge bg-blue/10 text-blue border border-blue/30 text-xs font-mono pl-2 pr-1 py-0.5">
+                {h}
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Unhold ${h}? It will be eligible for upgrades again.`)) return
+                    try {
+                      const r = await serversApi.holdPackage(serverId, h, false)
+                      if (!r.success) alert(`Unhold failed: ${r.stderr || r.stdout}`)
+                      onRefresh()
+                      loadPackages()
+                    } catch (e: unknown) {
+                      alert((e as Error).message)
+                    }
+                  }}
+                  className="hover:text-red text-blue/70"
+                  title="Unhold (allow upgrades again)"
+                >
+                  ✕
+                </button>
+              </span>
             ))}
           </div>
         </div>
@@ -1464,6 +1507,25 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               pveupgrade running…
             </span>
           )}
+        </div>
+      )}
+      {!running && server.snapshot_capability && server.snapshot_capability !== 'none' && (
+        <div className="rounded border border-cyan/30 bg-cyan/5 px-3 py-2 text-xs text-cyan flex items-start gap-2">
+          <span>📸</span>
+          <div className="flex-1">
+            <p className="font-medium">Snapshot-capable filesystem detected: <span className="font-mono">{server.snapshot_capability}</span></p>
+            <p className="text-text-muted mt-0.5">
+              {server.snapshot_capability === 'btrfs' && (
+                <>Add a pre-upgrade hook in Settings → Schedule → Hooks with command <span className="font-mono text-cyan">btrfs subvolume snapshot / /.snapshots/apt-ui-$(date +%s)</span> to take a snapshot before each upgrade. (Requires <span className="font-mono">/.snapshots</span> as a writable subvolume.)</>
+              )}
+              {server.snapshot_capability === 'zfs' && (
+                <>Add a pre-upgrade hook with command <span className="font-mono text-cyan">zfs snapshot $(zfs list -H -o name / | head -1)@apt-ui-$(date +%s)</span> to snapshot the root dataset before each upgrade.</>
+              )}
+              {server.snapshot_capability === 'container' && (
+                <>This is a container; rollbacks are typically managed by the host (e.g. <span className="font-mono">pct snapshot</span> for Proxmox LXC) — configure a pre-upgrade hook on the host instead.</>
+              )}
+            </p>
+          </div>
         </div>
       )}
       {!running && (

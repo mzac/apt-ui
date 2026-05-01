@@ -5,6 +5,7 @@ export interface User {
   created_at: string
   last_login: string | null
   is_default_password: boolean
+  totp_enabled: boolean   // issue #18
 }
 
 export interface Tag {
@@ -79,6 +80,7 @@ export interface Server {
   kernel_install_date: string | null     // when the running kernel was installed (issue #44)
   boot_free_mb: number | null            // free MB on /boot (issue #43)
   boot_total_mb: number | null           // total MB on /boot
+  snapshot_capability: 'btrfs' | 'zfs' | 'container' | 'none' | null  // (issue #35)
 }
 
 export interface CveRef {
@@ -156,6 +158,8 @@ export interface ScheduleConfig {
   run_apt_update_before_upgrade: boolean
   conffile_action: string
   reachability_ttl_minutes: number
+  staged_rollout_enabled: boolean        // issue #41
+  ring_promotion_delay_hours: number     // issue #41
 }
 
 export interface NotificationConfig {

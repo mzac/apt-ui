@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { stats as statsApi, servers as serversApi, notifications as notifApi } from '@/api/client'
+import { stats as statsApi, servers as serversApi, notifications as notifApi, sshAudit as sshAuditApi } from '@/api/client'
 import type { UpdateHistory, Server, NotificationLog } from '@/types'
 
 type HistoryItem = UpdateHistory & { server_name: string }
@@ -291,7 +291,7 @@ function NotificationHistory() {
   )
 }
 
-const TABS = ['Upgrade History', 'Notification History'] as const
+const TABS = ['Upgrade History', 'Notification History', 'SSH Audit Log'] as const
 type Tab = typeof TABS[number]
 
 export default function History() {
@@ -319,6 +319,125 @@ export default function History() {
 
       {tab === 'Upgrade History' && <UpdateHistory />}
       {tab === 'Notification History' && <NotificationHistory />}
+      {tab === 'SSH Audit Log' && <SshAuditHistory />}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SSH Audit Log (issue #30)
+// ---------------------------------------------------------------------------
+
+function SshAuditHistory() {
+  const [items, setItems] = useState<import('@/api/client').SshAuditEntry[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [serverList, setServerList] = useState<Server[]>([])
+  const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
+  const [expanded, setExpanded] = useState<number | null>(null)
+  const limit = 100
+
+  useEffect(() => {
+    serversApi.list().then(setServerList).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    setLoading(true)
+    sshAuditApi.list({ server_id: filterServerId, page, limit })
+      .then(r => { setItems(r.items); setTotal(r.total) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [page, filterServerId])
+
+  function relTime(iso: string) {
+    const diff = Date.now() - new Date(iso).getTime()
+    const s = Math.floor(diff / 1000)
+    if (s < 60) return `${s}s ago`
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+    return new Date(iso).toLocaleDateString()
+  }
+
+  const totalPages = Math.ceil(total / limit)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-text-muted font-mono">{total} entries</span>
+        <select
+          className="input w-48 text-sm"
+          value={filterServerId ?? ''}
+          onChange={e => { setFilterServerId(e.target.value ? parseInt(e.target.value) : undefined); setPage(1); setExpanded(null) }}
+        >
+          <option value="">All servers</option>
+          {serverList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-12 text-text-muted text-sm">No SSH commands recorded yet.</div>
+      ) : (
+        <>
+          <div className="card overflow-hidden">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="border-b border-border text-text-muted">
+                  <th className="text-left px-3 py-2 font-normal">When</th>
+                  <th className="text-left px-3 py-2 font-normal">Server</th>
+                  <th className="text-left px-3 py-2 font-normal">Command</th>
+                  <th className="text-left px-3 py-2 font-normal">Exit</th>
+                  <th className="text-left px-3 py-2 font-normal">Duration</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30">
+                {items.map(entry => (
+                  <>
+                    <tr
+                      key={entry.id}
+                      className="hover:bg-surface/50 cursor-pointer"
+                      onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
+                    >
+                      <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={entry.started_at}>{relTime(entry.started_at)}</td>
+                      <td className="px-3 py-1.5">
+                        <Link to={`/servers/${entry.server_id}`} onClick={e => e.stopPropagation()} className="text-cyan hover:underline">
+                          {entry.server_name}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-1.5 text-text-primary truncate max-w-md">{entry.command}</td>
+                      <td className="px-3 py-1.5">
+                        {entry.exit_code === 0
+                          ? <span className="text-green">0</span>
+                          : <span className="text-red">{entry.exit_code ?? '?'}</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-text-muted">{entry.duration_ms != null ? `${entry.duration_ms} ms` : '—'}</td>
+                    </tr>
+                    {expanded === entry.id && entry.output_excerpt && (
+                      <tr className="border-b border-border bg-bg">
+                        <td colSpan={5} className="px-3 py-2">
+                          <p className="text-text-muted text-[10px] uppercase tracking-wide mb-1">Output (first 4 KB)</p>
+                          <pre className="bg-bg/50 rounded p-2 text-[11px] text-text-primary overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto">
+                            {entry.output_excerpt}
+                          </pre>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
+              <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }

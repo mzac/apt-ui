@@ -10,6 +10,7 @@ from pydantic import BaseModel
 class LoginRequest(BaseModel):
     username: str
     password: str
+    totp_code: Optional[str] = None  # required when user has TOTP enabled (issue #18)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -24,6 +25,7 @@ class UserOut(BaseModel):
     created_at: datetime
     last_login: Optional[datetime] = None
     is_default_password: bool = False
+    totp_enabled: bool = False  # issue #18
 
     model_config = {"from_attributes": True}
 
@@ -176,6 +178,7 @@ class ServerOut(BaseModel):
     kernel_install_date: Optional[datetime] = None  # when running kernel was installed (issue #44)
     boot_free_mb: Optional[int] = None              # free MB on /boot (issue #43)
     boot_total_mb: Optional[int] = None             # total MB on /boot
+    snapshot_capability: Optional[str] = None       # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
 
     model_config = {"from_attributes": True}
 

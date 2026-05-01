@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi } from '@/api/client'
-import type { MaintenanceWindow } from '@/api/client'
+import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi, hooks as hooksApi } from '@/api/client'
+import type { MaintenanceWindow, UpgradeHook } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
@@ -60,6 +60,7 @@ export default function Settings() {
         <div className="space-y-6">
           <ScheduleTab />
           <MaintenanceWindowsSection />
+          <UpgradeHooksSection />
         </div>
       )}
       {tab === 'Preferences' && <PreferencesTab />}
@@ -1332,6 +1333,212 @@ function MaintenanceWindowsSection() {
 }
 
 // ---------------------------------------------------------------------------
+// Pre/post-upgrade hooks (issue #29)
+// ---------------------------------------------------------------------------
+
+function UpgradeHooksSection() {
+  const [hooks, setHooks] = useState<UpgradeHook[]>([])
+  const [servers, setServers] = useState<Server[]>([])
+  const [editing, setEditing] = useState<Partial<UpgradeHook> | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function reload() {
+    try {
+      const [h, s] = await Promise.all([hooksApi.list(), serversApi.list()])
+      setHooks(h)
+      setServers(s)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    }
+  }
+  useEffect(() => { reload() }, [])
+
+  function newHook(phase: 'pre' | 'post') {
+    setEditing({
+      server_id: null,
+      name: '',
+      phase,
+      command: '',
+      sort_order: 0,
+      enabled: true,
+    })
+  }
+
+  async function save() {
+    if (!editing) return
+    setError(null)
+    try {
+      if (editing.id) {
+        await hooksApi.update(editing.id, editing as any)
+      } else {
+        await hooksApi.create(editing as any)
+      }
+      setEditing(null)
+      await reload()
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function remove(id: number) {
+    if (!confirm('Delete this hook?')) return
+    await hooksApi.remove(id)
+    await reload()
+  }
+
+  const preHooks = hooks.filter(h => h.phase === 'pre')
+  const postHooks = hooks.filter(h => h.phase === 'post')
+
+  function renderHookList(list: UpgradeHook[], emptyMsg: string) {
+    if (list.length === 0) return <p className="text-xs text-text-muted py-2">{emptyMsg}</p>
+    return (
+      <div className="space-y-1">
+        {list.map(h => {
+          const scope = h.server_id == null
+            ? <span className="text-purple">Global</span>
+            : <span className="text-cyan">{servers.find(s => s.id === h.server_id)?.name ?? `server #${h.server_id}`}</span>
+          return (
+            <div key={h.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-border/30 last:border-0 font-mono">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${h.enabled ? 'bg-green' : 'bg-gray-500'}`} title={h.enabled ? 'enabled' : 'disabled'} />
+              <span className="text-text-primary truncate w-32">{h.name}</span>
+              <span className="text-text-muted shrink-0">{scope}</span>
+              <span className="text-text-muted/70 truncate flex-1" title={h.command}>{h.command}</span>
+              <span className="ml-auto flex gap-2 shrink-0">
+                <button onClick={() => setEditing(h)} className="text-cyan/80 hover:text-cyan">Edit</button>
+                <button onClick={() => remove(h.id)} className="text-red/70 hover:text-red">Delete</button>
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  return (
+    <section className="card p-4 space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-sm font-medium text-text-primary">Pre/Post-Upgrade Hooks</h2>
+        <p className="text-xs text-text-muted mt-0.5">
+          Shell commands run on the managed server before and after an upgrade. A failing pre-hook aborts the upgrade;
+          post-hooks always run. Useful for stopping/restarting services or running smoke tests.
+        </p>
+      </div>
+
+      {error && <p className="text-xs text-red font-mono">{error}</p>}
+
+      <div className="space-y-3">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs uppercase tracking-wide text-text-muted">Pre-upgrade ({preHooks.length})</h3>
+            <button onClick={() => newHook('pre')} className="btn-secondary text-xs">+ Add pre-hook</button>
+          </div>
+          {renderHookList(preHooks, 'No pre-hooks configured.')}
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs uppercase tracking-wide text-text-muted">Post-upgrade ({postHooks.length})</h3>
+            <button onClick={() => newHook('post')} className="btn-secondary text-xs">+ Add post-hook</button>
+          </div>
+          {renderHookList(postHooks, 'No post-hooks configured.')}
+        </div>
+      </div>
+
+      {editing && (
+        <div className="border-t border-border/40 pt-4 mt-3">
+          <h3 className="text-xs uppercase tracking-wide text-text-muted mb-3">
+            {editing.id ? 'Edit hook' : `New ${editing.phase}-hook`}
+          </h3>
+
+          <div className="space-y-4">
+            <div>
+              <label className="label">Name</label>
+              <input
+                type="text"
+                value={editing.name ?? ''}
+                onChange={e => setEditing({ ...editing, name: e.target.value })}
+                className="input text-sm"
+                placeholder="e.g. Stop nginx"
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label className="label">Phase</label>
+              <select
+                value={editing.phase ?? 'pre'}
+                onChange={e => setEditing({ ...editing, phase: e.target.value as 'pre' | 'post' })}
+                className="input text-sm"
+              >
+                <option value="pre">Pre-upgrade (failure aborts)</option>
+                <option value="post">Post-upgrade (always runs)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="label">Applies to</label>
+              <select
+                value={editing.server_id ?? ''}
+                onChange={e => setEditing({ ...editing, server_id: e.target.value ? parseInt(e.target.value) : null })}
+                className="input text-sm"
+              >
+                <option value="">Global — all servers</option>
+                {servers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.hostname})</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="label">Command</label>
+              <textarea
+                value={editing.command ?? ''}
+                onChange={e => setEditing({ ...editing, command: e.target.value })}
+                className="input text-sm font-mono"
+                rows={3}
+                placeholder="systemctl stop nginx"
+              />
+              <p className="text-[10px] text-text-muted mt-1">Runs as the SSH user on the managed server. Use sudo if needed.</p>
+            </div>
+
+            <div>
+              <label className="label">Sort order</label>
+              <input
+                type="number"
+                value={editing.sort_order ?? 0}
+                onChange={e => setEditing({ ...editing, sort_order: parseInt(e.target.value) || 0 })}
+                className="input text-sm w-24"
+              />
+              <p className="text-[10px] text-text-muted mt-1">Lower runs first.</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="hk-enabled"
+                checked={editing.enabled !== false}
+                onChange={e => setEditing({ ...editing, enabled: e.target.checked })}
+                className="w-4 h-4 accent-green"
+              />
+              <label htmlFor="hk-enabled" className="text-sm text-text-muted cursor-pointer select-none">Enabled</label>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-4 mt-4 border-t border-border/30">
+            <button onClick={() => setEditing(null)} className="btn-secondary text-sm">Cancel</button>
+            <button
+              onClick={save}
+              disabled={!editing.name?.trim() || !editing.command?.trim()}
+              className="btn-primary text-sm"
+            >
+              {editing.id ? 'Save changes' : 'Create hook'}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Preferences tab — auto-upgrade, concurrency, retention, auto-tagging
 // ---------------------------------------------------------------------------
 function PreferencesTab() {
@@ -1375,6 +1582,42 @@ function PreferencesTab() {
               <input type="checkbox" checked={form.allow_phased_on_auto ?? false} onChange={e => setForm(f => ({ ...f, allow_phased_on_auto: e.target.checked }))} className="w-4 h-4 accent-amber" />
               Allow phased updates in auto-upgrade
             </label>
+
+            {/* Staged rollout (issue #41) */}
+            <div className="border-t border-border/30 pt-3 space-y-3">
+              <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.staged_rollout_enabled ?? false}
+                  onChange={e => setForm(f => ({ ...f, staged_rollout_enabled: e.target.checked }))}
+                  className="w-4 h-4 accent-cyan"
+                />
+                Use staged rollout (rings)
+              </label>
+              {form.staged_rollout_enabled && (
+                <div className="pl-6 space-y-2">
+                  <p className="text-xs text-text-muted leading-snug">
+                    Auto-upgrade processes servers grouped by their <span className="font-mono">ring:*</span> tag in alphabetical order
+                    (e.g. <span className="font-mono">ring:test</span> → <span className="font-mono">ring:prod</span>).
+                    Servers without a ring tag go in <span className="font-mono">ring:default</span>.
+                    If any server in a ring fails, the rollout aborts before promoting to the next ring.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <label className="label mb-0">Delay between rings</label>
+                    <input
+                      type="number"
+                      className="input w-24"
+                      min={1}
+                      max={168}
+                      value={form.ring_promotion_delay_hours ?? 24}
+                      onChange={e => setForm(f => ({ ...f, ring_promotion_delay_hours: parseInt(e.target.value) || 24 }))}
+                    />
+                    <span className="text-xs text-text-muted">hours</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {cfg.next_upgrade_time && (
               <p className="text-xs text-text-muted">Next auto-upgrade: <span className="font-mono text-cyan">{new Date(cfg.next_upgrade_time).toLocaleString()}</span></p>
             )}
@@ -2130,9 +2373,140 @@ function AccountTab() {
         </form>
       </div>
 
+      <TwoFactorSection />
+
       <ApiTokensSection />
 
       <button onClick={logout} className="btn-danger w-full">Logout</button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 2FA / TOTP (issue #18)
+// ---------------------------------------------------------------------------
+
+function TwoFactorSection() {
+  const { user, setUser } = useAuthStore()
+  const [setupData, setSetupData] = useState<{ secret: string; uri: string; qr_svg: string } | null>(null)
+  const [code, setCode] = useState('')
+  const [pwForDisable, setPwForDisable] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function startSetup() {
+    setError(null)
+    setMsg(null)
+    setBusy(true)
+    try {
+      const data = await auth.totpSetup()
+      setSetupData(data)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function verifyCode(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setBusy(true)
+    try {
+      await auth.totpVerify(code)
+      setMsg('2FA enabled — you will be asked for a code on your next login.')
+      setSetupData(null)
+      setCode('')
+      // Refresh current user so totp_enabled flips
+      const me = await auth.me()
+      setUser(me)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function disable(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setBusy(true)
+    try {
+      await auth.totpDisable(pwForDisable)
+      setMsg('2FA disabled.')
+      setPwForDisable('')
+      const me = await auth.me()
+      setUser(me)
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card p-4 space-y-4">
+      <div>
+        <h2 className="text-sm font-medium text-text-primary">Two-Factor Authentication (TOTP)</h2>
+        <p className="text-xs text-text-muted mt-1">
+          Adds a second login factor — a 6-digit code from an authenticator app (1Password, Authy, Aegis, Google Authenticator, etc.).
+        </p>
+      </div>
+
+      {error && <p className="text-red text-xs">{error}</p>}
+      {msg && <p className="text-green text-xs">{msg}</p>}
+
+      {user?.totp_enabled && !setupData ? (
+        <form onSubmit={disable} className="space-y-3">
+          <p className="text-sm text-green flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green inline-block" />
+            2FA is enabled for this account.
+          </p>
+          <div>
+            <label className="label">Confirm with current password to disable</label>
+            <input
+              type="password"
+              value={pwForDisable}
+              onChange={e => setPwForDisable(e.target.value)}
+              className="input text-sm"
+            />
+          </div>
+          <button type="submit" disabled={busy || !pwForDisable} className="btn-danger text-sm">Disable 2FA</button>
+        </form>
+      ) : setupData ? (
+        <form onSubmit={verifyCode} className="space-y-3">
+          <p className="text-xs text-text-muted">
+            Scan this QR code with your authenticator, or enter the secret manually:
+          </p>
+          <div className="bg-white inline-block rounded p-2" dangerouslySetInnerHTML={{ __html: setupData.qr_svg }} />
+          <p className="text-xs font-mono text-text-muted break-all">
+            Secret: <span className="text-text-primary">{setupData.secret}</span>
+          </p>
+          <div>
+            <label className="label">Enter the 6-digit code from the app</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={6}
+              value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+              className="input text-base font-mono tracking-widest text-center w-40"
+              autoFocus
+              placeholder="000000"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" disabled={busy || code.length !== 6} className="btn-primary text-sm">Enable 2FA</button>
+            <button type="button" onClick={() => { setSetupData(null); setCode('') }} className="btn-secondary text-sm">Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <button onClick={startSetup} disabled={busy} className="btn-primary text-sm">
+          Set up 2FA
+        </button>
+      )}
     </div>
   )
 }

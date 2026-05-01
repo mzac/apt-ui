@@ -1,5 +1,5 @@
 services:
-  apt-dashboard:
+  apt-ui:
     build: .
     ports:
       - "8111:8000"
@@ -15,7 +15,7 @@ services:
       # - LOG_LEVEL=INFO
       # - ENABLE_TERMINAL=true   # Enable interactive SSH shell in the UI (disabled by default)
     volumes:
-      - apt-dashboard-data:/data
+      - apt-ui-data:/data
       # --- Required when using SSH agent (mount the host agent socket) ---
       # - ${SSH_AUTH_SOCK}:/run/ssh-agent.sock:ro
     restart: unless-stopped
@@ -27,4 +27,4 @@ services:
       start_period: 10s
 
 volumes:
-  apt-dashboard-data:
+  apt-ui-data:

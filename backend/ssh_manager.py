@@ -123,13 +123,16 @@ async def run_command(
     Never raises — connection errors are captured as a non-zero exit_code
     with the error text in stderr.
     """
+    import time
+    start = time.time()
+    cr: CommandResult
     try:
         async with asyncssh.connect(**_connect_options(server)) as conn:
             result = await asyncio.wait_for(
                 conn.run(command, check=False),
                 timeout=timeout,
             )
-        return CommandResult(
+        cr = CommandResult(
             stdout=result.stdout or "",
             stderr=result.stderr or "",
             exit_code=result.exit_status if result.exit_status is not None else 1,
@@ -137,19 +140,44 @@ async def run_command(
     except asyncio.TimeoutError:
         msg = f"Command timed out after {timeout}s"
         logger.warning("Server %s — %s", server.hostname, msg)
-        return CommandResult(stdout="", stderr=msg, exit_code=124)
+        cr = CommandResult(stdout="", stderr=msg, exit_code=124)
     except asyncssh.DisconnectError as exc:
         msg = f"SSH disconnected: {exc}"
         logger.warning("Server %s — %s", server.hostname, msg)
-        return CommandResult(stdout="", stderr=msg, exit_code=255)
+        cr = CommandResult(stdout="", stderr=msg, exit_code=255)
     except (asyncssh.ConnectionLost, OSError) as exc:
         msg = f"Connection failed: {exc}"
         logger.warning("Server %s — %s", server.hostname, msg)
-        return CommandResult(stdout="", stderr=msg, exit_code=255)
+        cr = CommandResult(stdout="", stderr=msg, exit_code=255)
     except Exception as exc:
         msg = f"Unexpected SSH error: {exc}"
         logger.exception("Server %s — %s", server.hostname, msg)
-        return CommandResult(stdout="", stderr=msg, exit_code=255)
+        cr = CommandResult(stdout="", stderr=msg, exit_code=255)
+
+    # Audit log (issue #30) — fire-and-forget, never blocks the caller
+    duration_ms = int((time.time() - start) * 1000)
+    asyncio.create_task(_audit_log(server.id, command, cr, duration_ms))
+    return cr
+
+
+async def _audit_log(server_id: int, command: str, result: "CommandResult", duration_ms: int):
+    """Append an SSH audit-log entry. Best-effort; failures are silent."""
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.models import SshAuditLog
+        excerpt = ((result.stdout or "") + (result.stderr or ""))[:4096]
+        async with AsyncSessionLocal() as db:
+            db.add(SshAuditLog(
+                server_id=server_id,
+                command=command[:8192],
+                exit_code=result.exit_code,
+                output_excerpt=excerpt or None,
+                duration_ms=duration_ms,
+                initiated_by="system",
+            ))
+            await db.commit()
+    except Exception as exc:
+        logger.debug("SSH audit log write failed: %s", exc)
 
 
 async def run_command_stream(

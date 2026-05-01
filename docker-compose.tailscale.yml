@@ -1,11 +1,11 @@
-# Tailscale sidecar overlay for apt-dashboard.
+# Tailscale sidecar overlay for apt-ui.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 #
 # Add to .env:
 #   TS_AUTHKEY=tskey-client-...          # from tailscale.com/settings/keys
-#   TS_HOSTNAME=apt-dashboard            # hostname on your tailnet (optional)
+#   TS_HOSTNAME=apt-ui            # hostname on your tailnet (optional)
 #   TS_EXTRA_ARGS=--advertise-tags=tag:container  # optional extra flags
 #
 # How updates work:
@@ -17,10 +17,10 @@
 #   1. Uncomment the TS_SERVE_CONFIG line and the serve-config volume below.
 #   2. The bundled tailscale-serve.json proxies HTTPS :443 → app :8000.
 #      ${TS_CERT_DOMAIN} is resolved at runtime to your node's tailnet DNS name
-#      (e.g. apt-dashboard.your-tailnet.ts.net).
+#      (e.g. apt-ui.your-tailnet.ts.net).
 #
 # Networking:
-#   apt-dashboard joins tailscale's network namespace so traffic flows through
+#   apt-ui joins tailscale's network namespace so traffic flows through
 #   the tailnet. The base compose ports (8111:8000) are cleared below.
 #   To also expose the app on the host IP (bypassing tailscale), uncomment the
 #   ports block on the tailscale service.
@@ -33,12 +33,12 @@
 services:
   tailscale:
     image: tailscale/tailscale:latest
-    container_name: apt-dashboard-tailscale
-    hostname: ${TS_HOSTNAME:-apt-dashboard}
+    container_name: apt-ui-tailscale
+    hostname: ${TS_HOSTNAME:-apt-ui}
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
-      - TS_HOSTNAME=${TS_HOSTNAME:-apt-dashboard}
+      - TS_HOSTNAME=${TS_HOSTNAME:-apt-ui}
       - TS_USERSPACE=${TS_USERSPACE:-false}
       - TS_ACCEPT_DNS=${TS_ACCEPT_DNS:-false}
       - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
@@ -60,7 +60,7 @@ services:
     # ports:
     #   - "8111:8000"
 
-  apt-dashboard:
+  apt-ui:
     # Share tailscale's network namespace — the app is reachable via tailnet.
     network_mode: service:tailscale
     # Clear the ports from the base compose file (requires Docker Compose >= 2.22).

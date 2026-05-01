@@ -102,7 +102,7 @@ async def export_config(
         "notifications": notifications,
     }
     return JSONResponse(content=payload, headers={
-        "Content-Disposition": f'attachment; filename="apt-dashboard-config-{datetime.utcnow().strftime("%Y%m%d")}.json"'
+        "Content-Disposition": f'attachment; filename="apt-ui-config-{datetime.utcnow().strftime("%Y%m%d")}.json"'
     })
 
 
@@ -239,7 +239,7 @@ async def export_servers_csv(
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="apt-dashboard-servers-{datetime.utcnow().strftime("%Y%m%d")}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="apt-ui-servers-{datetime.utcnow().strftime("%Y%m%d")}.csv"'},
     )
 
 

@@ -15,6 +15,9 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # TOTP 2FA (issue #18) — secret stored Fernet-encrypted via backend.crypto
+    totp_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class MaintenanceWindow(Base):
@@ -32,6 +35,47 @@ class MaintenanceWindow(Base):
     start_minutes: Mapped[int] = mapped_column(Integer, nullable=False)  # 0..1439
     end_minutes: Mapped[int] = mapped_column(Integer, nullable=False)    # 0..1439
     days_of_week: Mapped[int] = mapped_column(Integer, default=127)      # bitmask: 127 = all days
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class SshAuditLog(Base):
+    """SSH command audit log (issue #30).
+
+    Records every command apt-ui runs on a managed server. WebSocket streams
+    record a summary entry on completion; one-shot run_command calls record
+    the full output (capped at 4 KB).
+    """
+    __tablename__ = "ssh_audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(Integer, ForeignKey("servers.id"), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    initiated_by: Mapped[str] = mapped_column(Text, nullable=False, default="system")  # username, "scheduler", "system"
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)  # first 4KB of combined output
+
+
+class UpgradeHook(Base):
+    """Pre/post-upgrade hook commands (issue #29).
+
+    server_id is nullable — NULL means a global (fleet-wide) hook.
+    `phase` is 'pre' (run before apt-get) or 'post' (after, regardless of success).
+    `command` is a shell command run on the managed server via SSH.
+    Hooks are run sequentially in `sort_order`; a non-zero exit on a pre-hook
+    aborts the upgrade. Post-hooks are run for both success and failure paths
+    so they can clean up state.
+    """
+    __tablename__ = "upgrade_hooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("servers.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    phase: Mapped[str] = mapped_column(Text, nullable=False)  # 'pre' | 'post'
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
@@ -208,6 +252,7 @@ class ServerStats(Base):
     kernel_install_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # mtime of /lib/modules/<running-kernel> — used for kernel age badge
     boot_free_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)        # free MB on /boot (issue #43)
     boot_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)       # total MB on /boot
+    snapshot_capability: Mapped[str | None] = mapped_column(Text, nullable=True)    # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 
@@ -269,6 +314,9 @@ class ScheduleConfig(Base):
     run_apt_update_before_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
     conffile_action: Mapped[str] = mapped_column(Text, default="confdef_confold")
     reachability_ttl_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    # Staged rollout (issue #41) — group servers by `ring:*` tag and upgrade in order
+    staged_rollout_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ring_promotion_delay_hours: Mapped[int] = mapped_column(Integer, default=24)
     # conffile_action controls what apt-get does when a package ships a new version
     # of a config file that has been locally modified:
     #   confdef_confold — use the package's default answer; if none, keep existing (safest)

@@ -84,6 +84,8 @@ async def _job_auto_upgrade():
         concurrency = cfg.upgrade_concurrency if cfg else 5
         allow_phased = cfg.allow_phased_on_auto if cfg else False
         conffile_action = cfg.conffile_action if cfg else "confdef_confold"
+        staged = cfg.staged_rollout_enabled if cfg else False
+        ring_delay = cfg.ring_promotion_delay_hours if cfg else 24
 
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
@@ -111,6 +113,24 @@ async def _job_auto_upgrade():
         if skipped_for_maintenance:
             logger.info("Auto-upgrade: skipped %d server(s) inside maintenance windows", skipped_for_maintenance)
 
+        # Group by ring tag for staged rollout (issue #41)
+        rings: dict[str, list[Server]] = {}
+        if staged:
+            from backend.models import Tag, ServerTag
+            from sqlalchemy import select as _sel
+            for s in to_upgrade:
+                tag_res = await db.execute(
+                    _sel(Tag.name)
+                    .join(ServerTag, ServerTag.tag_id == Tag.id)
+                    .where(ServerTag.server_id == s.id, Tag.name.like("ring:%"))
+                )
+                ring_tags = [r for (r,) in tag_res.all()]
+                # Use the first matching ring tag, or "default" if none
+                ring = ring_tags[0] if ring_tags else "ring:default"
+                rings.setdefault(ring, []).append(s)
+        else:
+            rings = {"all": to_upgrade}
+
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _do(server):
@@ -125,7 +145,47 @@ async def _job_auto_upgrade():
                     initiated_by="scheduled",
                 )
 
-    await asyncio.gather(*[_do(s) for s in to_upgrade])
+    if not staged:
+        await asyncio.gather(*[_do(s) for s in to_upgrade])
+        return
+
+    # Staged rollout: process rings in alphabetical order, with delays between
+    ring_names = sorted(rings.keys())
+    logger.info("Staged rollout: %d rings to process — %s", len(ring_names), ring_names)
+
+    for i, ring_name in enumerate(ring_names):
+        ring_servers = rings[ring_name]
+        logger.info("Staged rollout: starting %s (%d servers)", ring_name, len(ring_servers))
+        await asyncio.gather(*[_do(s) for s in ring_servers])
+
+        # Check for failures in this ring's upgrade history
+        async with AsyncSessionLocal() as db:
+            from backend.models import UpdateHistory
+            from sqlalchemy import select as _sel
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+            ring_server_ids = [s.id for s in ring_servers]
+            if ring_server_ids:
+                fail_res = await db.execute(
+                    _sel(UpdateHistory).where(
+                        UpdateHistory.server_id.in_(ring_server_ids),
+                        UpdateHistory.started_at >= cutoff,
+                        UpdateHistory.status == "error",
+                    )
+                )
+                failures = list(fail_res.scalars().all())
+                if failures:
+                    logger.error(
+                        "Staged rollout: %s had %d failure(s); aborting promotion to remaining rings",
+                        ring_name, len(failures),
+                    )
+                    return
+
+        # If not the last ring, wait the configured delay before promoting
+        if i < len(ring_names) - 1:
+            sleep_seconds = ring_delay * 3600
+            logger.info("Staged rollout: waiting %dh before next ring", ring_delay)
+            await asyncio.sleep(sleep_seconds)
 
 
 async def _send_event_notifications():
@@ -272,7 +332,7 @@ async def _job_ping_all():
 
 async def _job_log_purge():
     from backend.database import AsyncSessionLocal
-    from backend.models import ScheduleConfig, UpdateCheck, UpdateHistory, ServerStats, NotificationLog
+    from backend.models import ScheduleConfig, UpdateCheck, UpdateHistory, ServerStats, NotificationLog, SshAuditLog
     from sqlalchemy import select, delete
     from datetime import timedelta
 
@@ -288,10 +348,11 @@ async def _job_log_purge():
         history = await db.execute(delete(UpdateHistory).where(UpdateHistory.started_at < cutoff))
         stats = await db.execute(delete(ServerStats).where(ServerStats.recorded_at < cutoff))
         notif_logs = await db.execute(delete(NotificationLog).where(NotificationLog.sent_at < cutoff))
+        ssh_logs = await db.execute(delete(SshAuditLog).where(SshAuditLog.started_at < cutoff))
         await db.commit()
         logger.info(
-            "Log purge: removed %d checks, %d history, %d stats, %d notif-logs older than %d days",
-            checks.rowcount, history.rowcount, stats.rowcount, notif_logs.rowcount, days,
+            "Log purge: removed %d checks, %d history, %d stats, %d notif-logs, %d ssh-audit older than %d days",
+            checks.rowcount, history.rowcount, stats.rowcount, notif_logs.rowcount, ssh_logs.rowcount, days,
         )
 
 

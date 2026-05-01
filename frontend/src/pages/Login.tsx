@@ -6,6 +6,8 @@ import { useAuthStore } from '@/hooks/useAuth'
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [totpCode, setTotpCode] = useState('')
+  const [needs2fa, setNeeds2fa] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const { setUser, user } = useAuthStore()
@@ -22,11 +24,18 @@ export default function Login() {
     setError('')
     setLoading(true)
     try {
-      const u = await auth.login(username, password)
+      const u = await auth.login(username, password, needs2fa ? totpCode : undefined)
       setUser(u)
       navigate('/', { replace: true })
     } catch (err: unknown) {
-      setError((err as Error).message || 'Login failed')
+      const msg = (err as Error).message || 'Login failed'
+      // Backend signals 2FA needed via the error detail (issue #18)
+      if (msg.includes('2FA code required')) {
+        setNeeds2fa(true)
+        setError('')
+      } else {
+        setError(msg)
+      }
     } finally {
       setLoading(false)
     }
@@ -37,7 +46,7 @@ export default function Login() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-green font-mono text-3xl mb-2">⬡</div>
-          <h1 className="font-mono text-xl text-text-primary">apt-dashboard</h1>
+          <h1 className="font-mono text-xl text-text-primary">apt-ui</h1>
           <p className="text-text-muted text-sm mt-1">Fleet update manager</p>
         </div>
 
@@ -70,6 +79,25 @@ export default function Login() {
                 autoComplete="current-password"
               />
             </div>
+
+            {needs2fa && (
+              <div>
+                <label className="block text-sm text-text-muted mb-1">2FA code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={totpCode}
+                  onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                  className="w-full bg-surface-2 border border-border rounded px-3 py-2 text-base font-mono text-text-primary focus:outline-none focus:border-green tracking-widest text-center"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  placeholder="000000"
+                />
+                <p className="text-xs text-text-muted mt-1">Enter the 6-digit code from your authenticator app.</p>
+              </div>
+            )}
 
             {error && (
               <p className="text-red text-sm">{error}</p>

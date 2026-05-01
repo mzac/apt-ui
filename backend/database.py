@@ -160,6 +160,11 @@ async def init_db():
             "ALTER TABLE server_stats ADD COLUMN kernel_install_date DATETIME",
             "ALTER TABLE server_stats ADD COLUMN boot_free_mb INTEGER",
             "ALTER TABLE server_stats ADD COLUMN boot_total_mb INTEGER",
+            "ALTER TABLE users ADD COLUMN totp_secret_enc TEXT",
+            "ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN staged_rollout_enabled BOOLEAN DEFAULT 0",
+            "ALTER TABLE schedule_config ADD COLUMN ring_promotion_delay_hours INTEGER DEFAULT 24",
+            "ALTER TABLE server_stats ADD COLUMN snapshot_capability TEXT",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:

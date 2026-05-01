@@ -269,6 +269,7 @@ async def _build_server_out(
         kernel_install_date=stats_row.kernel_install_date if stats_row else None,
         boot_free_mb=stats_row.boot_free_mb if stats_row else None,
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
+        snapshot_capability=stats_row.snapshot_capability if stats_row else None,
     )
 
 
@@ -927,6 +928,130 @@ async def get_server_health(
         "recent_errors": recent_errors,
         "reboots": reboots,
         "collected_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/bulk-hold")
+async def bulk_hold(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Hold/unhold a package across many servers in parallel (issue #49).
+
+    Body: {"server_ids": [1,2,3], "package": "nginx", "hold": true}
+    """
+    import asyncssh as _asyncssh
+    import re as _re
+    from backend.ssh_manager import _connect_options
+
+    server_ids: list[int] = body.get("server_ids") or []
+    pkg = (body.get("package") or "").strip()
+    hold = bool(body.get("hold", True))
+    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+    if not server_ids:
+        raise HTTPException(status_code=400, detail="server_ids required")
+
+    res = await db.execute(select(Server).where(Server.id.in_(server_ids)))
+    servers_list = res.scalars().all()
+    server_map = {s.id: s for s in servers_list}
+
+    results: dict[str, dict] = {}
+
+    async def _run(server: Server):
+        try:
+            opts = _connect_options(server)
+            async with _asyncssh.connect(**opts) as conn:
+                sudo = "" if server.username == "root" else "sudo "
+                r = await conn.run(
+                    f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}",
+                    timeout=30,
+                )
+                results[str(server.id)] = {
+                    "success": r.exit_code == 0,
+                    "stdout": (r.stdout or "").strip(),
+                    "stderr": (r.stderr or "").strip(),
+                }
+        except Exception as exc:
+            results[str(server.id)] = {"success": False, "stdout": "", "stderr": str(exc)}
+
+    await asyncio.gather(*[_run(server_map[sid]) for sid in server_ids if sid in server_map])
+    return {"package": pkg, "hold": hold, "results": results}
+
+
+@router.get("/audit-log")
+async def get_audit_log(
+    server_id: int | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Paginated SSH audit log (issue #30)."""
+    from backend.models import SshAuditLog
+    from sqlalchemy import func as _func
+    q = select(SshAuditLog)
+    if server_id is not None:
+        q = q.where(SshAuditLog.server_id == server_id)
+    count_q = select(_func.count()).select_from(q.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+    rows = (await db.execute(
+        q.order_by(SshAuditLog.started_at.desc()).offset((page - 1) * limit).limit(limit)
+    )).scalars().all()
+    # Resolve server names in one query
+    sids = list({r.server_id for r in rows})
+    name_map: dict[int, str] = {}
+    if sids:
+        nres = await db.execute(select(Server).where(Server.id.in_(sids)))
+        name_map = {s.id: s.name for s in nres.scalars().all()}
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": [
+            {
+                "id": r.id,
+                "server_id": r.server_id,
+                "server_name": name_map.get(r.server_id, f"#{r.server_id}"),
+                "started_at": r.started_at,
+                "duration_ms": r.duration_ms,
+                "initiated_by": r.initiated_by,
+                "command": r.command,
+                "exit_code": r.exit_code,
+                "output_excerpt": r.output_excerpt,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/{server_id}/hold-package")
+async def hold_package(
+    server_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Hold or unhold a package via apt-mark (issue #26).
+
+    Body: {"package": "nginx", "hold": true | false}
+    """
+    import re as _re
+    server = await _get_server_or_404(server_id, db)
+    pkg = (body.get("package") or "").strip()
+    hold = bool(body.get("hold", True))
+    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+    sudo = "" if server.username == "root" else "sudo "
+    cmd = f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}"
+    result = await run_command(server, cmd, timeout=30)
+    return {
+        "success": result.exit_code == 0,
+        "package": pkg,
+        "hold": hold,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
     }
 
 

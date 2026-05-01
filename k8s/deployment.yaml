@@ -1,13 +1,13 @@
 ---
 # Secret — create once with:
-#   kubectl create secret generic apt-dashboard-secrets \
+#   kubectl create secret generic apt-ui-secrets \
 #     --from-literal=ssh-private-key="$(cat ~/.ssh/id_ed25519)" \
 #     --from-literal=jwt-secret="$(openssl rand -hex 32)" \
 #     --from-literal=ts-authkey="tskey-client-..."  # optional, for Tailscale
 apiVersion: v1
 kind: Secret
 metadata:
-  name: apt-dashboard-secrets
+  name: apt-ui-secrets
   namespace: default
 type: Opaque
 stringData:
@@ -19,7 +19,7 @@ stringData:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: apt-dashboard-data
+  name: apt-ui-data
   namespace: default
 spec:
   accessModes:
@@ -33,23 +33,23 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: apt-dashboard
+  name: apt-ui
   namespace: default
   labels:
-    app: apt-dashboard
+    app: apt-ui
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: apt-dashboard
+      app: apt-ui
   template:
     metadata:
       labels:
-        app: apt-dashboard
+        app: apt-ui
     spec:
       containers:
-        - name: apt-dashboard
-          image: apt-dashboard:latest   # replace with your registry image
+        - name: apt-ui
+          image: apt-ui:latest   # replace with your registry image
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -58,12 +58,12 @@ spec:
             - name: SSH_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: apt-dashboard-secrets
+                  name: apt-ui-secrets
                   key: ssh-private-key
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: apt-dashboard-secrets
+                  name: apt-ui-secrets
                   key: jwt-secret
             - name: TZ
               value: America/Montreal
@@ -116,12 +116,12 @@ spec:
         #     - name: TS_AUTHKEY
         #       valueFrom:
         #         secretKeyRef:
-        #           name: apt-dashboard-secrets
+        #           name: apt-ui-secrets
         #           key: ts-authkey
         #     - name: TS_STATE_DIR
         #       value: /var/lib/tailscale
         #     - name: TS_HOSTNAME
-        #       value: apt-dashboard
+        #       value: apt-ui
         #     - name: TS_USERSPACE
         #       value: "false"
         #     - name: TS_ACCEPT_DNS
@@ -154,29 +154,29 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: apt-dashboard-data
+            claimName: apt-ui-data
         # Uncomment when using the Tailscale sidecar:
         # - name: tailscale-state
         #   persistentVolumeClaim:
-        #     claimName: apt-dashboard-tailscale-state  # create separately, 100Mi is plenty
+        #     claimName: apt-ui-tailscale-state  # create separately, 100Mi is plenty
         # - name: tailscale-socket
         #   emptyDir: {}
         # - name: tailscale-serve-config
         #   configMap:
-        #     name: apt-dashboard-tailscale-serve  # kubectl create configmap ... --from-file=tailscale-serve.json
+        #     name: apt-ui-tailscale-serve  # kubectl create configmap ... --from-file=tailscale-serve.json
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: apt-dashboard
+  name: apt-ui
   namespace: default
   labels:
-    app: apt-dashboard
+    app: apt-ui
 spec:
   type: ClusterIP
   selector:
-    app: apt-dashboard
+    app: apt-ui
   ports:
     - name: http
       port: 8000

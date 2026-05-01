@@ -54,7 +54,7 @@ async def _send_email(cfg: NotificationConfig, subject: str, html_body: str, tex
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = cfg.email_from or cfg.smtp_username or "apt-dashboard@localhost"
+    msg["From"] = cfg.email_from or cfg.smtp_username or "apt-ui@localhost"
     msg["To"] = cfg.email_to
 
     msg.attach(MIMEText(text_body, "plain"))
@@ -132,7 +132,7 @@ async def _send_webhook(cfg: NotificationConfig, event: str, payload: dict):
     if not cfg.webhook_enabled or not cfg.webhook_url:
         return
     body = json.dumps({"event": event, **payload}).encode()
-    headers = {"Content-Type": "application/json", "User-Agent": "apt-dashboard/1.0"}
+    headers = {"Content-Type": "application/json", "User-Agent": "apt-ui/1.0"}
     if cfg.webhook_secret:
         sig = hmac.new(cfg.webhook_secret.encode(), body, hashlib.sha256).hexdigest()
         headers["X-Hub-Signature-256"] = f"sha256={sig}"

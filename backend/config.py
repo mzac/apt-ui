@@ -18,4 +18,4 @@ TZ = os.getenv("TZ", "America/Montreal")
 # Disabled by default — only enable if you trust all dashboard users.
 ENABLE_TERMINAL = os.getenv("ENABLE_TERMINAL", "false").lower() == "true"
 
-APP_VERSION = "1.0.0"
+APP_VERSION = os.getenv("APP_VERSION", "dev")

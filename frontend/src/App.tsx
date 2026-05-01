@@ -11,6 +11,7 @@ import History from '@/pages/History'
 import Templates from '@/pages/Templates'
 import Compare from '@/pages/Compare'
 import Search from '@/pages/Search'
+import Reports from '@/pages/Reports'
 
 export default function App() {
   const { init } = useAuthStore()
@@ -89,6 +90,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Search />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Reports />
               </Layout>
             </RequireAuth>
           }
