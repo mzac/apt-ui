@@ -39,6 +39,8 @@ export interface LatestCheck {
   autoremove_count: number
   reboot_required: boolean
   error_message: string | null
+  kept_back_count: number       // packages blocked by plain apt-get upgrade (need dist-upgrade)
+  new_packages_count: number    // packages installed as new dependencies during upgrade
 }
 
 export interface Server {
@@ -74,6 +76,9 @@ export interface Server {
   is_proxmox: boolean                    // true when os_info starts with "Proxmox VE"
   is_reachable: boolean                  // updated by background TCP ping job (every 5 min)
   last_seen: string | null               // ISO timestamp of last successful TCP connect
+  kernel_install_date: string | null     // when the running kernel was installed (issue #44)
+  boot_free_mb: number | null            // free MB on /boot (issue #43)
+  boot_total_mb: number | null           // total MB on /boot
 }
 
 export interface PackageInfo {

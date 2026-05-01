@@ -17,6 +17,43 @@ class User(Base):
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class MaintenanceWindow(Base):
+    """Time window during which auto-upgrades are blocked (issue #40).
+
+    server_id is nullable — a NULL means a global (fleet-wide) window.
+    days_of_week is a bitmask: bit 0 = Monday, ..., bit 6 = Sunday.
+    Times are stored as minutes-since-midnight in the configured TZ.
+    """
+    __tablename__ = "maintenance_windows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("servers.id"), nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    start_minutes: Mapped[int] = mapped_column(Integer, nullable=False)  # 0..1439
+    end_minutes: Mapped[int] = mapped_column(Integer, nullable=False)    # 0..1439
+    days_of_week: Mapped[int] = mapped_column(Integer, default=127)      # bitmask: 127 = all days
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+
+class ApiToken(Base):
+    """Long-lived API token for automation (issue #38).
+
+    Storage: only the SHA-256 hash of the token is persisted; the user sees
+    the raw value once at creation. Token format: `aptui_<32 url-safe bytes>`.
+    """
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    token_prefix: Mapped[str] = mapped_column(Text, nullable=False)  # e.g. "aptui_abc123" — first 12 chars for display
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class ServerGroup(Base):
     __tablename__ = "server_groups"
 
@@ -168,6 +205,9 @@ class ServerStats(Base):
     eeprom_latest_version: Mapped[str | None] = mapped_column(Text, nullable=True)   # unix timestamp string of latest available version
     host_ips: Mapped[str | None] = mapped_column(Text, nullable=True)               # JSON list of IPs from `hostname -I` — used for Docker host detection
     apt_proxy: Mapped[str | None] = mapped_column(Text, nullable=True)             # apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else None
+    kernel_install_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # mtime of /lib/modules/<running-kernel> — used for kernel age badge
+    boot_free_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)        # free MB on /boot (issue #43)
+    boot_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)       # total MB on /boot
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 

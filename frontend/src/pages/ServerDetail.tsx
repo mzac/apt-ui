@@ -10,6 +10,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import Convert from 'ansi-to-html'
 import StatusDot from '@/components/StatusDot'
 import PackageInstallModal from '@/components/PackageInstallModal'
+import CopySshButton from '@/components/CopySshButton'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
@@ -50,7 +51,7 @@ function applyChunk(lines: string[], chunk: string): string[] {
   return result
 }
 
-const TABS = ['Packages', 'Upgrade', 'Apt Repos', 'History', 'dpkg Log', 'Stats', 'Shell'] as const
+const TABS = ['Packages', 'Upgrade', 'Apt Repos', 'Health', 'History', 'dpkg Log', 'Stats', 'Shell'] as const
 type Tab = typeof TABS[number]
 
 export default function ServerDetail() {
@@ -134,7 +135,10 @@ export default function ServerDetail() {
           <StatusDot status={statusVal as any} size="md" />
           <div>
             <h1 className="font-mono text-lg text-text-primary">{server.name}</h1>
-            <p className="text-text-muted text-xs font-mono">{server.hostname}:{server.ssh_port} · {server.username}</p>
+            <p className="text-text-muted text-xs font-mono flex items-center gap-1.5">
+              {server.hostname}:{server.ssh_port} · {server.username}
+              <CopySshButton username={server.username} hostname={server.hostname} port={server.ssh_port} />
+            </p>
           </div>
           {server.group_name && (
             <span
@@ -232,6 +236,7 @@ export default function ServerDetail() {
       {tab === 'Stats' && <StatsTab serverId={serverId} />}
       {tab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
       {tab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
+      {tab === 'Health' && <HealthTab serverId={serverId} />}
     </div>
   )
 }
@@ -1255,8 +1260,14 @@ function SshShellPanelWrapper({ serverId }: { serverId: number }) {
 const CONTAINER_RUNTIME_PKGS = /^(docker-ce|docker-ce-cli|docker-ce-rootless-extras|docker\.io|containerd|containerd\.io|docker-buildx-plugin|docker-compose-plugin|moby-engine|podman|podman-compose|buildah|runc|crun|lxd|lxc|lxc-utils|lxcfs)$/
 
 function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; server: Server; onRefresh: () => void }) {
-  const [action, setAction] = useState('upgrade')
+  // Auto-default to dist-upgrade when this server has new dependency packages
+  // (e.g. a new kernel) or kept-back packages — plain `apt-get upgrade` would skip them.
+  const serverNeedsDist =
+    (server.latest_check?.kept_back_count ?? 0) > 0 ||
+    (server.latest_check?.new_packages_count ?? 0) > 0
+  const [action, setAction] = useState(serverNeedsDist ? 'dist-upgrade' : 'upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
+  const [rebootIfRequired, setRebootIfRequired] = useState(false)
   const [lines, setLines] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [done, setDone] = useState(false)
@@ -1354,7 +1365,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     const jobId = `upgrade-${serverId}`
     addJob({ id: jobId, type: 'upgrade', label: `Upgrading ${server.name}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
 
-    const ws = createUpgradeWebSocket(serverId, { action, allow_phased: allowPhased }, (msg) => {
+    const ws = createUpgradeWebSocket(serverId, { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired }, (msg) => {
       if (msg.type === 'output') {
         setLines(l => applyChunk(l, msg.data as string))
       } else if (msg.type === 'status') {
@@ -1440,10 +1451,17 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               {action === 'dist-upgrade' && (
                 <p className="text-xs text-amber mt-1">⚠️ dist-upgrade may remove or install packages.</p>
               )}
+              {action === 'upgrade' && serverNeedsDist && (
+                <p className="text-xs text-red mt-1">⚠️ This server has kernel/kept-back packages — plain upgrade will skip them. Use dist-upgrade.</p>
+              )}
             </div>
             <label className="flex items-center gap-2 text-sm text-text-muted">
               <input type="checkbox" checked={allowPhased} onChange={e => setAllowPhased(e.target.checked)} className="w-4 h-4 accent-green" />
               Allow phased updates
+            </label>
+            <label className="flex items-center gap-2 text-sm text-text-muted" title="Reboot the server when /var/run/reboot-required exists after a successful upgrade">
+              <input type="checkbox" checked={rebootIfRequired} onChange={e => setRebootIfRequired(e.target.checked)} className="w-4 h-4 accent-amber" />
+              Reboot if required
             </label>
             <button
               onClick={runAptUpdate}
@@ -2213,6 +2231,130 @@ function AptReposTab({ serverId }: { serverId: number }) {
                 className="bg-black rounded p-3 h-48 overflow-y-auto font-mono text-xs leading-relaxed"
                 dangerouslySetInnerHTML={{ __html: testLines.map(l => ansiConvert.toHtml(l)).join('') }}
               />
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Health tab (issue #42) — failed services, recent errors, recent reboots
+// ---------------------------------------------------------------------------
+
+function HealthTab({ serverId }: { serverId: number }) {
+  const [data, setData] = useState<{
+    failed_services: { unit: string; load: string; active: string; sub: string; description: string }[]
+    recent_errors: string[]
+    reboots: string[]
+    collected_at: string
+  } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [restarting, setRestarting] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const r = await serversApi.health(serverId)
+      setData(r)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch health')
+    } finally {
+      setLoading(false)
+    }
+  }, [serverId])
+
+  useEffect(() => { load() }, [load])
+
+  async function restart(unit: string) {
+    if (!confirm(`Restart ${unit}?`)) return
+    setRestarting(unit)
+    try {
+      const r = await serversApi.restartService(serverId, unit)
+      if (!r.success) alert(`Restart failed: ${r.stderr || r.stdout || 'unknown error'}`)
+      await load()
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    } finally {
+      setRestarting(null)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-text-muted">
+          On-demand SSH probe — failed services, recent boot errors, reboot history.
+        </p>
+        <button onClick={load} disabled={loading} className="btn-secondary text-xs">
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      {error && <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono">{error}</div>}
+
+      {data && (
+        <>
+          <div className="card p-4">
+            <h3 className="text-xs uppercase tracking-wide text-text-muted mb-3">
+              Failed services {data.failed_services.length > 0 && <span className="text-red">({data.failed_services.length})</span>}
+            </h3>
+            {data.failed_services.length === 0 ? (
+              <p className="text-sm text-green">✓ No failed services</p>
+            ) : (
+              <table className="w-full text-xs font-mono">
+                <thead>
+                  <tr className="text-text-muted text-left">
+                    <th className="font-normal py-1">Unit</th>
+                    <th className="font-normal py-1">State</th>
+                    <th className="font-normal py-1">Description</th>
+                    <th className="font-normal py-1"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {data.failed_services.map(s => (
+                    <tr key={s.unit}>
+                      <td className="py-1.5 pr-3 text-text-primary">{s.unit}</td>
+                      <td className="py-1.5 pr-3 text-red">{s.active}/{s.sub}</td>
+                      <td className="py-1.5 pr-3 text-text-muted truncate max-w-md">{s.description}</td>
+                      <td className="py-1.5 text-right">
+                        <button
+                          onClick={() => restart(s.unit)}
+                          disabled={restarting === s.unit}
+                          className="text-cyan/80 hover:text-cyan text-xs"
+                        >
+                          {restarting === s.unit ? '…' : 'Restart'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="card p-4">
+            <h3 className="text-xs uppercase tracking-wide text-text-muted mb-3">Recent boot errors</h3>
+            {data.recent_errors.length === 0 ? (
+              <p className="text-sm text-green">✓ No high-priority errors since last boot</p>
+            ) : (
+              <pre className="bg-bg/50 rounded p-3 text-[11px] font-mono text-text-primary overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto">
+                {data.recent_errors.join('\n')}
+              </pre>
+            )}
+          </div>
+
+          <div className="card p-4">
+            <h3 className="text-xs uppercase tracking-wide text-text-muted mb-3">Reboot history</h3>
+            {data.reboots.length === 0 ? (
+              <p className="text-sm text-text-muted">No data</p>
+            ) : (
+              <pre className="bg-bg/50 rounded p-3 text-[11px] font-mono text-text-muted overflow-x-auto whitespace-pre">
+                {data.reboots.join('\n')}
+              </pre>
             )}
           </div>
         </>

@@ -131,6 +131,10 @@ class LatestCheckOut(BaseModel):
     autoremove_count: int = 0
     reboot_required: bool = False
     error_message: Optional[str] = None
+    # Detected from dist-upgrade dry-run; signals that plain `apt-get upgrade`
+    # will skip these and dist-upgrade is required.
+    kept_back_count: int = 0
+    new_packages_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -169,6 +173,9 @@ class ServerOut(BaseModel):
     is_proxmox: bool = False                      # true when os_info starts with "Proxmox VE"
     is_reachable: bool = True                     # updated by background TCP ping job
     last_seen: Optional[datetime] = None          # timestamp of last successful TCP connect
+    kernel_install_date: Optional[datetime] = None  # when running kernel was installed (issue #44)
+    boot_free_mb: Optional[int] = None              # free MB on /boot (issue #43)
+    boot_total_mb: Optional[int] = None             # total MB on /boot
 
     model_config = {"from_attributes": True}
 
@@ -226,6 +233,7 @@ class UpgradeRequest(BaseModel):
     action: str = "upgrade"  # "upgrade" | "dist-upgrade"
     allow_phased: bool = False
     conffile_action: str = "confdef_confold"  # "confdef_confold" | "confold" | "confnew"
+    reboot_if_required: bool = False  # auto-reboot after successful upgrade if /var/run/reboot-required exists
 
 
 class UpdateHistoryOut(BaseModel):

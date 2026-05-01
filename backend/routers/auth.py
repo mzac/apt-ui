@@ -8,12 +8,13 @@ import bcrypt
 
 from backend.auth import (
     create_access_token,
+    generate_api_token,
     get_current_user,
     hash_password,
     verify_password,
 )
 from backend.database import get_db
-from backend.models import User
+from backend.models import ApiToken, User
 from backend.schemas import ChangePasswordRequest, LoginRequest, UserOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -86,3 +87,78 @@ async def change_password(
     await db.commit()
 
     return {"detail": "Password changed successfully"}
+
+
+# ---------------------------------------------------------------------------
+# API tokens (issue #38)
+# ---------------------------------------------------------------------------
+
+@router.get("/tokens")
+async def list_tokens(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List API tokens for the current user. Token values are NOT returned —
+    only metadata (name, prefix, created/last-used)."""
+    res = await db.execute(
+        select(ApiToken)
+        .where(ApiToken.user_id == current_user.id)
+        .order_by(ApiToken.created_at.desc())
+    )
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "prefix": t.token_prefix,
+            "created_at": t.created_at,
+            "last_used_at": t.last_used_at,
+            "expires_at": t.expires_at,
+        }
+        for t in res.scalars().all()
+    ]
+
+
+@router.post("/tokens")
+async def create_token(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mint a new API token. The raw token is returned ONCE — store it now."""
+    name = (body.get("name") or "").strip()
+    if not name or len(name) > 100:
+        raise HTTPException(status_code=400, detail="Token name required (1-100 chars)")
+    raw, hashed, prefix = generate_api_token()
+    tok = ApiToken(
+        user_id=current_user.id,
+        name=name,
+        token_hash=hashed,
+        token_prefix=prefix,
+    )
+    db.add(tok)
+    await db.commit()
+    await db.refresh(tok)
+    return {
+        "id": tok.id,
+        "name": tok.name,
+        "prefix": tok.token_prefix,
+        "token": raw,  # shown ONCE
+        "created_at": tok.created_at,
+    }
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_token(
+    token_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(
+        select(ApiToken).where(ApiToken.id == token_id, ApiToken.user_id == current_user.id)
+    )
+    tok = res.scalar_one_or_none()
+    if tok is None:
+        raise HTTPException(status_code=404, detail="Token not found")
+    await db.delete(tok)
+    await db.commit()
+    return {"detail": "Token revoked"}

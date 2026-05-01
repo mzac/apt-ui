@@ -35,6 +35,14 @@ npm run build       # tsc type-check + vite build → dist/
 
 There is no test framework configured. Testing is manual.
 
+### Local CI runner
+```bash
+make ci          # Python syntax + import check + frontend build (mirrors GitHub Actions)
+make venv        # Create ./venv and install backend/requirements.txt
+make help        # List all targets
+```
+`make ci` auto-detects a venv at `./venv` or `./.venv`; falls back to system `python3` and skips the import check if FastAPI isn't installed.
+
 ### Docker
 ```bash
 ./build-run.sh                    # build + start + tail logs

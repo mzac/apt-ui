@@ -19,8 +19,19 @@ interface ServerProgress {
 }
 
 export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props) {
-  const [action, setAction] = useState('upgrade')
+  // Auto-default to dist-upgrade when any server has new dependency packages
+  // (e.g. new kernel) or kept-back packages — plain `apt-get upgrade` would skip them.
+  const needsDistUpgrade = servers.some(s =>
+    (s.latest_check?.kept_back_count ?? 0) > 0 ||
+    (s.latest_check?.new_packages_count ?? 0) > 0
+  )
+  const serversNeedingDist = servers.filter(s =>
+    (s.latest_check?.kept_back_count ?? 0) > 0 ||
+    (s.latest_check?.new_packages_count ?? 0) > 0
+  )
+  const [action, setAction] = useState(needsDistUpgrade ? 'dist-upgrade' : 'upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
+  const [rebootIfRequired, setRebootIfRequired] = useState(false)
   const [started, setStarted] = useState(false)
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
@@ -53,7 +64,7 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
       startedAt: Date.now(),
     })
 
-    const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased }, (msg) => {
+    const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired }, (msg) => {
       const sid = msg.server_id as number
       if (!sid) return
 
@@ -124,6 +135,36 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
               This will upgrade <span className="text-amber font-mono">{servers.length} servers</span> ({totalPackages} total packages).
             </p>
 
+            {needsDistUpgrade && (
+              <div className="rounded border border-amber/30 bg-amber/5 px-3 py-2 text-xs space-y-1">
+                <p className="font-medium text-amber">
+                  ⚠ {serversNeedingDist.length} server{serversNeedingDist.length > 1 ? 's' : ''} require dist-upgrade
+                </p>
+                <p className="text-text-muted">
+                  These servers have packages that would be skipped by plain <span className="font-mono">apt-get upgrade</span> —
+                  typically new kernel versions pulled in as dependencies, or packages held back due to new deps.
+                  The mode below has been pre-selected to <span className="font-mono text-amber">dist-upgrade</span> so they install correctly.
+                </p>
+                <details className="text-text-muted/70">
+                  <summary className="cursor-pointer hover:text-text-muted">Affected servers</summary>
+                  <ul className="mt-1 space-y-0.5 font-mono">
+                    {serversNeedingDist.map(s => {
+                      const kb = s.latest_check?.kept_back_count ?? 0
+                      const np = s.latest_check?.new_packages_count ?? 0
+                      return (
+                        <li key={s.id}>
+                          {s.name}{' '}
+                          {kb > 0 && <span className="text-amber">{kb} kept back</span>}
+                          {kb > 0 && np > 0 && <span>, </span>}
+                          {np > 0 && <span className="text-cyan">{np} new</span>}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </details>
+              </div>
+            )}
+
             <div className="space-y-2">
               <label className="label">Upgrade mode</label>
               <div className="flex gap-3">
@@ -137,11 +178,21 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
               {action === 'dist-upgrade' && (
                 <p className="text-xs text-amber">⚠️ dist-upgrade may remove or install packages to resolve dependencies.</p>
               )}
+              {action === 'upgrade' && needsDistUpgrade && (
+                <p className="text-xs text-red">⚠️ Switching to plain upgrade will skip kernel/kept-back packages on the listed servers.</p>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
               <input type="checkbox" id="phased-all" checked={allowPhased} onChange={e => setAllowPhased(e.target.checked)} className="w-4 h-4 accent-green" />
               <label htmlFor="phased-all" className="text-sm text-text-muted">Allow phased updates</label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="reboot-all" checked={rebootIfRequired} onChange={e => setRebootIfRequired(e.target.checked)} className="w-4 h-4 accent-amber" />
+              <label htmlFor="reboot-all" className="text-sm text-text-muted" title="Auto-reboot any server with /var/run/reboot-required after a successful upgrade">
+                Reboot servers if required after upgrade
+              </label>
             </div>
 
             <div className="space-y-1">

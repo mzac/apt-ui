@@ -9,6 +9,7 @@ import { useJobStore } from '@/hooks/useJobStore'
 import StatusDot from '@/components/StatusDot'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
+import CopySshButton from '@/components/CopySshButton'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
 
 function osIcon(osInfo: string | null): string {
@@ -81,14 +82,20 @@ export default function Dashboard() {
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [initialLoaded, setInitialLoaded] = useState(false)
   const [overview, setOverview] = useState<FleetOverview | null>(null)
-  const [activeGroup, setActiveGroup] = useState<number | null>(null)
-  const [activeTag, setActiveTag] = useState<number | null>(null)
-  const [search, setSearch] = useState('')
-  const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>(
-    () => (localStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
+  // Initialise filters from URL query params so views are bookmarkable/shareable (issue #47)
+  const _initialUrl = new URLSearchParams(window.location.search)
+  const [activeGroup, setActiveGroup] = useState<number | null>(
+    _initialUrl.get('group') ? parseInt(_initialUrl.get('group')!) : null,
   )
-  const [groupView, setGroupView] = useState(false)
-  const [statusFilter, setStatusFilter] = useState<string | null>(null)
+  const [activeTag, setActiveTag] = useState<number | null>(
+    _initialUrl.get('tag') ? parseInt(_initialUrl.get('tag')!) : null,
+  )
+  const [search, setSearch] = useState(_initialUrl.get('q') || '')
+  const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>(
+    () => (_initialUrl.get('sort') as any) || (localStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
+  )
+  const [groupView, setGroupView] = useState(_initialUrl.get('view') === 'group')
+  const [statusFilter, setStatusFilter] = useState<string | null>(_initialUrl.get('status') || null)
   const [checking, setChecking] = useState<Set<number>>(new Set())
   const { addJob, updateJob } = useJobStore()
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
@@ -130,6 +137,22 @@ export default function Dashboard() {
   }, [])
 
   usePolling(load, 30_000)
+
+  // Sync filter state to URL query params so views are bookmarkable (issue #47)
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (search) params.set('q', search)
+    if (statusFilter) params.set('status', statusFilter)
+    if (activeGroup != null) params.set('group', String(activeGroup))
+    if (activeTag != null) params.set('tag', String(activeTag))
+    if (sortBy && sortBy !== 'status') params.set('sort', sortBy)
+    if (groupView) params.set('view', 'group')
+    const qs = params.toString()
+    const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname
+    if (window.location.search !== (qs ? `?${qs}` : '')) {
+      window.history.replaceState(null, '', newUrl)
+    }
+  }, [search, statusFilter, activeGroup, activeTag, sortBy, groupView])
 
   // Immediately re-fetch when an operation completes on any server
   useEffect(() => {
@@ -880,11 +903,14 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
             <StatusDot status={status} />
             <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
           </div>
-          <div className="flex items-center font-mono text-xs text-text-muted truncate">
+          <div className="flex items-center font-mono text-xs text-text-muted truncate group/host">
             {reachable === false && <span title="Unreachable" className="w-2 h-2 rounded-full bg-red inline-block mr-1 shrink-0" />}
             {reachable === true && <span title="Reachable" className="w-2 h-2 rounded-full bg-green inline-block mr-1 shrink-0" />}
             {(reachable === null || reachable === undefined) && <span className="w-2 h-2 rounded-full bg-gray-600 inline-block mr-1 shrink-0" />}
             <span className="truncate">{s.hostname}</span>
+            <span className="ml-1.5 opacity-0 group-hover/host:opacity-100 transition-opacity shrink-0" onClick={e => e.stopPropagation()}>
+              <CopySshButton username={s.username} hostname={s.hostname} port={s.ssh_port} />
+            </span>
           </div>
           {s.os_info && (
             <div className="text-xs text-text-muted font-mono truncate">
@@ -970,6 +996,21 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
                 {c.autoremove_count} removable
               </button>
             : null,
+          (() => {
+            // Kernel age badge (issue #44): show when running kernel is >60d old
+            if (!s.kernel_install_date) return null
+            const ageDays = Math.floor((Date.now() - new Date(s.kernel_install_date).getTime()) / 86400000)
+            if (ageDays < 60) return null
+            const colorClass = ageDays >= 180 ? 'text-red' : 'text-amber/70'
+            return <span key="kernel-age" className={colorClass} title={`Running kernel installed ${ageDays} days ago`}>🐧 {ageDays}d</span>
+          })(),
+          (() => {
+            // /boot disk space badge (issue #43): warn at <100MB OR <10% free
+            if (s.boot_free_mb == null || s.boot_total_mb == null) return null
+            const pct = s.boot_total_mb > 0 ? (s.boot_free_mb / s.boot_total_mb) * 100 : 100
+            if (s.boot_free_mb >= 100 && pct >= 10) return null
+            return <span key="boot-low" className="text-red" title={`/boot has only ${s.boot_free_mb} MB free (${pct.toFixed(0)}% of ${s.boot_total_mb} MB) — run autoremove to clear old kernels`}>💾 /boot {s.boot_free_mb}M</span>
+          })(),
         ].filter(Boolean)
 
         if (!shownLabels.length && !overflow && !statusItems.length) return null

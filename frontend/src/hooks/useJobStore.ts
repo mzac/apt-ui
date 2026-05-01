@@ -49,7 +49,6 @@ export const useJobStore = create<JobStore>()(
 
         set((s) => ({
           jobs: s.jobs.map(j => (j.id === id ? { ...j, ...update } : j)),
-          unseenCount: s.unseenCount,  // no amber dot — jobs auto-remove
         }))
 
         if (finishing) {

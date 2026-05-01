@@ -4,6 +4,39 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+### Features
+
+- **Reboot-after-upgrade option** ([#36](https://github.com/mzac/apt-ui/issues/36)) — checkbox in Upgrade tab and Upgrade All modal that auto-reboots a server after a successful upgrade if `/var/run/reboot-required` exists. Triggers the existing post-reboot check job.
+- **API tokens for automation** ([#38](https://github.com/mzac/apt-ui/issues/38)) — long-lived bearer tokens for `curl`/CI/scripts. Settings → Account → API Tokens lets you mint, list, and revoke tokens. Format: `aptui_<32 url-safe bytes>`. Stored as SHA-256 hash; raw value shown only on creation. Coexists with cookie auth.
+- **Disk-space alerts for /boot** ([#43](https://github.com/mzac/apt-ui/issues/43)) — `/boot` free/total MB now collected during checks and surfaced as a red dashboard badge when free < 100 MB or < 10%. Hidden for servers without a separate `/boot` partition.
+- **Kernel age badge** ([#44](https://github.com/mzac/apt-ui/issues/44)) — install date of the running kernel (`mtime /lib/modules/$(uname -r)`) collected during checks. Dashboard card shows "🐧 87d" when the running kernel is older than 60 days; red tint when older than 180 days.
+- **Prometheus /metrics endpoint** ([#45](https://github.com/mzac/apt-ui/issues/45)) — exposes fleet state (`apt_ui_pending_packages`, `apt_ui_servers_reachable`, `apt_ui_kernel_age_days`, `apt_ui_disk_usage_percent`, etc.) for Grafana / VictoriaMetrics scraping. Optional `METRICS_TOKEN` env var enables bearer-token auth.
+- **Fleet-wide package search** ([#46](https://github.com/mzac/apt-ui/issues/46)) — new "Search" page in the top nav. Type a package name and see, across all enabled servers, who has it installed and at which version. Highlights diverging versions with an amber warning. Filter by installed/missing/all.
+- **Saved filter views (URL-synced)** ([#47](https://github.com/mzac/apt-ui/issues/47)) — dashboard filter state (search, group, tag, status, sort, view) syncs to URL query parameters. Bookmark or share specific views; filters survive reload.
+- **Copy SSH command button** ([#48](https://github.com/mzac/apt-ui/issues/48)) — small clipboard icon next to hostname on dashboard cards and Server Detail. One click copies `ssh user@host -p port` to clipboard. Includes `execCommand` fallback for non-secure contexts.
+- **Public/internal status page** ([#50](https://github.com/mzac/apt-ui/issues/50)) — new `/status.json` endpoint returning a compact fleet health snapshot for embedding/dashboards. Disabled by default; enable via `STATUS_PAGE_PUBLIC=true`. Hostnames omitted unless `STATUS_PAGE_SHOW_NAMES=true`.
+- **Service health panel** ([#42](https://github.com/mzac/apt-ui/issues/42)) — new "Health" tab on Server Detail. On-demand SSH probe collects `systemctl --failed`, last 20 boot-priority `journalctl` errors, and recent reboot history. Restart-service button per failed unit. Validated unit name regex prevents shell injection.
+- **Maintenance windows (backend)** ([#40](https://github.com/mzac/apt-ui/issues/40)) — new `maintenance_windows` table + `/api/maintenance/*` CRUD endpoints. Global windows (server_id=NULL) and per-server overrides. Auto-upgrade scheduler skips servers currently inside a deny window. Bitmask days-of-week + minute-of-day start/end; supports midnight-wrap windows. UI in Settings is pending.
+
+### Bug Fixes & Hardening
+
+- **Shell injection (CWE-78)** — added `_validate_package_names()` regex check applied to selective upgrade, autoremove, and template apply endpoints; previously these interpolated user-supplied package names into shell commands.
+- **Telegram notification log false-success** — multi-chunk Telegram messages now correctly log `success=False` if any chunk is rejected by the API; previously logged success even on partial failures.
+- **`_get_lock` race** — switched to `setdefault` for atomic creation of per-server upgrade locks.
+- **`lock.locked()` fast-path race** — replaced check-then-acquire pattern with a `_upgrade_running` set, eliminating the window where two concurrent requests could both pass the "already running" check and queue serially.
+- **Dead `_do` function in `ws_upgrade_all`** — removed identical-but-uncalled function alongside `_do_tracked`.
+- **Daily summary date inconsistency** — both subject and body now use the configured `TZ` instead of mixing local and UTC.
+- **Redundant `startswith` condition** — simplified `line.startswith(" ") or line.startswith("  ")`.
+- **Dead code** — removed unused `PVE_PREFIXES` constant in Compare.tsx and no-op `unseenCount: s.unseenCount` in useJobStore.
+
+### Developer Experience
+
+- **`make ci`** — new Makefile mirrors GitHub Actions checks (Python syntax, backend imports, frontend build). `make venv` bootstraps a Python venv. `make help` lists all targets.
+
+---
+
 ## [2026.04.13-01] — 2026-04-13
 
 ### Features

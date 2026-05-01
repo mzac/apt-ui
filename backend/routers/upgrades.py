@@ -703,6 +703,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         action = params.get("action", "upgrade")
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
+        reboot_if_required = params.get("reboot_if_required", False)
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -724,6 +725,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
                 conffile_action=conffile_action,
                 send_fn=send_fn,
                 run_apt_update=run_apt_update,
+                reboot_if_required=reboot_if_required,
             )
         except WebSocketDisconnect:
             pass
@@ -827,6 +829,7 @@ async def ws_upgrade_all(websocket: WebSocket):
         action = params.get("action", "upgrade")
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
+        reboot_if_required = params.get("reboot_if_required", False)
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -849,27 +852,6 @@ async def ws_upgrade_all(websocket: WebSocket):
                 to_upgrade.append(s)
 
     semaphore = asyncio.Semaphore(concurrency)
-
-    async def _do(server: Server):
-        async with semaphore:
-            async with AsyncSessionLocal() as session:
-                async def send_fn(msg: dict):
-                    msg["server_id"] = server.id
-                    msg["server_name"] = server.name
-                    try:
-                        await websocket.send_json(msg)
-                    except Exception:
-                        pass
-
-                await upgrade_server(
-                    server, session,
-                    action=action,
-                    allow_phased=allow_phased,
-                    conffile_action=conffile_action,
-                    send_fn=send_fn,
-                    run_apt_update=run_apt_update,
-                )
-
     histories: list = []
 
     async def _do_tracked(server: Server):
@@ -891,6 +873,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     send_fn=send_fn,
                     skip_notify=True,  # suppress per-server emails
                     run_apt_update=run_apt_update,
+                    reboot_if_required=reboot_if_required,
                 )
                 histories.append((server, h))
 
@@ -1055,6 +1038,15 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
         pkg_names = [p.package_name for p in template.packages]
         if not pkg_names:
             await websocket.send_json({"type": "error", "data": "Template has no packages"})
+            await websocket.close()
+            return
+
+        # Validate package names to prevent shell injection (CWE-78)
+        from backend.upgrade_manager import _validate_package_names
+        try:
+            _validate_package_names(pkg_names)
+        except ValueError as exc:
+            await websocket.send_json({"type": "error", "data": str(exc)})
             await websocket.close()
             return
 

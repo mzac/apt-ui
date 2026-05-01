@@ -69,6 +69,15 @@ const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 // Auth
 // ---------------------------------------------------------------------------
 
+export interface ApiTokenSummary {
+  id: number
+  name: string
+  prefix: string
+  created_at: string
+  last_used_at: string | null
+  expires_at: string | null
+}
+
 export const auth = {
   login: (username: string, password: string) =>
     post<User>('/api/auth/login', { username, password }),
@@ -76,6 +85,10 @@ export const auth = {
   me: () => get<User>('/api/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
     put('/api/auth/password', { current_password, new_password }),
+  listTokens: () => get<ApiTokenSummary[]>('/api/auth/tokens'),
+  createToken: (name: string) =>
+    post<ApiTokenSummary & { token: string }>('/api/auth/tokens', { name }),
+  revokeToken: (id: number) => del(`/api/auth/tokens/${id}`),
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +177,23 @@ export const servers = {
       packages: Record<string, Record<string, string | null>>
       errors: Record<string, string>
     }>('/api/servers/compare', { server_ids }),
+  searchPackage: (name: string) =>
+    post<{
+      servers: { id: number; name: string; hostname: string }[]
+      results: Record<string, { installed: boolean; version: string | null }>
+      errors: Record<string, string>
+    }>('/api/servers/search-package', { name }),
+  health: (id: number) =>
+    get<{
+      failed_services: { unit: string; load: string; active: string; sub: string; description: string }[]
+      recent_errors: string[]
+      reboots: string[]
+      collected_at: string
+    }>(`/api/servers/${id}/health`),
+  restartService: (id: number, unit: string) =>
+    post<{ success: boolean; unit: string; stdout: string; stderr: string }>(
+      `/api/servers/${id}/restart-service`, { unit }
+    ),
   uploadDeb: (id: number, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -300,7 +330,7 @@ export const aptcache = {
 
 export function createUpgradeWebSocket(
   serverId: number | 'all',
-  params: { action: string; allow_phased: boolean },
+  params: { action: string; allow_phased: boolean; reboot_if_required?: boolean },
   onMessage: (msg: Record<string, unknown>) => void,
   onClose?: () => void,
 ): WebSocket {

@@ -95,6 +95,7 @@ async def _send_telegram(cfg: NotificationConfig, text: str, event_type: str = "
         text = text[split_at:].lstrip("\n")
     chunks.append(text)
 
+    failed_chunks: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             for chunk in chunks:
@@ -105,8 +106,16 @@ async def _send_telegram(cfg: NotificationConfig, text: str, event_type: str = "
                 })
                 if not resp.is_success:
                     logger.error("Telegram API error: %s", resp.text)
-        logger.info("Telegram message sent (%d chunk(s))", len(chunks))
-        await _log_notification("telegram", event_type, summary, success=True)
+                    failed_chunks.append(f"HTTP {resp.status_code}")
+        logger.info("Telegram message sent (%d chunk(s), %d failed)", len(chunks), len(failed_chunks))
+        if failed_chunks:
+            await _log_notification(
+                "telegram", event_type, summary,
+                success=False,
+                error=f"{len(failed_chunks)}/{len(chunks)} chunk(s) rejected: {failed_chunks[0]}",
+            )
+        else:
+            await _log_notification("telegram", event_type, summary, success=True)
     except Exception as exc:
         logger.error("Telegram send failed: %s", exc)
         await _log_notification("telegram", event_type, summary, success=False, error=str(exc))
@@ -149,7 +158,12 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
     if not cfg.daily_summary_enabled:
         return
 
-    today = date.today().isoformat()
+    # Use the configured TZ for both subject date and body timestamp so they
+    # don't drift around midnight UTC (e.g. subject shows Mar 5 while body shows Mar 4).
+    from backend.config import TZ
+    now_local = datetime.now(tz=TZ)
+    today = now_local.date().isoformat()
+    today_str = now_local.strftime("%Y-%m-%d %H:%M %Z")
     subject = f"Apt Dashboard — Daily Summary — {today}"
 
     # Gather fleet state (reuses the shared helper; add held list per server)
@@ -164,7 +178,7 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
                 pass
         sd["held"] = held
 
-    html_body = _build_html_summary(subject, server_data)
+    html_body = _build_html_summary(subject, server_data, today_str)
     text_body = _build_text_summary(subject, server_data)
     telegram_body = _build_telegram_summary(subject, server_data)
 
@@ -199,13 +213,14 @@ def _categorize(server_data: list[dict]):
     return up_to_date, with_updates, with_errors, no_check
 
 
-def _build_html_summary(subject: str, server_data: list[dict]) -> str:  # noqa: C901
+def _build_html_summary(subject: str, server_data: list[dict], today_str: str | None = None) -> str:  # noqa: C901
     up_to_date, with_updates, with_errors, no_check = _categorize(server_data)
     total = len(server_data)
     reboot_servers = [sd for sd in server_data if sd["check"] and sd["check"].reboot_required]
     eeprom_servers = [sd for sd in server_data if sd.get("stats") and sd["stats"].eeprom_update_available in ("update_available", "update_staged")]
     held_servers = [sd for sd in server_data if sd["held"]]
-    today_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    if today_str is None:
+        today_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # ---------------------------------------------------------------------------
     # Fleet overview stat cards (4-up on desktop, 2-up on mobile)

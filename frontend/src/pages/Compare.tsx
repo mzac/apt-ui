@@ -2,9 +2,6 @@ import { useState, useEffect } from 'react'
 import { servers as serversApi } from '@/api/client'
 import type { Server } from '@/types'
 
-// PVE and other well-known package prefixes to filter out noise when in "diff only" mode
-const PVE_PREFIXES = ['pve-', 'proxmox-', 'pve-kernel-', 'pvetest-']
-
 type CompareResult = {
   servers: { id: number; name: string; hostname: string }[]
   packages: Record<string, Record<string, string | null>>

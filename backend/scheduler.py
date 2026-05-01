@@ -88,8 +88,10 @@ async def _job_auto_upgrade():
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
 
-        # Only upgrade servers that have pending updates
+        # Only upgrade servers that have pending updates AND aren't in a maintenance deny window
+        from backend.routers.maintenance import get_active_window_for_server
         to_upgrade = []
+        skipped_for_maintenance = 0
         for s in servers:
             chk_res = await db.execute(
                 select(UpdateCheck)
@@ -99,7 +101,15 @@ async def _job_auto_upgrade():
             )
             chk = chk_res.scalar_one_or_none()
             if chk and chk.status == "success" and chk.packages_available > 0:
+                # Skip servers currently in a maintenance window (issue #40)
+                window = await get_active_window_for_server(db, s.id)
+                if window:
+                    skipped_for_maintenance += 1
+                    logger.info("Auto-upgrade skipping %s — inside maintenance window '%s'", s.name, window.name)
+                    continue
                 to_upgrade.append(s)
+        if skipped_for_maintenance:
+            logger.info("Auto-upgrade: skipped %d server(s) inside maintenance windows", skipped_for_maintenance)
 
     semaphore = asyncio.Semaphore(concurrency)
 

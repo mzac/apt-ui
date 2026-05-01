@@ -1,13 +1,35 @@
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from fastapi import Cookie, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import config
+
+
+# ---------------------------------------------------------------------------
+# API token helpers (issue #38)
+# ---------------------------------------------------------------------------
+
+API_TOKEN_PREFIX = "aptui_"
+
+
+def generate_api_token() -> tuple[str, str, str]:
+    """Mint a new token. Returns (raw_token, sha256_hash, display_prefix).
+
+    The raw token is returned ONCE for display; only the hash is stored.
+    """
+    raw = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    h = hashlib.sha256(raw.encode()).hexdigest()
+    return raw, h, raw[:12]
+
+
+def hash_api_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 _jwt_secret: str | None = None
 
@@ -73,20 +95,51 @@ def decode_token(token: str) -> str:
 
 async def get_current_user(
     apt_dashboard_token: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
 ):
-    """FastAPI dependency — resolves the logged-in User or raises 401."""
+    """FastAPI dependency — resolves the logged-in User or raises 401.
+
+    Accepts either:
+      1. JWT cookie (browser sessions)
+      2. Authorization: Bearer aptui_<token> header (API tokens, issue #38)
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.models import ApiToken, User
+
+    # Path 1: API token via Authorization header
+    if authorization and authorization.lower().startswith("bearer "):
+        raw_token = authorization[7:].strip()
+        if raw_token.startswith(API_TOKEN_PREFIX):
+            token_hash = hash_api_token(raw_token)
+            async with AsyncSessionLocal() as session:
+                tok_res = await session.execute(
+                    select(ApiToken).where(ApiToken.token_hash == token_hash)
+                )
+                tok = tok_res.scalar_one_or_none()
+                if tok is None:
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
+                if tok.expires_at and tok.expires_at < datetime.utcnow():
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API token expired")
+                user_res = await session.execute(select(User).where(User.id == tok.user_id))
+                user = user_res.scalar_one_or_none()
+                if user is None:
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token owner not found")
+                # Update last_used_at (best effort)
+                tok.last_used_at = datetime.utcnow()
+                await session.commit()
+                return user
+
+    # Path 2: JWT cookie (existing behaviour)
     if not apt_dashboard_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
     username = decode_token(apt_dashboard_token)
 
-    # Import here to avoid circular imports at module load
-    from backend.database import AsyncSessionLocal
-    from backend.models import User
+    from backend.models import User as _User
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).where(User.username == username))
+        result = await session.execute(select(_User).where(_User.username == username))
         user = result.scalar_one_or_none()
 
     if user is None:

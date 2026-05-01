@@ -158,6 +158,10 @@ async def _gather_stats(server: Server) -> dict:
         "mem": "free -m 2>/dev/null | awk '/^Mem:/{print $2}' || awk '/^MemTotal:/{printf \"%d\", $2/1024}' /proc/meminfo 2>/dev/null || echo ''",
         # All IPs on the server — used to detect if this machine is the Docker host
         "host_ips": "hostname -I 2>/dev/null || ip addr show | grep -oP 'inet \\K[0-9.]+' | tr '\\n' ' ' || echo ''",
+        # mtime of /lib/modules/<running-kernel> — close approximation of kernel install date
+        "kernel_install_date": "stat -c %Y /lib/modules/$(uname -r) 2>/dev/null || echo ''",
+        # /boot disk usage (separate partition on most distros — kernel buildup fills it)
+        "boot_disk": "df -P -BM /boot 2>/dev/null | awk 'NR==2{gsub(\"M\",\"\",$2); gsub(\"M\",\"\",$4); print $2\" \"$4}' || echo ''",
         # Detect apt HTTP proxy (apt-cacher-ng or similar).
         # `apt-config dump` is the authoritative source; fall back to grepping conf files.
         "apt_proxy": (
@@ -303,6 +307,28 @@ async def _gather_stats(server: Server) -> dict:
     apt_proxy_raw = results.get("apt_proxy")
     apt_proxy = apt_proxy_raw.stdout.strip() if apt_proxy_raw and apt_proxy_raw.stdout.strip() else None
 
+    # Kernel install date — mtime of /lib/modules/<running-kernel> as a unix timestamp
+    kernel_install_date = None
+    kid_raw = results.get("kernel_install_date")
+    if kid_raw and kid_raw.stdout.strip():
+        try:
+            kernel_install_date = datetime.utcfromtimestamp(int(kid_raw.stdout.strip()))
+        except (ValueError, OSError):
+            pass
+
+    # /boot disk usage — "<total_mb> <free_mb>" or empty if /boot isn't a partition
+    boot_total_mb = None
+    boot_free_mb = None
+    boot_raw = results.get("boot_disk")
+    if boot_raw and boot_raw.stdout.strip():
+        parts = boot_raw.stdout.strip().split()
+        if len(parts) == 2:
+            try:
+                boot_total_mb = int(parts[0])
+                boot_free_mb = int(parts[1])
+            except ValueError:
+                pass
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -319,6 +345,9 @@ async def _gather_stats(server: Server) -> dict:
         "eeprom_latest_version": eeprom_latest_version,
         "host_ips": host_ips_json,
         "apt_proxy": apt_proxy,
+        "kernel_install_date": kernel_install_date,
+        "boot_total_mb": boot_total_mb,
+        "boot_free_mb": boot_free_mb,
     }
 
 
@@ -483,6 +512,9 @@ async def check_server(
         eeprom_latest_version=stats.get("eeprom_latest_version"),
         host_ips=stats.get("host_ips"),
         apt_proxy=stats.get("apt_proxy"),
+        kernel_install_date=stats.get("kernel_install_date"),
+        boot_total_mb=stats.get("boot_total_mb"),
+        boot_free_mb=stats.get("boot_free_mb"),
     )
     db.add(stat_row)
 

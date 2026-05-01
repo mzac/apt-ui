@@ -193,6 +193,16 @@ async def _build_server_out(
                 held_list = json.loads(check.held_packages_list)
             except Exception:
                 held_list = []
+        # Count kept-back / new packages from packages_json (set by check_server's dist-upgrade dry-run)
+        kept_back_count = 0
+        new_packages_count = 0
+        if check.packages_json:
+            try:
+                pkg_list = json.loads(check.packages_json)
+                kept_back_count = sum(1 for p in pkg_list if p.get("needs_dist_upgrade"))
+                new_packages_count = sum(1 for p in pkg_list if p.get("is_new"))
+            except Exception:
+                pass
         latest = LatestCheckOut(
             checked_at=check.checked_at,
             status=check.status,
@@ -203,6 +213,8 @@ async def _build_server_out(
             autoremove_count=check.autoremove_count or 0,
             reboot_required=check.reboot_required,
             error_message=check.error_message,
+            kept_back_count=kept_back_count,
+            new_packages_count=new_packages_count,
         )
 
     # New tag system (from server_tags)
@@ -254,6 +266,9 @@ async def _build_server_out(
         is_proxmox=bool(server.os_info and server.os_info.startswith("Proxmox VE")),
         is_reachable=server.is_reachable,
         last_seen=server.last_seen,
+        kernel_install_date=stats_row.kernel_install_date if stats_row else None,
+        boot_free_mb=stats_row.boot_free_mb if stats_row else None,
+        boot_total_mb=stats_row.boot_total_mb if stats_row else None,
     )
 
 
@@ -663,6 +678,69 @@ async def get_reachability(
     return {s.id: _reachability_cache[s.id][0] for s in servers if s.id in _reachability_cache}
 
 
+@router.post("/search-package")
+async def search_package_fleet(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Fleet-wide search: is package X installed on any enabled server?
+
+    Accepts: { "name": "openssl" }
+    Returns: {
+      "servers": [{"id": 1, "name": "...", "hostname": "..."}],
+      "results": {"1": {"installed": true, "version": "1.1.1f-1ubuntu2.20"}, ...},
+      "errors": {"3": "Connection failed"}
+    }
+    """
+    import asyncssh as _asyncssh
+    import re as _re
+    from backend.ssh_manager import _connect_options
+
+    pkg = (body.get("name") or "").strip()
+    # Validate package name (same regex as install endpoint, plus glob char for wildcards)
+    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-*?]*$', pkg):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+
+    res = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers_list = res.scalars().all()
+
+    results: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+
+    async def _query(server: Server):
+        try:
+            opts = _connect_options(server)
+            async with _asyncssh.connect(**opts) as conn:
+                # dpkg-query exits 1 when package isn't installed; suppress with || true
+                r = await conn.run(
+                    f"dpkg-query -W -f='${{Status}}\\t${{Version}}\\n' {pkg!r} 2>/dev/null || true",
+                    timeout=20,
+                )
+                installed = False
+                version: str | None = None
+                for line in (r.stdout or "").splitlines():
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2 and "install ok installed" in parts[0]:
+                        installed = True
+                        version = parts[1].strip() or None
+                        break
+                results[str(server.id)] = {"installed": installed, "version": version}
+        except Exception as exc:
+            errors[str(server.id)] = str(exc)
+
+    await asyncio.gather(*[_query(s) for s in servers_list])
+
+    return {
+        "servers": [
+            {"id": s.id, "name": s.name, "hostname": s.hostname}
+            for s in servers_list
+        ],
+        "results": results,
+        "errors": errors,
+    }
+
+
 @router.post("/compare")
 async def compare_server_packages(
     body: dict,
@@ -749,6 +827,88 @@ async def test_server_connection(
     if result.success:
         return {"success": True, "detail": "Connection successful"}
     return {"success": False, "detail": result.stderr or "Connection failed"}
+
+
+@router.get("/{server_id}/health")
+async def get_server_health(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Service health snapshot (issue #42).
+
+    On-demand SSH probe — not part of the regular check, since this is an
+    optional view that adds SSH calls. Returns:
+      - failed_services: list of failed systemd units
+      - recent_errors: last 20 boot-priority error lines from journalctl
+      - reboots: last 5 reboots from `last reboot`
+    """
+    server = await _get_server_or_404(server_id, db)
+    cmd = (
+        "echo '__FAILED__'; "
+        "systemctl --failed --no-legend --plain --no-pager 2>/dev/null | head -50; "
+        "echo '__ERRORS__'; "
+        f"{('' if server.username == 'root' else 'sudo ')}journalctl -p err -b --no-pager -n 20 2>/dev/null || echo '(journalctl unavailable)'; "
+        "echo '__REBOOTS__'; "
+        "last reboot 2>/dev/null | head -5 | grep -v '^$'"
+    )
+    result = await run_command(server, cmd, timeout=20)
+
+    failed_services: list[dict] = []
+    recent_errors: list[str] = []
+    reboots: list[str] = []
+    section = None
+    for line in (result.stdout or "").splitlines():
+        if line == "__FAILED__":
+            section = "failed"; continue
+        if line == "__ERRORS__":
+            section = "errors"; continue
+        if line == "__REBOOTS__":
+            section = "reboots"; continue
+        if section == "failed" and line.strip():
+            parts = line.split(None, 4)
+            if len(parts) >= 4:
+                failed_services.append({
+                    "unit": parts[0],
+                    "load": parts[1],
+                    "active": parts[2],
+                    "sub": parts[3],
+                    "description": parts[4] if len(parts) > 4 else "",
+                })
+        elif section == "errors" and line.strip():
+            recent_errors.append(line)
+        elif section == "reboots" and line.strip():
+            reboots.append(line)
+
+    return {
+        "failed_services": failed_services,
+        "recent_errors": recent_errors,
+        "reboots": reboots,
+        "collected_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/{server_id}/restart-service")
+async def restart_service(
+    server_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Restart a systemd service (issue #42)."""
+    import re as _re
+    server = await _get_server_or_404(server_id, db)
+    unit = (body.get("unit") or "").strip()
+    if not unit or not _re.match(r'^[a-zA-Z0-9@.\-_:]+\.(service|socket|timer|target|path|mount)$', unit):
+        raise HTTPException(status_code=400, detail="Invalid unit name")
+    sudo = "" if server.username == "root" else "sudo "
+    result = await run_command(server, f"{sudo}systemctl restart {unit}", timeout=30)
+    return {
+        "success": result.exit_code == 0,
+        "unit": unit,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
 
 
 @router.post("/{server_id}/auto-security-updates")

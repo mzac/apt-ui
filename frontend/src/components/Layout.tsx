@@ -119,6 +119,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/history', label: 'History' },
     { to: '/templates', label: 'Templates' },
     { to: '/compare', label: 'Compare' },
+    { to: '/search', label: 'Search' },
     { to: '/settings', label: 'Settings' },
   ]
 

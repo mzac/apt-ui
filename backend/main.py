@@ -101,6 +101,9 @@ from backend.routers import aptcache as aptcache_router
 from backend.routers import tailscale as tailscale_router
 from backend.routers import dpkg_log as dpkg_log_router
 from backend.routers import apt_repos as apt_repos_router
+from backend.routers import metrics as metrics_router
+from backend.routers import status_page as status_page_router
+from backend.routers import maintenance as maintenance_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -117,6 +120,9 @@ app.include_router(aptcache_router.router)
 app.include_router(tailscale_router.router)
 app.include_router(dpkg_log_router.router)
 app.include_router(apt_repos_router.router)
+app.include_router(metrics_router.router)
+app.include_router(status_page_router.router)
+app.include_router(maintenance_router.router)
 
 
 @app.get("/api/config/features")

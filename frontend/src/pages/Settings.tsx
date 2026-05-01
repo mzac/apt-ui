@@ -1585,7 +1585,118 @@ function AccountTab() {
         </form>
       </div>
 
+      <ApiTokensSection />
+
       <button onClick={logout} className="btn-danger w-full">Logout</button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// API tokens (issue #38)
+// ---------------------------------------------------------------------------
+
+function ApiTokensSection() {
+  const [tokens, setTokens] = useState<import('@/api/client').ApiTokenSummary[]>([])
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [justCreated, setJustCreated] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function reload() {
+    try {
+      setTokens(await auth.listTokens())
+    } catch {
+      setTokens([])
+    }
+  }
+
+  useEffect(() => { reload() }, [])
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setJustCreated(null)
+    if (!newName.trim()) {
+      setError('Name required')
+      return
+    }
+    setCreating(true)
+    try {
+      const t = await auth.createToken(newName.trim())
+      setJustCreated(t.token)
+      setNewName('')
+      await reload()
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function revoke(id: number) {
+    if (!confirm('Revoke this token? Any scripts using it will stop working.')) return
+    await auth.revokeToken(id)
+    await reload()
+  }
+
+  function copyToken() {
+    if (justCreated && navigator.clipboard) {
+      navigator.clipboard.writeText(justCreated).catch(() => {})
+    }
+  }
+
+  return (
+    <div className="card p-4 space-y-4">
+      <div>
+        <h2 className="text-sm font-medium text-text-primary">API Tokens</h2>
+        <p className="text-xs text-text-muted mt-1">
+          Long-lived bearer tokens for automation. Use as <span className="font-mono">Authorization: Bearer &lt;token&gt;</span>.
+        </p>
+      </div>
+
+      {justCreated && (
+        <div className="rounded border border-amber/40 bg-amber/5 p-3 space-y-2">
+          <p className="text-xs text-amber font-medium">Copy this token now — it will not be shown again.</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 font-mono text-xs text-text-primary bg-bg/50 p-2 rounded break-all select-all">{justCreated}</code>
+            <button onClick={copyToken} className="btn-secondary text-xs">Copy</button>
+          </div>
+          <button onClick={() => setJustCreated(null)} className="text-xs text-text-muted hover:text-text-primary">Dismiss</button>
+        </div>
+      )}
+
+      <form onSubmit={create} className="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="Token name (e.g. ci-bot)"
+          value={newName}
+          onChange={e => setNewName(e.target.value)}
+          className="input flex-1 text-sm"
+          maxLength={100}
+        />
+        <button type="submit" disabled={creating || !newName.trim()} className="btn-primary text-sm">
+          {creating ? '…' : 'Create'}
+        </button>
+      </form>
+      {error && <p className="text-red text-xs">{error}</p>}
+
+      {tokens.length === 0 ? (
+        <p className="text-xs text-text-muted">No tokens yet.</p>
+      ) : (
+        <div className="space-y-1">
+          {tokens.map(t => (
+            <div key={t.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-border/30 last:border-0">
+              <span className="font-mono text-text-primary truncate flex-1">{t.name}</span>
+              <span className="font-mono text-text-muted">{t.prefix}…</span>
+              <span className="text-text-muted/70 hidden sm:inline" title={t.last_used_at ?? 'never used'}>
+                {t.last_used_at ? `used ${new Date(t.last_used_at).toLocaleDateString()}` : 'unused'}
+              </span>
+              <button onClick={() => revoke(t.id)} className="text-red/70 hover:text-red">Revoke</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -157,6 +157,10 @@ async def init_db():
             "ALTER TABLE server_stats ADD COLUMN apt_proxy TEXT",
             "ALTER TABLE servers ADD COLUMN is_reachable BOOLEAN DEFAULT 1",
             "ALTER TABLE servers ADD COLUMN last_seen DATETIME",
+            "ALTER TABLE server_stats ADD COLUMN kernel_install_date DATETIME",
+            "ALTER TABLE server_stats ADD COLUMN boot_free_mb INTEGER",
+            "ALTER TABLE server_stats ADD COLUMN boot_total_mb INTEGER",
+            # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:
             try:
