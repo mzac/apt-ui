@@ -14,7 +14,7 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 
 ### Dashboard & Fleet View
 - **Fleet overview** — server card grid with update counts, security update highlights (shown in red), reboot-required and held-package badges, staleness indicators, and hardware stats at a glance; cards show colour-coded group/tag labels (capped at 4) and a plain-text actionable status strip (proxy, docker host, reboot required, eeprom update, auto-security disabled, held/removable package counts)
-- **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly; clicking the Updates or Security count opens a fleet-wide pending updates modal
+- **Fleet summary bar** — counts for updates, security issues, reboots required, autoremove candidates, and unprotected hosts; clickable filters narrow the card grid instantly; clicking the Updates or Security count opens a fleet-wide pending updates modal; clicking the Autoremove count opens the Autoremove All fleet operation
 - **Fleet-wide pending updates modal** — lists every pending package across all servers grouped by server; security packages first (🔒) with version deltas; phased-update badges; fetched on demand
 - **Check All / Refresh All** — Check All runs `apt-get update` then reports upgrades; Refresh All reads the existing local apt cache without hitting upstream repositories (faster); hover tooltips explain the difference
 - **Server groups & tags** — colour-coded groups (servers can belong to multiple); freeform tags with auto-tagging by OS and virtualisation type
@@ -24,10 +24,12 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **Dark/light theme** — toggle in the top nav; preference persisted in `localStorage`
 - **Version in footer** — running app version displayed in the page footer; baked in at Docker build time from the release tag
 - **GitHub link in nav** — quick link to the repository from the top navigation bar
+- **New release banner** — cyan dismissable banner when a newer apt-ui release is available on GitHub; polls every 6 hours
 
 ### Package Management
 - **Upgradable packages** — full list with version deltas, repository source, security flag, and dedicated phased-update column; hover tooltips show package description and reboot likelihood
 - **Selective upgrades** — choose individual packages to upgrade rather than upgrading everything
+- **Held package management** — hold or unhold individual packages directly from the Packages tab; held packages are listed with ✕ unhold buttons
 - **New dependency detection** — during every check, `apt-get dist-upgrade --dry-run` runs in parallel to detect packages that will be installed as new dependencies (e.g. a new kernel version triggered by upgrading `linux-generic`); these appear in a dedicated "New Packages" section with an amber banner directing to the dist-upgrade action; packages kept back by plain upgrade are flagged with a "kept back" badge
 - **Upgrade dry-run** — preview exactly what `apt-get upgrade` would change before committing
 - **Live upgrade terminal** — stream `apt-get upgrade` output in real time via WebSocket; carriage-return progress lines update in place
@@ -42,7 +44,12 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 ### History & Audit
 - **Upgrade history** — per-server and fleet-wide log of every upgrade run; filterable by server and status; full terminal output expandable per run
 - **Notification history** — every outbound notification (email, Telegram, webhook) is logged and visible in History → Notification History; shows channel, event type, summary, and success/failure
+- **SSH command audit log** — every SSH command dispatched by the backend is recorded (command, exit code, duration, output excerpt); accessible as a sub-tab in the History page
 - **dpkg log** — "dpkg Log" tab parses `/var/log/dpkg.log` and all rotated archives (including `.gz`) on demand; filterable by package name, action type, and time window; colour-coded install / upgrade / remove / purge badges
+- **Fleet upgrade reports** — Reports page with per-server and fleet-wide upgrade activity summaries; CSV export
+
+### Package Search
+- **Fleet-wide package search** — Search page lets you type a package name and see which servers have it installed and at which version; highlights version divergence; filter by installed/missing/all; exact and prefix search modes
 
 ### Server Detail
 - **OS & virt detection** — detects Proxmox VE, Armbian, Ubuntu, Debian, Raspbian; detects bare-metal / VM / LXC / Docker via `systemd-detect-virt`
@@ -59,10 +66,14 @@ A lightweight, self-hosted alternative to AWX / Ansible Tower focused on `apt` p
 - **SSH key generation** — generate a dedicated Ed25519 key pair for a server directly from the Add Server form; private key is auto-populated and the public key is displayed with a one-click Copy button
 - **Per-server SSH key** — highlighted section with 🔑 icon makes it easy to spot when adding a server
 - **Bulk delete servers** — multi-select checkboxes in Settings → Servers with a floating bulk-action bar for deleting multiple servers at once; header checkbox with indeterminate state for select-all
+- **Multi-user management** — Users tab in Settings lets admins create, edit, and delete user accounts and assign admin role; RBAC enforcement prevents non-admin users from accessing admin-only pages
+- **TOTP two-factor authentication** — time-based OTP (Google Authenticator, Authy, etc.) with QR enrolment in Settings → Account; login flow prompts for a 6-digit code when 2FA is enabled
 
 ### Automation & Scheduling
 - **Scheduled checks** — configurable cron schedule for automatic fleet-wide update checks
 - **Auto-upgrade** — optional hands-off mode to apply updates on a schedule (disabled by default)
+- **Maintenance windows** — define time windows when auto-upgrades are blocked; global or per-server; bitmask days-of-week + minute-of-day with midnight-wrap support; managed in Settings → Schedule
+- **Pre/post-upgrade hooks** — shell commands that run before or after every upgrade; pre-hook failure aborts the upgrade; global or per-server scope; managed in Settings → Schedule
 - **Background job indicator** — bell icon in the top nav tracks running and recently completed jobs; click to return to a running job
 
 ### Notifications
@@ -184,6 +195,10 @@ All runtime configuration (SMTP, Telegram, schedules, server list) is managed th
 | `TZ` | `America/Montreal` | Timezone for scheduled jobs |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `ENABLE_TERMINAL` | `false` | Set to `true` to enable the interactive SSH shell terminal in the UI. Only enable if you trust all dashboard users. |
+| `METRICS_TOKEN` | — | Optional bearer token to protect the `/metrics` endpoint. If unset the endpoint is unauthenticated. |
+| `STATUS_PAGE_PUBLIC` | `false` | Set to `true` to enable the unauthenticated `/status.json` fleet health endpoint. |
+| `STATUS_PAGE_SHOW_NAMES` | `false` | Include server names (not hostnames) in `/status.json` output. Only meaningful when `STATUS_PAGE_PUBLIC=true`. |
+| `STATUS_PAGE_TITLE` | `apt-ui Fleet Status` | Custom title returned by `/status.json`. |
 
 ---
 
@@ -301,7 +316,7 @@ uvicorn backend.main:app --reload --port 8000
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev   # Vite dev server on :5173, proxies /api/* to :8000
 ```
 
@@ -312,12 +327,12 @@ npm run dev   # Vite dev server on :5173, proxies /api/* to :8000
 ```mermaid
 graph TB
     subgraph browser["Browser"]
-        SPA["React 18 SPA  —  Vite · TypeScript · Tailwind\n7 pages · 6 components · Zustand state"]
+        SPA["React 18 SPA  —  Vite · TypeScript · Tailwind\n9 pages · Zustand state"]
     end
 
     subgraph container["Docker Container  (:8000)"]
         direction TB
-        API["FastAPI  —  14 routers · 50+ REST endpoints · 17 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
+        API["FastAPI  —  21 routers · 60+ REST endpoints · 16 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
         BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook · Notification Log"]
         DB[("SQLite  /data/apt-ui.db\n14 tables · 40 migrations")]
         SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]

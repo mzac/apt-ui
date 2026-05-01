@@ -17,10 +17,10 @@ graph TB
     subgraph container["Docker Container  (:8000)"]
         direction TB
 
-        subgraph api_layer["FastAPI  —  14 Routers"]
+        subgraph api_layer["FastAPI  —  21 Routers"]
             direction LR
-            REST["REST API\n50+ endpoints\napt_repos · aptcache · auth\nconfig_io · dpkg_log · groups\nnotifications · scheduler\nservers · stats · tags\ntailscale · templates · upgrades"]
-            WS["WebSocket  (17 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nauto-security-updates\neeprom-update · apt-proxy\npveupgrade · shell\ntemplate-apply · apt-repos-test"]
+            REST["REST API\n60+ endpoints\napt_repos · aptcache · auth\nconfig_io · dpkg_log · groups\nhooks · maintenance · metrics\nnotifications · release_check\nreports · scheduler · servers\nstats · status_page · tags\ntailscale · templates · updates\nupgrades"]
+            WS["WebSocket  (16 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nautoremove-all\nauto-security-updates\neeprom-update · apt-proxy\npveupgrade · shell\ntemplate-apply · apt-repos-test"]
         end
 
         subgraph background["Background Services"]
@@ -32,7 +32,7 @@ graph TB
         end
 
         subgraph data_layer["Data Layer"]
-            DB[("SQLite\n/data/apt-ui.db\n────────────\n14 tables · 40 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log")]
+            DB[("SQLite\n/data/apt-ui.db\n────────────\n20 tables · 52 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log\nmaintenance_windows · upgrade_hooks\nssh_audit_log · api_tokens")]
             CRYPTO["Fernet Encryption\nAES-128-CBC + HMAC-SHA256\nPer-server SSH keys in DB\nKey: SHA-256(ENCRYPTION_KEY)\nfallback → JWT_SECRET"]
         end
 
@@ -102,13 +102,15 @@ The frontend is a **React 18 SPA** built with Vite and TypeScript, served as sta
 
 | Page | Path | Primary purpose |
 |---|---|---|
-| Login | `/login` | JWT authentication, default-password banner |
+| Login | `/login` | JWT authentication, 2FA code input, default-password banner |
 | Dashboard | `/` | Fleet overview, server card grid, group filters, bulk actions |
-| Server Detail | `/servers/:id` | Packages · Upgrade · Apt Repos · History · dpkg Log · Stats · Shell |
-| Settings | `/settings` | Schedule, notifications, server/group management, backup, account |
-| History | `/history` | Fleet-wide upgrade history + notification history (sub-tabs) |
+| Server Detail | `/servers/:id` | Packages · Upgrade · Health · Apt Repos · History · dpkg Log · Stats · Shell |
+| Settings | `/settings` | Schedule, hooks, maintenance windows, notifications, users, server/group management, account |
+| History | `/history` | Upgrade history · Notification history · SSH audit log (sub-tabs) |
 | Templates | `/templates` | Named package sets; apply to one or more servers |
 | Compare | `/compare` | Side-by-side installed package comparison across multiple servers |
+| Search | `/search` | Fleet-wide package search with installed/missing filter and version divergence |
+| Reports | `/reports` | Per-server and fleet-wide upgrade activity reports; CSV export |
 
 ---
 
@@ -122,12 +124,12 @@ FastAPI handles all HTTP traffic on port 8000 — both the REST API and static f
 
 | Router | Prefix | Key responsibility |
 |---|---|---|
-| `auth` | `/api/auth/` | Login · logout · me · change-password |
-| `servers` | `/api/servers/` | CRUD · SSH test · reboot · check-all · reachability |
+| `auth` | `/api/auth/` | Login · logout · me · change-password · TOTP setup/verify/disable · API token CRUD |
+| `servers` | `/api/servers/` | CRUD · SSH test · reboot · check-all · reachability · hold/unhold packages |
 | `groups` | `/api/groups/` | Server group CRUD |
 | `tags` | `/api/tags/` | Tag CRUD |
 | `updates` | `/api/servers/` | Trigger check · fetch packages |
-| `upgrades` | `/api/` | Upgrade · selective upgrade · install · .deb install · 15 WebSocket streams |
+| `upgrades` | `/api/` | Upgrade · selective upgrade · install · .deb install · 16 WebSocket streams |
 | `stats` | `/api/` | Fleet overview · paginated history |
 | `scheduler` | `/api/scheduler/` | Read/update schedule config; reconfigures APScheduler jobs live |
 | `notifications` | `/api/notifications/` | Read/update notification config; test email/Telegram; detect chat ID |
@@ -136,7 +138,13 @@ FastAPI handles all HTTP traffic on port 8000 — both the REST API and static f
 | `aptcache` | `/api/aptcache/` | apt-cacher-ng server management · live stats |
 | `tailscale` | `/api/tailscale/` | Query tailscaled Unix socket for connection status |
 | `dpkg_log` | `/api/servers/` | On-demand dpkg.log + rotated archive parsing |
-| `apt_repos` | `/api/servers/` | Read/write/delete apt source files; stream apt-get update |
+| `apt_repos` | `/api/servers/` | Read/write/delete apt source files; stream apt-get update via WebSocket |
+| `maintenance` | `/api/maintenance/` | Maintenance window CRUD (global + per-server) |
+| `hooks` | `/api/hooks/` | Pre/post-upgrade hook CRUD |
+| `metrics` | `/metrics` | Prometheus-format fleet metrics (optional bearer-token auth) |
+| `status_page` | `/status.json` | Public fleet health snapshot (opt-in; no auth when enabled) |
+| `release_check` | `/api/release/` | GitHub release polling; latest version + update-available flag |
+| `reports` | `/api/reports/` | Upgrade activity reports with CSV export |
 
 ---
 
@@ -175,7 +183,7 @@ Five recurring jobs and one on-demand job type run on the `AsyncIOScheduler`, al
 | `check_all` | Cron (default `0 6 * * *`) | Checks all enabled servers; fires security/reboot notifications; sends daily summary |
 | `auto_upgrade` | Cron (configurable, disabled by default) | Upgrades all servers with pending updates up to the concurrency limit |
 | `ping_all` | Every 5 minutes | TCP-connects to each server's SSH port (3 s timeout); updates `is_reachable` + `last_seen` without SSH |
-| `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, `server_stats`, and `notification_log` records older than `log_retention_days` |
+| `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, `server_stats`, `notification_log`, and `ssh_audit_log` records older than `log_retention_days` |
 | `daily_summary` | Time-of-day (default 07:00) | Sends fleet summary across enabled channels |
 | `reboot_check_{id}` | One-shot (post-reboot delay) | Polls until the server responds, then triggers a check |
 
@@ -240,6 +248,10 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 | `apt_cache_servers` | apt-cacher-ng server definitions |
 | `templates` / `template_packages` | Named package sets for bulk provisioning |
 | `notification_log` | Record of every outbound notification (channel, event type, summary, success/error) |
+| `maintenance_windows` | Time windows when auto-upgrade is blocked; global (server_id=NULL) or per-server |
+| `upgrade_hooks` | Pre/post-upgrade shell commands; global or per-server scope; sort_order |
+| `ssh_audit_log` | Every SSH command dispatched (command, exit code, duration, 4 KB output excerpt) |
+| `api_tokens` | Long-lived bearer tokens for automation; stored as scrypt hash |
 
 ---
 

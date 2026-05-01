@@ -4,36 +4,53 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.05.01-01] — 2026-05-01
 
-### Features
+### Added
 
+- **GitHub release check** ([#13](https://github.com/mzac/apt-ui/issues/13)) — backend polls `/repos/.../releases/latest` every 6 hours; a cyan dismissable banner appears in the app layout when a newer version of apt-ui is available.
+- **TOTP two-factor authentication** ([#18](https://github.com/mzac/apt-ui/issues/18)) — time-based OTP with QR code enrolment in Settings → Account. Login flow requests a 6-digit code when 2FA is enabled; disable requires password confirmation. Secret stored Fernet-encrypted in DB. Requires `pyotp` + `qrcode`.
+- **Held package management** ([#26](https://github.com/mzac/apt-ui/issues/26)) — per-package "📌 Hold" button in the Packages tab tooltip; ✕ unhold button on held-package chips. Backend wraps `apt-mark hold/unhold` with validated package names.
+- **Pre/post-upgrade hooks** ([#29](https://github.com/mzac/apt-ui/issues/29)) — define shell commands to run before or after every upgrade; stored in a new `upgrade_hooks` table; managed in Settings → Schedule. Pre-hook failure aborts the upgrade; post-hooks always run. Scope: global or per-server.
+- **SSH command audit log** ([#30](https://github.com/mzac/apt-ui/issues/30)) — every SSH command dispatched by the backend is recorded in a new `ssh_audit_log` table (command, exit code, duration, 4 KB output excerpt). Accessible as a sub-tab in the History page with server filter, expandable rows, and pagination. Pruned by the existing log-retention job.
+- **Pre-upgrade snapshot banner** ([#35](https://github.com/mzac/apt-ui/issues/35)) — snapshot capability (BTRFS, ZFS, LXC) detected during stats collection; the Upgrade tab shows a 📸 cyan banner with a copy-pastable pre-hook command matched to the detected filesystem type.
 - **Reboot-after-upgrade option** ([#36](https://github.com/mzac/apt-ui/issues/36)) — checkbox in Upgrade tab and Upgrade All modal that auto-reboots a server after a successful upgrade if `/var/run/reboot-required` exists. Triggers the existing post-reboot check job.
-- **API tokens for automation** ([#38](https://github.com/mzac/apt-ui/issues/38)) — long-lived bearer tokens for `curl`/CI/scripts. Settings → Account → API Tokens lets you mint, list, and revoke tokens. Format: `aptui_<32 url-safe bytes>`. Stored as SHA-256 hash; raw value shown only on creation. Coexists with cookie auth.
-- **Disk-space alerts for /boot** ([#43](https://github.com/mzac/apt-ui/issues/43)) — `/boot` free/total MB now collected during checks and surfaced as a red dashboard badge when free < 100 MB or < 10%. Hidden for servers without a separate `/boot` partition.
-- **Kernel age badge** ([#44](https://github.com/mzac/apt-ui/issues/44)) — install date of the running kernel (`mtime /lib/modules/$(uname -r)`) collected during checks. Dashboard card shows "🐧 87d" when the running kernel is older than 60 days; red tint when older than 180 days.
+- **API tokens for automation** ([#38](https://github.com/mzac/apt-ui/issues/38)) — long-lived bearer tokens for `curl`/CI/scripts. Settings → Account → API Tokens lets you mint, list, and revoke tokens. Format: `aptui_<32 url-safe bytes>`. Stored as scrypt hash; raw value shown only on creation. Coexists with cookie auth.
+- **Maintenance windows** ([#40](https://github.com/mzac/apt-ui/issues/40)) — `maintenance_windows` table + `/api/maintenance/*` CRUD endpoints. Global windows (server_id=NULL) and per-server overrides. Auto-upgrade scheduler skips servers inside a deny window. Bitmask days-of-week + minute-of-day start/end with midnight-wrap support. Settings form in Settings → Schedule.
+- **Service health panel** ([#42](https://github.com/mzac/apt-ui/issues/42)) — new "Health" tab on Server Detail. On-demand SSH probe collects `systemctl --failed`, last 20 boot-priority `journalctl` errors, and recent reboot history. Restart-service button per failed unit.
+- **Disk-space alerts for /boot** ([#43](https://github.com/mzac/apt-ui/issues/43)) — `/boot` free/total MB collected during checks; red dashboard badge when free < 100 MB or < 10%. Hidden for servers without a separate `/boot` partition.
+- **Kernel age badge** ([#44](https://github.com/mzac/apt-ui/issues/44)) — install date of the running kernel (`mtime /lib/modules/$(uname -r)`) collected during checks. Dashboard card shows "🐧 87d" when older than 60 days; red tint when older than 180 days.
 - **Prometheus /metrics endpoint** ([#45](https://github.com/mzac/apt-ui/issues/45)) — exposes fleet state (`apt_ui_pending_packages`, `apt_ui_servers_reachable`, `apt_ui_kernel_age_days`, `apt_ui_disk_usage_percent`, etc.) for Grafana / VictoriaMetrics scraping. Optional `METRICS_TOKEN` env var enables bearer-token auth.
-- **Fleet-wide package search** ([#46](https://github.com/mzac/apt-ui/issues/46)) — new "Search" page in the top nav. Type a package name and see, across all enabled servers, who has it installed and at which version. Highlights diverging versions with an amber warning. Filter by installed/missing/all.
-- **Saved filter views (URL-synced)** ([#47](https://github.com/mzac/apt-ui/issues/47)) — dashboard filter state (search, group, tag, status, sort, view) syncs to URL query parameters. Bookmark or share specific views; filters survive reload.
-- **Copy SSH command button** ([#48](https://github.com/mzac/apt-ui/issues/48)) — small clipboard icon next to hostname on dashboard cards and Server Detail. One click copies `ssh user@host -p port` to clipboard. Includes `execCommand` fallback for non-secure contexts.
-- **Public/internal status page** ([#50](https://github.com/mzac/apt-ui/issues/50)) — new `/status.json` endpoint returning a compact fleet health snapshot for embedding/dashboards. Disabled by default; enable via `STATUS_PAGE_PUBLIC=true`. Hostnames omitted unless `STATUS_PAGE_SHOW_NAMES=true`.
-- **Service health panel** ([#42](https://github.com/mzac/apt-ui/issues/42)) — new "Health" tab on Server Detail. On-demand SSH probe collects `systemctl --failed`, last 20 boot-priority `journalctl` errors, and recent reboot history. Restart-service button per failed unit. Validated unit name regex prevents shell injection.
-- **Maintenance windows (backend)** ([#40](https://github.com/mzac/apt-ui/issues/40)) — new `maintenance_windows` table + `/api/maintenance/*` CRUD endpoints. Global windows (server_id=NULL) and per-server overrides. Auto-upgrade scheduler skips servers currently inside a deny window. Bitmask days-of-week + minute-of-day start/end; supports midnight-wrap windows. UI in Settings is pending.
+- **Fleet-wide package search** ([#46](https://github.com/mzac/apt-ui/issues/46)) — new Search page. Type a package name to see which servers have it installed and at which version. Highlights diverging versions. Filter by installed/missing/all; exact and prefix search modes.
+- **Saved filter views** ([#47](https://github.com/mzac/apt-ui/issues/47)) — dashboard filter state (search, group, tag, status, sort, view) syncs to URL query parameters. Bookmark or share specific views; filters survive reload.
+- **Copy SSH command button** ([#48](https://github.com/mzac/apt-ui/issues/48)) — clipboard icon next to hostname on dashboard cards and Server Detail copies `ssh user@host -p port` to clipboard. Includes `execCommand` fallback for non-secure contexts.
+- **Public status page** ([#50](https://github.com/mzac/apt-ui/issues/50)) — `/status.json` returns a compact fleet health snapshot for external dashboards. Disabled by default; enable with `STATUS_PAGE_PUBLIC=true`. Hostnames omitted unless `STATUS_PAGE_SHOW_NAMES=true`. Title configurable with `STATUS_PAGE_TITLE`.
+- **Multi-user management** — Users tab in Settings (admin-only) to create, edit, and delete user accounts and toggle admin role. RBAC enforcement throughout: non-admin users cannot access admin-only Settings pages or destructive API endpoints.
+- **CVE matcher** — CVE identifiers in package security descriptions are automatically linked to the NVD database for quick advisory lookup.
+- **Fleet upgrade reports** — new Reports page with per-server and fleet-wide upgrade activity summaries; CSV export.
+- **Autoremove All fleet operation** — clicking the Autoremove badge in the fleet summary bar opens a modal to run `apt-get autoremove` across all eligible servers simultaneously; multiplexed output streamed live with per-server filter chips and background job tracking.
+- **`make ci`** — new Makefile mirrors GitHub Actions checks (Python syntax, backend imports, frontend build). `make venv` bootstraps a Python venv. `make help` lists all targets.
 
-### Bug Fixes & Hardening
+### Changed
 
-- **Shell injection (CWE-78)** — added `_validate_package_names()` regex check applied to selective upgrade, autoremove, and template apply endpoints; previously these interpolated user-supplied package names into shell commands.
-- **Telegram notification log false-success** — multi-chunk Telegram messages now correctly log `success=False` if any chunk is rejected by the API; previously logged success even on partial failures.
+- **Project renamed** from apt-dashboard to apt-ui — cookie name is now `apt_ui_token`, default DB path is `/data/apt-ui.db`, Docker service/volume names and export filenames updated throughout. Existing databases at the old path (`/data/apt-dashboard.db`) are automatically migrated on first start with no data loss.
+
+### Fixed
+
+- **Reboot scheduling crash** — `TypeError: tzinfo argument must be None or of a tzinfo subclass` when rebooting a server; `TZ` env string is now wrapped with `ZoneInfo()` before being passed to `datetime.now()`.
+- **Shell injection (CWE-78)** — added `_validate_package_names()` regex check applied to selective upgrade, autoremove, and template apply endpoints.
+- **Telegram notification log false-success** — multi-chunk Telegram messages now correctly log `success=False` if any chunk is rejected by the API.
 - **`_get_lock` race** — switched to `setdefault` for atomic creation of per-server upgrade locks.
-- **`lock.locked()` fast-path race** — replaced check-then-acquire pattern with a `_upgrade_running` set, eliminating the window where two concurrent requests could both pass the "already running" check and queue serially.
+- **`lock.locked()` fast-path race** — replaced check-then-acquire pattern with a `_upgrade_running` set, eliminating a TOCTOU race where two concurrent requests could both pass the "already running" check.
 - **Dead `_do` function in `ws_upgrade_all`** — removed identical-but-uncalled function alongside `_do_tracked`.
 - **Daily summary date inconsistency** — both subject and body now use the configured `TZ` instead of mixing local and UTC.
-- **Redundant `startswith` condition** — simplified `line.startswith(" ") or line.startswith("  ")`.
-- **Dead code** — removed unused `PVE_PREFIXES` constant in Compare.tsx and no-op `unseenCount: s.unseenCount` in useJobStore.
 
-### Developer Experience
+### Security
 
-- **`make ci`** — new Makefile mirrors GitHub Actions checks (Python syntax, backend imports, frontend build). `make venv` bootstraps a Python venv. `make help` lists all targets.
+- **postcss** updated from 8.5.8 → 8.5.13 — fixes XSS via unescaped `</style>` tags in CSS output (Dependabot).
+- **Regex injection hardening** — package filter input is now validated against a character allowlist and length cap before `re.compile()`, preventing ReDoS and injection via the package filter endpoint (CodeQL).
+- **Stack trace exposure** — release check and server endpoints no longer return raw exception messages or third-party API status codes to the client; errors are logged internally and a generic message returned (CodeQL).
+- **API token hashing** — switched from SHA-256 to `hashlib.scrypt` (memory-hard); tokens remain deterministically verifiable with no storage migration needed (CodeQL).
 
 ---
 

@@ -83,7 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up --build 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown. High-level:
 
 - **Single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files from `static/`.
-- **14 backend routers** in `backend/routers/` — REST + 15 WebSocket streams.
+- **21 backend routers** in `backend/routers/` — REST + 16 WebSocket streams.
 - **SQLite** at `/data/apt-ui.db` (Docker volume). Async SQLAlchemy throughout the API; sync SQLAlchemy in the CLI only.
 - **APScheduler** (`AsyncIOScheduler`) for cron-based checks, auto-upgrades, log purge, and daily summary. Reconfigured live from the DB without restart.
 - **asyncssh**: fresh connection per command, no pool. `known_hosts=None` (trusted LAN). Auth priority: per-server encrypted key → SSH agent → global `SSH_PRIVATE_KEY`.
@@ -104,18 +104,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - Dashboard sort order persists to `localStorage` key `dashboard:sortBy`. Theme persists to `localStorage` key `apt:theme`.
 - 401 responses anywhere in `api/client.ts` redirect to `/login?expired=1`.
 - `reachability_ttl_minutes` in `schedule_config`: servers that fail to connect during check-all are skipped for subsequent runs until the TTL expires, preventing SSH timeouts from slowing the whole fleet.
+- API token hashing uses `hashlib.scrypt` with a fixed salt (`b"apt-ui-api-token"`) for deterministic, memory-hard hashing. SHA-256 / HMAC-SHA256 are rejected by CodeQL as "insufficient" for credential storage.
 - `check_server` runs `apt-get dist-upgrade --dry-run` in parallel alongside `apt list --upgradable`. This is necessary because new dependency packages (e.g. a new kernel version pulled in when upgrading `linux-generic`) do not appear in `apt list --upgradable` at all — they are only visible via dist-upgrade. The dry-run also detects "kept back" packages (upgradable but blocked by plain `apt-get upgrade`). Results stored as `is_new`, `is_kernel`, and `needs_dist_upgrade` flags in `packages_json`.
 
 ### Router → file mapping
 
 | Concern | File |
 |---|---|
-| Auth | `backend/routers/auth.py` |
-| Server CRUD + SSH test + reboot | `backend/routers/servers.py` |
+| Auth + TOTP + API tokens | `backend/routers/auth.py` |
+| Server CRUD + SSH test + reboot + hold/unhold | `backend/routers/servers.py` |
 | Groups | `backend/routers/groups.py` |
 | Tags | `backend/routers/tags.py` |
 | Update checks | `backend/routers/updates.py` |
-| Upgrade WebSockets (16 streams, incl. pveupgrade) | `backend/routers/upgrades.py` |
+| Upgrade WebSockets (16 streams, incl. pveupgrade + autoremove-all) | `backend/routers/upgrades.py` |
 | Fleet stats + history | `backend/routers/stats.py` |
 | Schedule config | `backend/routers/scheduler.py` |
 | Notification config + test + history log | `backend/routers/notifications.py` |
@@ -125,18 +126,26 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Tailscale status (Unix socket) | `backend/routers/tailscale.py` |
 | dpkg log history | `backend/routers/dpkg_log.py` |
 | Apt source file management | `backend/routers/apt_repos.py` |
+| Maintenance windows (CRUD) | `backend/routers/maintenance.py` |
+| Pre/post-upgrade hooks (CRUD) | `backend/routers/hooks.py` |
+| Prometheus /metrics endpoint | `backend/routers/metrics.py` |
+| Public /status.json endpoint | `backend/routers/status_page.py` |
+| GitHub release check (6h cache) | `backend/routers/release_check.py` |
+| Upgrade activity reports + CSV | `backend/routers/reports.py` |
 
 ### Frontend pages
 
 | Page | File |
 |---|---|
 | Dashboard | `frontend/src/pages/Dashboard.tsx` |
-| Server detail (Packages / Upgrade / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
-| Fleet-wide history (Upgrade History / Notification History sub-tabs) | `frontend/src/pages/History.tsx` |
-| Settings | `frontend/src/pages/Settings.tsx` |
+| Server detail (Packages / Upgrade / Health / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
+| Fleet-wide history (Upgrade History / Notification History / SSH Audit Log sub-tabs) | `frontend/src/pages/History.tsx` |
+| Settings (Schedule / Hooks / Maintenance / Notifications / Users / Servers / Account) | `frontend/src/pages/Settings.tsx` |
 | Package templates | `frontend/src/pages/Templates.tsx` |
 | Multi-server package comparison | `frontend/src/pages/Compare.tsx` |
-| Login | `frontend/src/pages/Login.tsx` |
+| Login (+ 2FA code input) | `frontend/src/pages/Login.tsx` |
+| Fleet-wide package search | `frontend/src/pages/Search.tsx` |
+| Upgrade activity reports | `frontend/src/pages/Reports.tsx` |
 
 ---
 
@@ -157,5 +166,9 @@ See [TODO.md](TODO.md) for the backlog.
 | `DATABASE_PATH` | No | Default: `/data/apt-ui.db` |
 | `TZ` | No | Timezone for scheduled jobs. Default: `America/Montreal` |
 | `ENABLE_TERMINAL` | No | Set `true` to enable the interactive SSH shell tab. Default: `false`. Only enable for trusted users. |
+| `METRICS_TOKEN` | No | Optional bearer token to protect the `/metrics` endpoint. If unset, the endpoint is unauthenticated. |
+| `STATUS_PAGE_PUBLIC` | No | Set `true` to enable the unauthenticated `/status.json` fleet health endpoint. Default: `false`. |
+| `STATUS_PAGE_SHOW_NAMES` | No | Include server names (not hostnames) in `/status.json`. Default: `false`. |
+| `STATUS_PAGE_TITLE` | No | Custom title for `/status.json`. Default: `apt-ui Fleet Status`. |
 
 Notification settings, schedule config, and user accounts are managed entirely through the UI and stored in the DB — not environment variables.
