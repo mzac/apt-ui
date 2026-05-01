@@ -74,6 +74,33 @@ export default function Settings() {
 }
 
 // ---------------------------------------------------------------------------
+// OS EOL badge — shared helper for the Servers table (issue #57)
+// ---------------------------------------------------------------------------
+function EolBadge({ server }: { server: Server }) {
+  const days = server.os_eol_days_remaining
+  const sev = server.os_eol_severity
+  if (days == null || !sev || sev === 'unknown') {
+    return <span className="text-text-muted">—</span>
+  }
+  const colorClass =
+    sev === 'expired' || sev === 'alert'
+      ? 'text-red'
+      : sev === 'warning'
+        ? 'text-amber'
+        : days < 365
+          ? 'text-cyan'
+          : 'text-text-muted'
+  const isUbuntu = (server.os_info || '').toLowerCase().includes('ubuntu')
+  const dateStr = server.os_eol_date || 'unknown'
+  const tip = days < 0
+    ? `Reached EOL ${dateStr} (${Math.abs(days)} days ago)${isUbuntu ? ' — ESM available via Ubuntu Pro' : ''}`
+    : `EOL on ${dateStr} (${days} days)${isUbuntu ? ' — ESM available via Ubuntu Pro' : ''}`
+  const label = days < 0 ? `EOL ${dateStr}` : `${days}d (${dateStr})`
+  return <span className={colorClass} title={tip}>{label}</span>
+}
+
+
+// ---------------------------------------------------------------------------
 // Servers tab
 // ---------------------------------------------------------------------------
 function ServersTab() {
@@ -737,6 +764,7 @@ function ServersTab() {
                 <th className="text-left px-3 py-2">User / Port</th>
                 <th className="text-left px-3 py-2">Group</th>
                 <th className="text-left px-3 py-2">Tags</th>
+                <th className="text-left px-3 py-2">OS EOL</th>
                 <th className="text-left px-3 py-2">Enabled</th>
                 <th className="text-left px-3 py-2">Actions</th>
               </tr>
@@ -827,6 +855,9 @@ function ServersTab() {
                       )}
                     </div>
                   </td>
+                  <td className="px-3 py-2 text-xs font-mono">
+                    <EolBadge server={s} />
+                  </td>
                   <td className="px-2 py-2">
                     <input type="checkbox" checked={editForm.is_enabled}
                       onChange={e => setEditForm(f => ({ ...f, is_enabled: e.target.checked }))}
@@ -913,6 +944,9 @@ function ServersTab() {
                         : <span className="text-text-muted text-xs">—</span>}
                     </div>
                   </td>
+                  <td className="px-3 py-2 text-xs font-mono">
+                    <EolBadge server={s} />
+                  </td>
                   <td className="px-3 py-2">
                     <span className={`text-xs font-mono ${s.is_enabled ? 'text-green' : 'text-text-muted'}`}>
                       {s.is_enabled ? 'yes' : 'no'}
@@ -934,7 +968,7 @@ function ServersTab() {
                 </tr>
               ))}
               {serverList.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
+                <tr><td colSpan={9} className="px-3 py-6 text-center text-text-muted">No servers added yet.</td></tr>
               )}
             </tbody>
           </table>

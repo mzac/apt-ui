@@ -81,6 +81,9 @@ export interface Server {
   boot_free_mb: number | null            // free MB on /boot (issue #43)
   boot_total_mb: number | null           // total MB on /boot
   snapshot_capability: 'btrfs' | 'zfs' | 'container' | 'none' | null  // (issue #35)
+  os_eol_date: string | null              // ISO date when OS reaches EOL (issue #57)
+  os_eol_days_remaining: number | null    // negative when past EOL; null when unknown
+  os_eol_severity: 'ok' | 'warning' | 'alert' | 'expired' | 'unknown' | null
 }
 
 export interface CveRef {

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
+from backend.eol_data import get_eol_status_from_os_info
 from backend.models import Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag, UpdateCheck, User
 from backend.schemas import (
     CheckAllProgress, GroupRef, ServerCreate, ServerOut, ServerUpdate,
@@ -233,6 +234,9 @@ async def _build_server_out(
     # Latest stats
     stats_row = await _latest_stats(server.id, db)
 
+    # OS EOL status (issue #57) — derived from os_info string at serialize time
+    eol = get_eol_status_from_os_info(server.os_info)
+
     return ServerOut(
         id=server.id,
         name=server.name,
@@ -270,6 +274,9 @@ async def _build_server_out(
         boot_free_mb=stats_row.boot_free_mb if stats_row else None,
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
         snapshot_capability=stats_row.snapshot_capability if stats_row else None,
+        os_eol_date=eol["date"],
+        os_eol_days_remaining=eol["days_remaining"],
+        os_eol_severity=eol["severity"],
     )
 
 

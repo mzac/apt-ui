@@ -201,6 +201,7 @@ export default function Dashboard() {
       if (statusFilter === 'sec_disabled') return s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed'
       if (statusFilter === 'eeprom') return s.eeprom_update_available === 'update_available'
       if (statusFilter === 'offline') return s.is_enabled && s.is_reachable === false
+      if (statusFilter === 'eol_soon') return s.os_eol_days_remaining != null && s.os_eol_days_remaining < 365
       return true
     })
     .sort((a, b) => {
@@ -316,6 +317,7 @@ export default function Dashboard() {
   const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
   const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
   const offlineCount = serverList.filter(s => s.is_enabled && s.is_reachable === false).length
+  const eolSoonCount = serverList.filter(s => s.os_eol_days_remaining != null && s.os_eol_days_remaining < 365).length
 
   // Groups with servers (including via memberships)
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
@@ -366,6 +368,7 @@ export default function Dashboard() {
               { label: 'Sec off', value: secDisabledCount, color: secDisabledCount > 0 ? 'text-amber' : 'text-text-muted', filter: 'sec_disabled' },
               ...(eepromCount > 0 ? [{ label: 'EEPROM', value: eepromCount, color: 'text-amber', filter: 'eeprom' }] : []),
               ...(offlineCount > 0 ? [{ label: 'Offline', value: offlineCount, color: 'text-red', filter: 'offline' }] : []),
+              ...(eolSoonCount > 0 ? [{ label: 'EOL soon', value: eolSoonCount, color: 'text-amber', filter: 'eol_soon' }] : []),
             ].map(({ label, value, color, filter }) => {
               const opensModal = (filter === 'updates_available' || filter === 'security') && serversWithUpdates.length > 0
               const opensAutoremove = filter === 'autoremove' && serversWithAutoremove.length > 0
@@ -1015,6 +1018,27 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
             if (ageDays < 60) return null
             const colorClass = ageDays >= 180 ? 'text-red' : 'text-amber/70'
             return <span key="kernel-age" className={colorClass} title={`Running kernel installed ${ageDays} days ago`}>🐧 {ageDays}d</span>
+          })(),
+          (() => {
+            // OS EOL countdown badge (issue #57): show when EOL < 365 days away
+            if (s.os_eol_days_remaining == null || !s.os_eol_severity) return null
+            if (s.os_eol_severity === 'unknown') return null
+            if (s.os_eol_days_remaining >= 365) return null
+            const colorClass =
+              s.os_eol_severity === 'expired' || s.os_eol_severity === 'alert'
+                ? 'text-red'
+                : s.os_eol_severity === 'warning'
+                  ? 'text-amber'
+                  : 'text-cyan'
+            const isUbuntu = (s.os_info || '').toLowerCase().includes('ubuntu')
+            const dateStr = s.os_eol_date || 'unknown'
+            const tip = s.os_eol_days_remaining < 0
+              ? `OS reached end-of-life on ${dateStr} (${Math.abs(s.os_eol_days_remaining)} days ago)${isUbuntu ? ' — ESM available via Ubuntu Pro' : ''}`
+              : `OS end-of-life on ${dateStr} (${s.os_eol_days_remaining} days)${isUbuntu ? ' — ESM available via Ubuntu Pro' : ''}`
+            const label = s.os_eol_days_remaining < 0
+              ? `🕒 EOL`
+              : `🕒 ${s.os_eol_days_remaining}d`
+            return <span key="os-eol" className={colorClass} title={tip}>{label}</span>
           })(),
           (() => {
             // /boot disk space badge (issue #43): warn at <100MB OR <10% free
