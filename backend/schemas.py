@@ -179,6 +179,9 @@ class ServerOut(BaseModel):
     boot_free_mb: Optional[int] = None              # free MB on /boot (issue #43)
     boot_total_mb: Optional[int] = None             # total MB on /boot
     snapshot_capability: Optional[str] = None       # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
+    os_eol_date: Optional[str] = None                # ISO date string of OS EOL (issue #57)
+    os_eol_days_remaining: Optional[int] = None      # negative when past EOL
+    os_eol_severity: Optional[str] = None            # 'ok' | 'warning' | 'alert' | 'expired' | 'unknown'
 
     model_config = {"from_attributes": True}
 
