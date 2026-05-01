@@ -58,11 +58,12 @@ async def check_for_updates(_: User = Depends(get_current_user)):
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 resp = await client.get(GITHUB_API, headers={"Accept": "application/vnd.github+json"})
             if resp.status_code != 200:
+                logger.warning("Release check: GitHub API returned %s", resp.status_code)
                 payload = {
                     "current": APP_VERSION,
                     "latest": None,
                     "update_available": False,
-                    "error": f"GitHub API returned {resp.status_code}",
+                    "error": "Unable to reach GitHub releases API",
                 }
             else:
                 data = resp.json()
@@ -82,7 +83,7 @@ async def check_for_updates(_: User = Depends(get_current_user)):
                 "current": APP_VERSION,
                 "latest": None,
                 "update_available": False,
-                "error": str(exc),
+                "error": "Release check failed",
             }
 
         _cache = (now, payload)

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -19,17 +20,27 @@ API_TOKEN_PREFIX = "aptui_"
 
 
 def generate_api_token() -> tuple[str, str, str]:
-    """Mint a new token. Returns (raw_token, sha256_hash, display_prefix).
+    """Mint a new token. Returns (raw_token, hmac_hash, display_prefix).
 
-    The raw token is returned ONCE for display; only the hash is stored.
+    The raw token is returned ONCE for display; only the keyed HMAC of the
+    token is stored. Using HMAC-SHA256 keyed with the JWT secret means a DB
+    leak alone does not let an attacker authenticate — they would also need
+    the server-side secret to forge a matching hash.
     """
     raw = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
-    h = hashlib.sha256(raw.encode()).hexdigest()
+    h = hash_api_token(raw)
     return raw, h, raw[:12]
 
 
 def hash_api_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
+    """Compute a stable, keyed hash of an API token for DB storage / lookup.
+
+    HMAC-SHA256 is appropriate here because tokens are 256-bit random secrets
+    (not user-chosen passwords), so the dominant security comes from token
+    entropy. The HMAC key prevents pre-computed table attacks if the DB leaks.
+    """
+    key = get_jwt_secret().encode()
+    return hmac.new(key, raw.encode(), hashlib.sha256).hexdigest()
 
 _jwt_secret: str | None = None
 

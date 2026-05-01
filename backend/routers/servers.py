@@ -718,10 +718,17 @@ async def search_package_fleet(
     # shell injection — for regex mode we list everything (`*`) and filter in Python.
     py_filter: _re.Pattern | None = None
     if mode == "regex":
+        # Cap regex length to limit ReDoS surface; only allow a known-safe
+        # character set (the regex metacharacters we actually need). This
+        # rejects patterns containing e.g. lookarounds or named groups.
+        if len(pkg) > 200:
+            raise HTTPException(status_code=400, detail="Regex too long (max 200 chars)")
+        if not _re.match(r'^[a-zA-Z0-9._+\-*?\[\]^$|()\\]+$', pkg):
+            raise HTTPException(status_code=400, detail="Regex contains unsupported characters")
         try:
             py_filter = _re.compile(pkg)
-        except _re.error as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}")
+        except _re.error:
+            raise HTTPException(status_code=400, detail="Invalid regex syntax")
         glob = "*"
     else:
         # Validate that the user-supplied substring is "package-name-shaped"
