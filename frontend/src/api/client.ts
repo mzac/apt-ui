@@ -78,6 +78,14 @@ export interface ApiTokenSummary {
   expires_at: string | null
 }
 
+export interface UserSummary {
+  id: number
+  username: string
+  is_admin: boolean
+  created_at: string
+  last_login: string | null
+}
+
 export const auth = {
   login: (username: string, password: string) =>
     post<User>('/api/auth/login', { username, password }),
@@ -89,6 +97,13 @@ export const auth = {
   createToken: (name: string) =>
     post<ApiTokenSummary & { token: string }>('/api/auth/tokens', { name }),
   revokeToken: (id: number) => del(`/api/auth/tokens/${id}`),
+  // User management (admin only) — issue #39
+  listUsers: () => get<UserSummary[]>('/api/auth/users'),
+  createUser: (data: { username: string; password: string; is_admin: boolean }) =>
+    post<UserSummary>('/api/auth/users', data),
+  updateUser: (id: number, data: { is_admin?: boolean; password?: string }) =>
+    put<UserSummary>(`/api/auth/users/${id}`, data),
+  deleteUser: (id: number) => del(`/api/auth/users/${id}`),
 }
 
 // ---------------------------------------------------------------------------

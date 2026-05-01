@@ -11,6 +11,7 @@ from backend.auth import (
     generate_api_token,
     get_current_user,
     hash_password,
+    require_admin,
     verify_password,
 )
 from backend.database import get_db
@@ -162,3 +163,120 @@ async def revoke_token(
     await db.delete(tok)
     await db.commit()
     return {"detail": "Token revoked"}
+
+
+# ---------------------------------------------------------------------------
+# User management (admin only) — issue #39
+# ---------------------------------------------------------------------------
+
+def _user_dict(u: User) -> dict:
+    return {
+        "id": u.id,
+        "username": u.username,
+        "is_admin": u.is_admin,
+        "created_at": u.created_at,
+        "last_login": u.last_login,
+    }
+
+
+@router.get("/users")
+async def list_users(
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(select(User).order_by(User.username))
+    return [_user_dict(u) for u in res.scalars().all()]
+
+
+@router.post("/users", status_code=201)
+async def create_user(
+    body: dict,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    is_admin = bool(body.get("is_admin", False))
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    if len(username) > 100:
+        raise HTTPException(status_code=400, detail="Username too long")
+
+    existing = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    user = User(
+        username=username,
+        password_hash=hash_password(password),
+        is_admin=is_admin,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return _user_dict(user)
+
+
+@router.put("/users/{user_id}")
+async def update_user(
+    user_id: int,
+    body: dict,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(select(User).where(User.id == user_id))
+    user = res.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update role
+    if "is_admin" in body:
+        new_admin = bool(body["is_admin"])
+        # Don't let an admin demote themselves if they're the last admin
+        if user.id == current_user.id and not new_admin:
+            other_admins = await db.execute(
+                select(User).where(User.is_admin == True, User.id != user.id)
+            )
+            if other_admins.scalar_one_or_none() is None:
+                raise HTTPException(status_code=400, detail="Cannot demote the last admin")
+        user.is_admin = new_admin
+
+    # Update password (admin reset)
+    if body.get("password"):
+        if len(body["password"]) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        user.password_hash = hash_password(body["password"])
+
+    await db.commit()
+    await db.refresh(user)
+    return _user_dict(user)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    res = await db.execute(select(User).where(User.id == user_id))
+    user = res.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Make sure we don't delete the last admin
+    if user.is_admin:
+        other_admins = await db.execute(
+            select(User).where(User.is_admin == True, User.id != user.id)
+        )
+        if other_admins.scalar_one_or_none() is None:
+            raise HTTPException(status_code=400, detail="Cannot delete the last admin")
+    # Cascade-delete the user's API tokens
+    tokens_res = await db.execute(select(ApiToken).where(ApiToken.user_id == user_id))
+    for tok in tokens_res.scalars().all():
+        await db.delete(tok)
+    await db.delete(user)
+    await db.commit()

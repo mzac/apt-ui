@@ -5,7 +5,7 @@ import type { MaintenanceWindow } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
 
-const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Account', 'Backup'] as const
+const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Users', 'Account', 'Backup'] as const
 type Tab = typeof TABS[number]
 
 const PALETTE = [
@@ -27,13 +27,20 @@ function pickDistinctColor(existingColors: string[]): string {
 // Main Settings page
 // ---------------------------------------------------------------------------
 export default function Settings() {
+  const { user } = useAuthStore()
   const [tab, setTab] = useState<Tab>('Servers')
+
+  // Hide admin-only tabs for read-only users
+  const visibleTabs = TABS.filter(t => {
+    if (t === 'Users' && !user?.is_admin) return false
+    return true
+  })
 
   return (
     <div className="max-w-5xl mx-auto">
       <h1 className="text-lg font-mono text-text-primary mb-4">Settings</h1>
       <div className="flex gap-1 mb-6 border-b border-border">
-        {TABS.map(t => (
+        {visibleTabs.map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -58,6 +65,7 @@ export default function Settings() {
       {tab === 'Preferences' && <PreferencesTab />}
       {tab === 'Notifications' && <NotificationsTab />}
       {tab === 'Infrastructure' && <InfrastructureTab />}
+      {tab === 'Users' && <UsersTab />}
       {tab === 'Account' && <AccountTab />}
       {tab === 'Backup' && <BackupTab />}
     </div>
@@ -1198,9 +1206,14 @@ function MaintenanceWindowsSection() {
       )}
 
       {editing && (
-        <div className="border-t border-border/40 pt-3 mt-3 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
+        <div className="border-t border-border/40 pt-4 mt-3">
+          <h3 className="text-xs uppercase tracking-wide text-text-muted mb-3">
+            {editing.id ? 'Edit window' : 'New window'}
+          </h3>
+
+          <div className="space-y-4">
+            {/* 1. Name */}
+            <div>
               <label className="label">Name</label>
               <input
                 type="text"
@@ -1208,27 +1221,25 @@ function MaintenanceWindowsSection() {
                 onChange={e => setEditing({ ...editing, name: e.target.value })}
                 className="input text-sm"
                 placeholder="e.g. Business hours"
+                autoFocus
               />
             </div>
+
+            {/* 2. Scope */}
             <div>
-              <label className="label">Start (24h)</label>
-              <input
-                type="time"
-                value={minutesToHHMM(editing.start_minutes ?? 0)}
-                onChange={e => setEditing({ ...editing, start_minutes: hhmmToMinutes(e.target.value) })}
-                className="input text-sm font-mono"
-              />
+              <label className="label">Applies to</label>
+              <select
+                value={editing.server_id ?? ''}
+                onChange={e => setEditing({ ...editing, server_id: e.target.value ? parseInt(e.target.value) : null })}
+                className="input text-sm"
+              >
+                <option value="">Global — all servers</option>
+                {servers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.hostname})</option>)}
+              </select>
             </div>
+
+            {/* 3. Days of week */}
             <div>
-              <label className="label">End (24h)</label>
-              <input
-                type="time"
-                value={minutesToHHMM(editing.end_minutes ?? 0)}
-                onChange={e => setEditing({ ...editing, end_minutes: hhmmToMinutes(e.target.value) })}
-                className="input text-sm font-mono"
-              />
-            </div>
-            <div className="col-span-2">
               <label className="label">Days</label>
               <div className="flex gap-1 flex-wrap">
                 {DAY_LABELS.map((d, i) => {
@@ -1238,7 +1249,7 @@ function MaintenanceWindowsSection() {
                       key={d}
                       type="button"
                       onClick={() => toggleDay(i)}
-                      className={`px-3 py-1 rounded text-xs font-mono border transition-colors ${
+                      className={`px-3 py-1.5 rounded text-xs font-mono border transition-colors min-w-[3rem] ${
                         on
                           ? 'border-green text-green bg-green/10'
                           : 'border-border text-text-muted hover:text-text-primary'
@@ -1249,19 +1260,40 @@ function MaintenanceWindowsSection() {
                   )
                 })}
               </div>
+              <div className="flex gap-2 mt-2 text-[10px] font-mono text-text-muted">
+                <button type="button" onClick={() => setEditing({ ...editing, days_of_week: 127 })} className="hover:text-text-primary">All days</button>
+                <span className="text-text-muted/40">·</span>
+                <button type="button" onClick={() => setEditing({ ...editing, days_of_week: 0b0011111 })} className="hover:text-text-primary">Weekdays</button>
+                <span className="text-text-muted/40">·</span>
+                <button type="button" onClick={() => setEditing({ ...editing, days_of_week: 0b1100000 })} className="hover:text-text-primary">Weekends</button>
+              </div>
             </div>
-            <div className="col-span-2">
-              <label className="label">Scope</label>
-              <select
-                value={editing.server_id ?? ''}
-                onChange={e => setEditing({ ...editing, server_id: e.target.value ? parseInt(e.target.value) : null })}
-                className="input text-sm"
-              >
-                <option value="">Global (all servers)</option>
-                {servers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+
+            {/* 4. Time range */}
+            <div>
+              <label className="label">Time range</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="time"
+                  value={minutesToHHMM(editing.start_minutes ?? 0)}
+                  onChange={e => setEditing({ ...editing, start_minutes: hhmmToMinutes(e.target.value) })}
+                  className="input text-sm font-mono w-32"
+                />
+                <span className="text-text-muted text-sm">→</span>
+                <input
+                  type="time"
+                  value={minutesToHHMM(editing.end_minutes ?? 0)}
+                  onChange={e => setEditing({ ...editing, end_minutes: hhmmToMinutes(e.target.value) })}
+                  className="input text-sm font-mono w-32"
+                />
+                {(editing.start_minutes ?? 0) > (editing.end_minutes ?? 0) && (
+                  <span className="text-xs text-amber font-mono">wraps midnight</span>
+                )}
+              </div>
             </div>
-            <div className="col-span-2 flex items-center gap-2">
+
+            {/* 5. Enabled */}
+            <div className="flex items-center gap-2 pt-1">
               <input
                 type="checkbox"
                 id="mw-enabled"
@@ -1269,14 +1301,24 @@ function MaintenanceWindowsSection() {
                 onChange={e => setEditing({ ...editing, enabled: e.target.checked })}
                 className="w-4 h-4 accent-green"
               />
-              <label htmlFor="mw-enabled" className="text-sm text-text-muted">Enabled</label>
+              <label htmlFor="mw-enabled" className="text-sm text-text-muted cursor-pointer select-none">
+                Enabled
+              </label>
             </div>
           </div>
-          <div className="flex gap-2">
-            <button onClick={save} disabled={!editing.name?.trim()} className="btn-primary text-sm">
-              {editing.id ? 'Save' : 'Create'}
+
+          {/* Actions */}
+          <div className="flex justify-end gap-2 pt-4 mt-4 border-t border-border/30">
+            <button onClick={() => setEditing(null)} className="btn-secondary text-sm">
+              Cancel
             </button>
-            <button onClick={() => setEditing(null)} className="btn-secondary text-sm">Cancel</button>
+            <button
+              onClick={save}
+              disabled={!editing.name?.trim() || (editing.days_of_week ?? 0) === 0}
+              className="btn-primary text-sm"
+            >
+              {editing.id ? 'Save changes' : 'Create window'}
+            </button>
           </div>
         </div>
       )}
@@ -1749,6 +1791,292 @@ function NotificationsTab() {
 
       <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Notifications'}</button>
     </form>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Users tab — multi-user management (issue #39)
+// ---------------------------------------------------------------------------
+
+function UsersTab() {
+  const { user: currentUser } = useAuthStore()
+  const [users, setUsers] = useState<import('@/api/client').UserSummary[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [resetPwFor, setResetPwFor] = useState<import('@/api/client').UserSummary | null>(null)
+
+  // Create form
+  const [newUser, setNewUser] = useState<{ username: string; password: string; confirm: string; is_admin: boolean }>({
+    username: '', password: '', confirm: '', is_admin: false,
+  })
+  const [createMsg, setCreateMsg] = useState<string | null>(null)
+
+  // Password reset
+  const [resetPw, setResetPw] = useState({ password: '', confirm: '' })
+  const [resetMsg, setResetMsg] = useState<string | null>(null)
+
+  async function reload() {
+    setLoading(true)
+    setError(null)
+    try {
+      setUsers(await auth.listUsers())
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { reload() }, [])
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault()
+    setCreateMsg(null)
+    setError(null)
+    if (!newUser.username.trim() || !newUser.password) {
+      setError('Username and password required')
+      return
+    }
+    if (newUser.password !== newUser.confirm) {
+      setError('Passwords do not match')
+      return
+    }
+    try {
+      await auth.createUser({
+        username: newUser.username.trim(),
+        password: newUser.password,
+        is_admin: newUser.is_admin,
+      })
+      setCreateMsg(`User "${newUser.username}" created`)
+      setNewUser({ username: '', password: '', confirm: '', is_admin: false })
+      setCreating(false)
+      await reload()
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function toggleRole(u: import('@/api/client').UserSummary) {
+    try {
+      await auth.updateUser(u.id, { is_admin: !u.is_admin })
+      await reload()
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    }
+  }
+
+  async function remove(u: import('@/api/client').UserSummary) {
+    if (!confirm(`Delete user "${u.username}"? This also revokes all their API tokens.`)) return
+    try {
+      await auth.deleteUser(u.id)
+      await reload()
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    }
+  }
+
+  async function submitReset(e: React.FormEvent) {
+    e.preventDefault()
+    setResetMsg(null)
+    if (!resetPwFor) return
+    if (!resetPw.password || resetPw.password !== resetPw.confirm) {
+      setResetMsg('Passwords do not match')
+      return
+    }
+    try {
+      await auth.updateUser(resetPwFor.id, { password: resetPw.password })
+      setResetMsg(`Password reset for ${resetPwFor.username}`)
+      setTimeout(() => {
+        setResetPwFor(null)
+        setResetPw({ password: '', confirm: '' })
+        setResetMsg(null)
+      }, 1200)
+    } catch (e: unknown) {
+      setResetMsg((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <div>
+        <h2 className="text-sm font-medium text-text-primary mb-1">Users</h2>
+        <p className="text-xs text-text-muted">
+          Manage user accounts. Read-only users can browse the dashboard but cannot trigger upgrades, edit servers, or change settings.
+        </p>
+      </div>
+
+      {error && <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono">{error}</div>}
+
+      {/* User list */}
+      <div className="card overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-text-muted">
+              <th className="text-left px-3 py-2 font-normal text-xs uppercase tracking-wide">Username</th>
+              <th className="text-left px-3 py-2 font-normal text-xs uppercase tracking-wide">Role</th>
+              <th className="text-left px-3 py-2 font-normal text-xs uppercase tracking-wide">Last login</th>
+              <th className="px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/30">
+            {loading ? (
+              <tr><td colSpan={4} className="px-3 py-6 text-center text-text-muted text-sm">Loading…</td></tr>
+            ) : users.length === 0 ? (
+              <tr><td colSpan={4} className="px-3 py-6 text-center text-text-muted text-sm">No users.</td></tr>
+            ) : (
+              users.map(u => {
+                const isMe = currentUser?.id === u.id
+                return (
+                  <tr key={u.id} className="hover:bg-surface/50">
+                    <td className="px-3 py-2 font-mono">
+                      {u.username}
+                      {isMe && <span className="ml-2 text-[10px] text-text-muted/70 uppercase tracking-wide">(you)</span>}
+                    </td>
+                    <td className="px-3 py-2">
+                      {u.is_admin ? (
+                        <span className="badge bg-green/10 text-green border border-green/30 text-xs">admin</span>
+                      ) : (
+                        <span className="badge bg-blue/10 text-blue border border-blue/30 text-xs">read-only</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono text-text-muted">
+                      {u.last_login ? new Date(u.last_login).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex justify-end gap-3 text-xs">
+                        <button onClick={() => toggleRole(u)} className="text-cyan/80 hover:text-cyan" title={u.is_admin ? 'Demote to read-only' : 'Promote to admin'}>
+                          {u.is_admin ? 'Demote' : 'Promote'}
+                        </button>
+                        <button onClick={() => { setResetPwFor(u); setResetPw({ password: '', confirm: '' }); setResetMsg(null) }} className="text-amber/80 hover:text-amber">
+                          Reset password
+                        </button>
+                        {!isMe && (
+                          <button onClick={() => remove(u)} className="text-red/70 hover:text-red">Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Add user button or form */}
+      {!creating ? (
+        <button onClick={() => { setCreating(true); setCreateMsg(null); setError(null) }} className="btn-primary">
+          + Add user
+        </button>
+      ) : (
+        <form onSubmit={create} className="card p-4 space-y-4">
+          <h3 className="text-xs uppercase tracking-wide text-text-muted">New user</h3>
+
+          <div>
+            <label className="label">Username</label>
+            <input
+              type="text"
+              value={newUser.username}
+              onChange={e => setNewUser({ ...newUser, username: e.target.value })}
+              className="input text-sm"
+              autoFocus
+              maxLength={100}
+            />
+          </div>
+
+          <div>
+            <label className="label">Password</label>
+            <input
+              type="password"
+              value={newUser.password}
+              onChange={e => setNewUser({ ...newUser, password: e.target.value })}
+              className="input text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="label">Confirm password</label>
+            <input
+              type="password"
+              value={newUser.confirm}
+              onChange={e => setNewUser({ ...newUser, confirm: e.target.value })}
+              className="input text-sm"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="new-admin"
+              checked={newUser.is_admin}
+              onChange={e => setNewUser({ ...newUser, is_admin: e.target.checked })}
+              className="w-4 h-4 accent-green"
+            />
+            <label htmlFor="new-admin" className="text-sm text-text-muted cursor-pointer select-none">
+              Admin (can mutate state)
+            </label>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-border/30">
+            <button type="button" onClick={() => { setCreating(false); setError(null) }} className="btn-secondary text-sm">
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary text-sm">
+              Create user
+            </button>
+          </div>
+        </form>
+      )}
+      {createMsg && <p className="text-green text-sm">{createMsg}</p>}
+
+      {/* Password reset modal */}
+      {resetPwFor && createPortal(
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setResetPwFor(null)}>
+          <div className="bg-surface border border-border rounded-lg w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-border flex items-center justify-between">
+              <h3 className="font-mono text-sm text-text-primary">Reset password</h3>
+              <button onClick={() => setResetPwFor(null)} className="text-text-muted hover:text-red">✕</button>
+            </div>
+            <form onSubmit={submitReset} className="p-4 space-y-4">
+              <p className="text-sm text-text-muted">
+                Set a new password for <span className="font-mono text-text-primary">{resetPwFor.username}</span>.
+              </p>
+
+              <div>
+                <label className="label">New password</label>
+                <input
+                  type="password"
+                  value={resetPw.password}
+                  onChange={e => setResetPw({ ...resetPw, password: e.target.value })}
+                  className="input text-sm"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="label">Confirm password</label>
+                <input
+                  type="password"
+                  value={resetPw.confirm}
+                  onChange={e => setResetPw({ ...resetPw, confirm: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              {resetMsg && (
+                <p className={resetMsg.startsWith('Password reset') ? 'text-green text-sm' : 'text-red text-sm'}>{resetMsg}</p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-border/30">
+                <button type="button" onClick={() => setResetPwFor(null)} className="btn-secondary text-sm">Cancel</button>
+                <button type="submit" disabled={!resetPw.password} className="btn-primary text-sm">Reset password</button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
   )
 }
 
