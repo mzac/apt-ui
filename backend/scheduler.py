@@ -11,6 +11,7 @@ Jobs:
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone  # noqa: F401 — timezone used in ping job
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -275,7 +276,7 @@ def schedule_reboot_check(server_id: int, delay_seconds: int = 60) -> None:
     is reachable, then runs a full update check to clear the reboot_required flag.
     Replaces any existing pending reboot-check for the same server.
     """
-    run_at = datetime.now(tz=TZ) + timedelta(seconds=delay_seconds)
+    run_at = datetime.now(tz=ZoneInfo(TZ)) + timedelta(seconds=delay_seconds)
     job_id = f"reboot_check_{server_id}"
     _scheduler.add_job(
         _job_reboot_check,
