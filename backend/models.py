@@ -317,6 +317,11 @@ class ScheduleConfig(Base):
     # Staged rollout (issue #41) — group servers by `ring:*` tag and upgrade in order
     staged_rollout_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     ring_promotion_delay_hours: Mapped[int] = mapped_column(Integer, default=24)
+    # Rolling reboot orchestration (issue #56) — fleet-wide rolling reboot of
+    # servers with reboot_required, processed by ring in batches with waits.
+    reboot_batch_size: Mapped[int] = mapped_column(Integer, default=3)
+    reboot_batch_wait_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    reboot_timeout_minutes: Mapped[int] = mapped_column(Integer, default=10)
     # conffile_action controls what apt-get does when a package ships a new version
     # of a config file that has been locally modified:
     #   confdef_confold — use the package's default answer; if none, keep existing (safest)

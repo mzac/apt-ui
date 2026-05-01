@@ -10,6 +10,7 @@ import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import AutoremoveAllModal from '@/components/AutoremoveAllModal'
+import RollingRebootModal from '@/components/RollingRebootModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
 import CopySshButton from '@/components/CopySshButton'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
@@ -103,6 +104,7 @@ export default function Dashboard() {
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
   const [showAutoremoveAll, setShowAutoremoveAll] = useState(false)
+  const [showRollingReboot, setShowRollingReboot] = useState(false)
   const [checkingAll, setCheckingAll] = useState(false)
   const [checkingMode, setCheckingMode] = useState<'check' | 'refresh' | null>(null)
   const [checkProgress, setCheckProgress] = useState<{ done: number; total: number; current: string[] }>({ done: 0, total: 0, current: [] })
@@ -319,6 +321,7 @@ export default function Dashboard() {
 
   const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
   const serversWithAutoremove = serverList.filter(s => s.is_enabled && (s.latest_check?.autoremove_count ?? 0) > 0)
+  const serversNeedingReboot = serverList.filter(s => s.is_enabled && s.latest_check?.reboot_required === true)
   const hasFilters = activeGroup != null || activeTag != null
   const secDisabledCount = serverList.filter(s => s.auto_security_updates === 'disabled' || s.auto_security_updates === 'not_installed').length
   const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
@@ -378,6 +381,7 @@ export default function Dashboard() {
             ].map(({ label, value, color, filter }) => {
               const opensModal = (filter === 'updates_available' || filter === 'security') && serversWithUpdates.length > 0
               const opensAutoremove = filter === 'autoremove' && serversWithAutoremove.length > 0
+              const opensRollingReboot = filter === 'reboot' && serversNeedingReboot.length > 0
               return (
                 <button
                   key={label}
@@ -385,10 +389,16 @@ export default function Dashboard() {
                     setStatusFilter(statusFilter === filter ? null : filter)
                     if (opensModal) setShowUpdatesSummary(true)
                     if (opensAutoremove) setShowAutoremoveAll(true)
+                    if (opensRollingReboot) setShowRollingReboot(true)
                   }}
                   className={`card px-3 py-2 text-center cursor-pointer hover:border-text-muted transition-colors ${statusFilter === filter ? 'border-green/50 bg-green/5' : ''}`}
                   style={{ minWidth: 72 }}
-                  title={opensModal ? 'Click to view pending packages' : opensAutoremove ? 'Click to autoremove on all servers' : undefined}
+                  title={
+                    opensModal ? 'Click to view pending packages' :
+                    opensAutoremove ? 'Click to autoremove on all servers' :
+                    opensRollingReboot ? 'Click to start a rolling reboot across the fleet' :
+                    undefined
+                  }
                 >
                   <div className={`text-xl font-mono font-medium ${color}`}>{value}</div>
                   <div className="text-xs text-text-muted">{label}</div>
@@ -643,6 +653,13 @@ export default function Dashboard() {
         <AutoremoveAllModal
           servers={serversWithAutoremove}
           onClose={() => { setShowAutoremoveAll(false); load() }}
+        />
+      )}
+
+      {showRollingReboot && (
+        <RollingRebootModal
+          servers={serversNeedingReboot}
+          onClose={() => { setShowRollingReboot(false); load() }}
         />
       )}
 

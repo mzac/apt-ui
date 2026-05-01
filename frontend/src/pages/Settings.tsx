@@ -1856,6 +1856,52 @@ function PreferencesTab() {
         </div>
       </section>
 
+      {/* Rolling reboot orchestration (issue #56) */}
+      <section className="card p-4 space-y-4">
+        <h2 className="text-sm font-medium text-text-primary">Rolling Reboot</h2>
+        <p className="text-xs text-text-muted">
+          Settings for the fleet-wide <span className="font-mono">Reboot All Pending</span> action.
+          Servers with <span className="font-mono">reboot_required</span> are rebooted batch-by-batch,
+          grouped by their <span className="font-mono">ring:*</span> tag in alphabetical order.
+        </p>
+        <div>
+          <label className="label">Reboot batch size</label>
+          <input
+            type="number"
+            className="input w-24"
+            min={1}
+            max={50}
+            value={form.reboot_batch_size ?? form.upgrade_concurrency ?? 3}
+            onChange={e => setForm(f => ({ ...f, reboot_batch_size: parseInt(e.target.value) || 1 }))}
+          />
+          <p className="text-xs text-text-muted mt-1">Number of servers rebooted in parallel within a ring. Defaults to "Max simultaneous upgrades" if unset.</p>
+        </div>
+        <div>
+          <label className="label">Wait between batches (minutes)</label>
+          <input
+            type="number"
+            className="input w-24"
+            min={0}
+            max={120}
+            value={form.reboot_batch_wait_minutes ?? 5}
+            onChange={e => setForm(f => ({ ...f, reboot_batch_wait_minutes: parseInt(e.target.value) || 0 }))}
+          />
+          <p className="text-xs text-text-muted mt-1">Pause after each batch (0 to disable). Skipped after the final batch.</p>
+        </div>
+        <div>
+          <label className="label">Per-server reboot timeout (minutes)</label>
+          <input
+            type="number"
+            className="input w-24"
+            min={1}
+            max={120}
+            value={form.reboot_timeout_minutes ?? 10}
+            onChange={e => setForm(f => ({ ...f, reboot_timeout_minutes: parseInt(e.target.value) || 1 }))}
+          />
+          <p className="text-xs text-text-muted mt-1">How long to wait for a server to come back before marking it failed and aborting the rollout.</p>
+        </div>
+      </section>
+
       <section className="card p-4 space-y-3">
         <h2 className="text-sm font-medium text-text-primary">Auto-Tagging</h2>
         <p className="text-xs text-text-muted">Automatically create and assign tags to servers based on check results. Runs on every "Check All".</p>

@@ -307,6 +307,12 @@ class ScheduleConfigOut(BaseModel):
     run_apt_update_before_upgrade: bool = False
     conffile_action: str = "confdef_confold"
     reachability_ttl_minutes: int = 5
+    staged_rollout_enabled: bool = False
+    ring_promotion_delay_hours: int = 24
+    # Rolling reboot orchestration (issue #56)
+    reboot_batch_size: int = 3
+    reboot_batch_wait_minutes: int = 5
+    reboot_timeout_minutes: int = 10
 
     model_config = {"from_attributes": True}
 
@@ -324,6 +330,12 @@ class ScheduleConfigUpdate(BaseModel):
     run_apt_update_before_upgrade: Optional[bool] = None
     conffile_action: Optional[str] = None
     reachability_ttl_minutes: Optional[int] = None
+    staged_rollout_enabled: Optional[bool] = None
+    ring_promotion_delay_hours: Optional[int] = None
+    # Rolling reboot orchestration (issue #56)
+    reboot_batch_size: Optional[int] = None
+    reboot_batch_wait_minutes: Optional[int] = None
+    reboot_timeout_minutes: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

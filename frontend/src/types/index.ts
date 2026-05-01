@@ -163,6 +163,9 @@ export interface ScheduleConfig {
   reachability_ttl_minutes: number
   staged_rollout_enabled: boolean        // issue #41
   ring_promotion_delay_hours: number     // issue #41
+  reboot_batch_size: number              // issue #56
+  reboot_batch_wait_minutes: number      // issue #56
+  reboot_timeout_minutes: number         // issue #56
 }
 
 export interface NotificationConfig {

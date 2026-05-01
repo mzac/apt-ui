@@ -193,6 +193,10 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN staged_rollout_enabled BOOLEAN DEFAULT 0",
             "ALTER TABLE schedule_config ADD COLUMN ring_promotion_delay_hours INTEGER DEFAULT 24",
             "ALTER TABLE server_stats ADD COLUMN snapshot_capability TEXT",
+            # Rolling reboot orchestration (issue #56)
+            "ALTER TABLE schedule_config ADD COLUMN reboot_batch_size INTEGER DEFAULT 3",
+            "ALTER TABLE schedule_config ADD COLUMN reboot_batch_wait_minutes INTEGER DEFAULT 5",
+            "ALTER TABLE schedule_config ADD COLUMN reboot_timeout_minutes INTEGER DEFAULT 10",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
         ]
         for sql in migrations:
