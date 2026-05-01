@@ -13,6 +13,9 @@ the point at which the project stops shipping security updates. A few notes:
   driven and out of scope here.
 - Raspberry Pi OS / Raspbian tracks the upstream Debian release cycle.
 - Proxmox VE matches its underlying Debian base — 7.x → Debian 11, 8.x → Debian 12.
+- Proxmox Backup Server (PBS) and Proxmox Mail Gateway (PMG) are separate products
+  with their own version cycles — they share Debian bases but should not be confused
+  with PVE for EOL purposes.
 
 The table is intentionally simple (no LTS/ESM split) — when a date has passed
 or is approaching, the dashboard surfaces a badge. Periodic updates to this
@@ -43,9 +46,17 @@ EOL_DATES: dict[str, dict[str, str]] = {
         "11": "2026-08-31",
         "12": "2028-06-30",
     },
-    "proxmox": {
-        "7": "2024-07-31",
-        "8": "2026-07-31",
+    "proxmox-ve": {
+        "7": "2024-07-31",  # Debian 11 base
+        "8": "2026-07-31",  # Debian 12 base
+    },
+    "proxmox-pbs": {
+        "2": "2024-07-31",  # Debian 11 base
+        "3": "2026-07-31",  # Debian 12 base
+    },
+    "proxmox-pmg": {
+        "7": "2024-07-31",  # Debian 11 base
+        "8": "2026-07-31",  # Debian 12 base
     },
 }
 
@@ -65,8 +76,12 @@ _UBUNTU_RE = re.compile(r"\bubuntu\b\s+(\d+\.\d+)", re.IGNORECASE)
 _DEBIAN_RE = re.compile(r"\bdebian\b[^\d]*(\d+)", re.IGNORECASE)
 # Matches "Raspbian GNU/Linux 11 (bullseye)" / "Raspberry Pi OS 12 ..."
 _RASPBIAN_RE = re.compile(r"\b(?:raspbian|raspberry\s*pi\s*os)\b[^\d]*(\d+)", re.IGNORECASE)
-# Matches "Proxmox VE 8.0", "Proxmox VE 7.4-1", "Proxmox VE (6.5-pve...)"
-_PROXMOX_RE = re.compile(r"\bproxmox\b[^\d]*(\d+)", re.IGNORECASE)
+# Match Proxmox products specifically — generic "Proxmox" with no product
+# suffix is too ambiguous (PBS, PMG, and PVE share the "Proxmox" prefix
+# but have separate version cycles and EOL dates).
+_PROXMOX_PBS_RE = re.compile(r"\bproxmox\s+backup\s+server\b[^\d]*(\d+)", re.IGNORECASE)
+_PROXMOX_PMG_RE = re.compile(r"\bproxmox\s+mail\s+gateway\b[^\d]*(\d+)", re.IGNORECASE)
+_PROXMOX_VE_RE = re.compile(r"\bproxmox\s+ve\b[^\d]*(\d+)", re.IGNORECASE)
 
 
 def parse_os_info(os_info: str | None) -> tuple[str | None, str | None]:
@@ -81,17 +96,28 @@ def parse_os_info(os_info: str | None) -> tuple[str | None, str | None]:
     >>> parse_os_info("Debian GNU/Linux 12 (bookworm)")
     ('debian', '12')
     >>> parse_os_info("Proxmox VE 8.0")
-    ('proxmox', '8')
+    ('proxmox-ve', '8')
+    >>> parse_os_info("Proxmox Backup Server 3.4-1")
+    ('proxmox-pbs', '3')
     """
     if not os_info:
         return None, None
     raw = os_info.strip()
 
-    # Order matters: Proxmox and Raspbian must be matched before the generic
-    # "debian" branch (they typically also contain "Debian" in their banners).
-    m = _PROXMOX_RE.search(raw)
+    # Order matters: PBS / PMG must be matched before the more generic PVE
+    # regex, and all three Proxmox checks before the generic Debian branch
+    # (Proxmox products typically contain "Debian" in their os-release banners).
+    m = _PROXMOX_PBS_RE.search(raw)
     if m:
-        return "proxmox", m.group(1)
+        return "proxmox-pbs", m.group(1)
+
+    m = _PROXMOX_PMG_RE.search(raw)
+    if m:
+        return "proxmox-pmg", m.group(1)
+
+    m = _PROXMOX_VE_RE.search(raw)
+    if m:
+        return "proxmox-ve", m.group(1)
 
     m = _RASPBIAN_RE.search(raw)
     if m:

@@ -133,9 +133,19 @@ async def _gather_stats(server: Server) -> dict:
         "disk": "df -P / | awk 'NR==2{print $5}'",
         "pkg_count": "dpkg --list 2>/dev/null | grep -c '^ii'",
         "apt_cache": "stat -c %Y /var/cache/apt/pkgcache.bin 2>/dev/null || echo ''",
-        # Detect OS: Proxmox (pveversion cmd or -pve kernel) → Armbian → os-release → lsb_release
+        # Detect OS: PBS (proxmox-backup-manager) → PMG (pmgversion) → PVE (pveversion
+        # or -pve kernel) → Armbian → os-release → lsb_release. PBS and PMG must be
+        # checked BEFORE the -pve kernel fallback because both ship with PVE kernels
+        # but are separate products with their own EOL cycles.
         "os_info": (
-            "if command -v pveversion > /dev/null 2>&1; then "
+            "if command -v proxmox-backup-manager > /dev/null 2>&1; then "
+            "  ver=$(proxmox-backup-manager version 2>/dev/null | awk '/proxmox-backup-server/ {print $2; exit}'); "
+            "  if [ -z \"$ver\" ]; then ver=$(dpkg-query -W -f='${Version}' proxmox-backup-server 2>/dev/null); fi; "
+            "  echo \"Proxmox Backup Server ${ver}\"; "
+            "elif command -v pmgversion > /dev/null 2>&1; then "
+            "  ver=$(pmgversion 2>/dev/null | cut -d/ -f2); "
+            "  echo \"Proxmox Mail Gateway ${ver}\"; "
+            "elif command -v pveversion > /dev/null 2>&1; then "
             "  ver=$(pveversion 2>/dev/null | cut -d/ -f2); "
             "  echo \"Proxmox VE ${ver}\"; "
             "elif uname -r 2>/dev/null | grep -q '\\-pve'; then "
