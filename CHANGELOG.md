@@ -4,6 +4,17 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Slack notifications** ([#53](https://github.com/mzac/apt-ui/issues/53)) — first-class Slack channel via incoming-webhook URL, alongside the existing email/Telegram/webhook channels. Block Kit messages with header + section blocks; long upgrade output gets a code-fenced section truncated to ~2900 chars to stay within Slack's per-block limit. Settings → Notifications gains a Slack section (mirroring Telegram's UI) plus a Slack column in the per-event toggle matrix. Test endpoint at `POST /api/notifications/test/slack`.
+- **Fleet-wide CVE inventory page** ([#54](https://github.com/mzac/apt-ui/issues/54)) — new `/security` page that pivots the CVE matcher (#37) data from per-package to CVE → servers. No new collection — reads existing `packages_json` annotations and the `cve_cache.json` index. Filters: severity multi-select chips, status segmented control (pending / fixed / partial), group / tag dropdown. Default view is CVE → servers with expandable rows that list affected hosts + jump-to-Packages buttons. Toggle to Server → CVEs alt view. Severity-coloured badges link out to `ubuntu.com/security/notices`. CSV export.
+- **Rolling reboot orchestration** ([#56](https://github.com/mzac/apt-ui/issues/56)) — fleet-wide rolling reboot of servers with `reboot_required`. Mirrors the staged-rollout (#41) ring grouping: servers grouped by `ring:*` tag (alphabetical, `ring:default` for untagged), processed in batches of `reboot_batch_size` with `reboot_batch_wait_minutes` between batches. Aborts if any server in the previous batch failed to come back within `reboot_timeout_minutes`. New `/api/ws/reboot-all` WebSocket multiplexes per-server status with `rebooting` → `waiting` → `back` / `failed` phases. Dashboard fleet summary bar gains a "Reboot All Pending" button when ≥ 1 server has `reboot_required`.
+- **Weekly patch digest email** ([#58](https://github.com/mzac/apt-ui/issues/58)) — closes the deferred portion of #51. Sent on a configurable cron (default Monday 09:00 in `TZ`) across email (HTML + text), Telegram (markdown, chunked), and webhook (structured JSON with `event="weekly_digest"` discriminator). Slack inherits the master enable but does not yet have a per-channel toggle. Sections: headline counters, by-server table, still-pending list, CVE summary, health flags (offline > 24 h, /boot < 10%, kernel > 180 d, EOL < 90 d). Test endpoint at `POST /api/notifications/test-weekly-digest`. New APScheduler `weekly_digest` job re-registered live when settings change.
+
+---
+
 ## [2026.05.01-02] — 2026-05-01
 
 ### Added
