@@ -49,8 +49,8 @@ spec:
     spec:
       containers:
         - name: apt-ui
-          image: apt-ui:latest   # replace with your registry image
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/mzac/apt-ui:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
               name: http
@@ -69,6 +69,16 @@ spec:
               value: America/Montreal
             - name: DATABASE_PATH
               value: /data/apt-ui.db
+            # Optional overrides — uncomment as needed:
+            # - name: ENCRYPTION_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: apt-ui-secrets
+            #       key: encryption-key
+            # - name: LOG_LEVEL
+            #   value: INFO
+            # - name: ENABLE_TERMINAL
+            #   value: "false"
           volumeMounts:
             - name: data
               mountPath: /data
