@@ -216,6 +216,32 @@ async def _send_daily_summary():
             await send_daily_summary(cfg, db)
 
 
+async def _job_weekly_digest():
+    """Compose and dispatch the weekly patch digest (issue #58)."""
+    from backend.database import AsyncSessionLocal
+    from backend.models import NotificationConfig, ScheduleConfig
+    from backend.notifier import send_weekly_digest
+    from sqlalchemy import select
+
+    logger.info("Scheduler: running weekly digest job")
+    try:
+        async with AsyncSessionLocal() as db:
+            sc_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+            sc = sc_res.scalar_one_or_none()
+            if not sc or not sc.weekly_digest_enabled:
+                logger.info("Weekly digest disabled — skipping")
+                return
+            cfg_res = await db.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
+            cfg = cfg_res.scalar_one_or_none()
+            if cfg is None:
+                logger.warning("Weekly digest: no NotificationConfig row — skipping")
+                return
+            results = await send_weekly_digest(cfg, db)
+            logger.info("Weekly digest dispatched: %s", results)
+    except Exception as exc:
+        logger.error("Weekly digest job failed: %s", exc)
+
+
 async def _job_reboot_check(server_id: int):
     """Poll until server is reachable post-reboot, then run a full check."""
     from backend.database import AsyncSessionLocal
@@ -393,6 +419,20 @@ async def configure_jobs():
         )
         logger.info("Scheduled auto_upgrade: %s (%s)", cfg.auto_upgrade_cron, TZ)
 
+    # Weekly digest (issue #58) — separate cron from daily_summary
+    if cfg and cfg.weekly_digest_enabled:
+        dow = max(0, min(6, int(cfg.weekly_digest_day_of_week or 0)))
+        hour = max(0, min(23, int(cfg.weekly_digest_hour or 9)))
+        minute = max(0, min(59, int(cfg.weekly_digest_minute or 0)))
+        _scheduler.add_job(
+            _job_weekly_digest,
+            CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=TZ),
+            id="weekly_digest",
+            replace_existing=True,
+            misfire_grace_time=600,
+        )
+        logger.info("Scheduled weekly_digest: dow=%d %02d:%02d (%s)", dow, hour, minute, TZ)
+
     # Log purge always runs daily at 03:00
     _scheduler.add_job(
         _job_log_purge,
@@ -420,7 +460,7 @@ async def configure_jobs():
 
 
 def _remove_jobs():
-    for job_id in ("check_all", "auto_upgrade"):
+    for job_id in ("check_all", "auto_upgrade", "weekly_digest"):
         job = _scheduler.get_job(job_id)
         if job:
             job.remove()

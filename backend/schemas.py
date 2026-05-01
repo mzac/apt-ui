@@ -307,6 +307,13 @@ class ScheduleConfigOut(BaseModel):
     run_apt_update_before_upgrade: bool = False
     conffile_action: str = "confdef_confold"
     reachability_ttl_minutes: int = 5
+    staged_rollout_enabled: bool = False
+    ring_promotion_delay_hours: int = 24
+    weekly_digest_enabled: bool = False
+    weekly_digest_day_of_week: int = 0   # 0=Mon … 6=Sun
+    weekly_digest_hour: int = 9
+    weekly_digest_minute: int = 0
+    next_weekly_digest_time: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -324,6 +331,12 @@ class ScheduleConfigUpdate(BaseModel):
     run_apt_update_before_upgrade: Optional[bool] = None
     conffile_action: Optional[str] = None
     reachability_ttl_minutes: Optional[int] = None
+    staged_rollout_enabled: Optional[bool] = None
+    ring_promotion_delay_hours: Optional[int] = None
+    weekly_digest_enabled: Optional[bool] = None
+    weekly_digest_day_of_week: Optional[int] = None
+    weekly_digest_hour: Optional[int] = None
+    weekly_digest_minute: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +389,10 @@ class NotificationConfigOut(BaseModel):
     notify_error_slack: bool = True
     notify_security_slack: bool = True
     notify_reboot_slack: bool = True
+    # Weekly digest (issue #58)
+    notify_weekly_digest_email: bool = True
+    notify_weekly_digest_telegram: bool = True
+    notify_weekly_digest_webhook: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -425,6 +442,10 @@ class NotificationConfigUpdate(BaseModel):
     notify_error_slack: Optional[bool] = None
     notify_security_slack: Optional[bool] = None
     notify_reboot_slack: Optional[bool] = None
+    # Weekly digest (issue #58)
+    notify_weekly_digest_email: Optional[bool] = None
+    notify_weekly_digest_telegram: Optional[bool] = None
+    notify_weekly_digest_webhook: Optional[bool] = None
 
 
 class NotificationLogOut(BaseModel):

@@ -196,6 +196,11 @@ export interface ScheduleConfig {
   reachability_ttl_minutes: number
   staged_rollout_enabled: boolean        // issue #41
   ring_promotion_delay_hours: number     // issue #41
+  weekly_digest_enabled: boolean         // issue #58
+  weekly_digest_day_of_week: number      // 0=Mon … 6=Sun (APScheduler convention)
+  weekly_digest_hour: number
+  weekly_digest_minute: number
+  next_weekly_digest_time: string | null
 }
 
 export interface NotificationConfig {
@@ -244,6 +249,10 @@ export interface NotificationConfig {
   notify_error_slack: boolean
   notify_security_slack: boolean
   notify_reboot_slack: boolean
+  // Weekly digest (issue #58)
+  notify_weekly_digest_email: boolean
+  notify_weekly_digest_telegram: boolean
+  notify_weekly_digest_webhook: boolean
 }
 
 export interface TemplatePackage {

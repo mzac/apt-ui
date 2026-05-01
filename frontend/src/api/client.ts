@@ -333,6 +333,10 @@ export const notifications = {
   testEmail: () => post('/api/notifications/test/email'),
   testTelegram: () => post('/api/notifications/test/telegram'),
   testSlack: () => post('/api/notifications/test/slack'),
+  testWeeklyDigest: () =>
+    post<{ detail: string; results: Record<'email' | 'telegram' | 'webhook' | 'slack', string> }>(
+      '/api/notifications/test-weekly-digest'
+    ),
   detectChatId: () => get<{ chats: { id: number; title: string }[] }>('/api/notifications/telegram/detect-chat-id'),
   history: (page = 1, limit = 50) =>
     get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(

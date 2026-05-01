@@ -305,6 +305,10 @@ class NotificationConfig(Base):
     notify_error_slack: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_security_slack: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_reboot_slack: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Weekly digest (issue #58) — per-channel opt-in toggles. Master enable lives in ScheduleConfig.
+    notify_weekly_digest_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_weekly_digest_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_weekly_digest_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ScheduleConfig(Base):
@@ -326,6 +330,12 @@ class ScheduleConfig(Base):
     # Staged rollout (issue #41) — group servers by `ring:*` tag and upgrade in order
     staged_rollout_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     ring_promotion_delay_hours: Mapped[int] = mapped_column(Integer, default=24)
+    # Weekly patch digest (issue #58) — separate cron from the daily summary so
+    # ops teams can run a richer "what changed last week" report on a quieter cadence.
+    weekly_digest_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    weekly_digest_day_of_week: Mapped[int] = mapped_column(Integer, default=0)  # 0=Mon … 6=Sun (APScheduler day_of_week)
+    weekly_digest_hour: Mapped[int] = mapped_column(Integer, default=9)
+    weekly_digest_minute: Mapped[int] = mapped_column(Integer, default=0)
     # conffile_action controls what apt-get does when a package ships a new version
     # of a config file that has been locally modified:
     #   confdef_confold — use the package's default answer; if none, keep existing (safest)

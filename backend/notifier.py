@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -1006,6 +1006,573 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
                 for sd in reboot_servers
             ],
         })
+
+
+# ---------------------------------------------------------------------------
+# Weekly patch digest (issue #58)
+# ---------------------------------------------------------------------------
+
+async def compose_weekly_digest(db: AsyncSession) -> dict:
+    """Aggregate fleet activity over the last 7 days into a digest payload.
+
+    Returns a dict with the structured data plus pre-rendered email/Telegram
+    bodies. The dict is also the shape sent to the webhook.
+    """
+    from backend.config import TZ
+    from backend.eol_data import get_eol_status_from_os_info
+
+    now_local = datetime.now(tz=TZ)
+    week_ago_local = now_local - timedelta(days=7)
+    # The DB stores naive UTC; compare against the UTC-equivalent cutoff.
+    week_ago_utc_naive = (now_local.astimezone(tz=None) - timedelta(days=7)).replace(tzinfo=None)
+    now_utc_naive = datetime.utcnow()
+
+    # Headline counters from update_history (last 7d)
+    hist_res = await db.execute(
+        select(UpdateHistory).where(UpdateHistory.started_at >= week_ago_utc_naive)
+    )
+    history_rows = list(hist_res.scalars().all())
+
+    total_pkgs_upgraded = 0
+    security_pkgs_upgraded = 0
+    servers_upgraded_ids: set[int] = set()
+    per_server_counts: dict[int, dict] = {}  # server_id -> {runs, pkgs, last_run}
+
+    for h in history_rows:
+        if h.status != "success":
+            continue
+        try:
+            pkgs = json.loads(h.packages_upgraded) if h.packages_upgraded else []
+        except Exception:
+            pkgs = []
+        n = len(pkgs)
+        # We don't have per-package security flags in update_history, so we use
+        # an approximate name-based heuristic for the security counter.
+        for p in pkgs:
+            name = p.get("name") if isinstance(p, dict) else str(p)
+            if isinstance(name, str) and any(tok in name for tok in ("-security", "linux-image", "openssl", "openssh")):
+                security_pkgs_upgraded += 1
+        total_pkgs_upgraded += n
+        servers_upgraded_ids.add(h.server_id)
+        s = per_server_counts.setdefault(h.server_id, {"runs": 0, "pkgs": 0, "last_run": None})
+        s["runs"] += 1
+        s["pkgs"] += n
+        ts = h.completed_at or h.started_at
+        if s["last_run"] is None or (ts and ts > s["last_run"]):
+            s["last_run"] = ts
+
+    # Current fleet state — still pending updates / health flags
+    server_data = await _fetch_server_check_data(db)
+    pending: list[dict] = []
+    offline_24h: list[dict] = []
+    boot_alerts: list[dict] = []
+    kernel_old: list[dict] = []
+    eol_soon: list[dict] = []
+
+    for sd in server_data:
+        s, chk, stats = sd["server"], sd["check"], sd.get("stats")
+        # Pending list
+        if chk and chk.status == "success" and chk.packages_available > 0:
+            pending.append({
+                "server": s.name,
+                "hostname": s.hostname,
+                "packages_available": chk.packages_available,
+                "security_packages": chk.security_packages,
+                "reboot_required": bool(chk.reboot_required),
+                "kept_back": False,  # we don't surface kept_back in stored check
+                "checked_at": chk.checked_at.isoformat() if chk.checked_at else None,
+            })
+        # Offline > 24h
+        if not s.is_reachable and (s.last_seen is None or (now_utc_naive - s.last_seen) > timedelta(hours=24)):
+            offline_24h.append({"server": s.name, "hostname": s.hostname, "last_seen": s.last_seen.isoformat() if s.last_seen else None})
+        # /boot disk-space alert (<10%, but only if total is known)
+        if stats and stats.boot_total_mb and stats.boot_free_mb is not None:
+            if stats.boot_total_mb > 0 and (stats.boot_free_mb / stats.boot_total_mb) < 0.10:
+                boot_alerts.append({
+                    "server": s.name,
+                    "hostname": s.hostname,
+                    "boot_free_mb": stats.boot_free_mb,
+                    "boot_total_mb": stats.boot_total_mb,
+                })
+        # Kernel age > 180d
+        if stats and stats.kernel_install_date:
+            age_days = (now_utc_naive - stats.kernel_install_date).total_seconds() / 86400
+            if age_days > 180:
+                kernel_old.append({
+                    "server": s.name,
+                    "hostname": s.hostname,
+                    "kernel_age_days": int(age_days),
+                    "kernel_version": stats.kernel_version or "",
+                })
+        # OS EOL within 90 days
+        if s.os_info:
+            try:
+                eol = get_eol_status_from_os_info(s.os_info)
+                if eol and eol.get("days_remaining") is not None and eol["days_remaining"] <= 90:
+                    eol_soon.append({
+                        "server": s.name,
+                        "hostname": s.hostname,
+                        "os_info": s.os_info,
+                        "eol_date": eol.get("date"),
+                        "days_remaining": eol["days_remaining"],
+                    })
+            except Exception:
+                pass
+
+    # Sort pending oldest-checked first
+    pending.sort(key=lambda r: r["checked_at"] or "")
+
+    # By-server table for the email
+    by_server: list[dict] = []
+    server_lookup = {sd["server"].id: sd for sd in server_data}
+    for sid, info in per_server_counts.items():
+        sd = server_lookup.get(sid)
+        if not sd:
+            continue
+        s, chk = sd["server"], sd["check"]
+        status = "ok"
+        if chk is None or chk.status != "success":
+            status = "error" if chk and chk.status == "error" else "no-check"
+        elif chk.packages_available > 0:
+            status = "pending"
+        by_server.append({
+            "server": s.name,
+            "hostname": s.hostname,
+            "runs": info["runs"],
+            "packages": info["pkgs"],
+            "last_run": info["last_run"].isoformat() if info["last_run"] else None,
+            "last_check": chk.checked_at.isoformat() if chk and chk.checked_at else None,
+            "status": status,
+        })
+    by_server.sort(key=lambda r: r["packages"], reverse=True)
+
+    # CVE summary — count CVEs whose USN published in the last 7d
+    new_cves_by_severity: dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
+    new_cve_pkgs: set[str] = set()
+    affected_servers_for_new_cves = 0
+    try:
+        from backend.cve_matcher import _load_cache  # type: ignore
+        cache = _load_cache() or {}
+        index = cache.get("index", {}) if isinstance(cache, dict) else {}
+        cutoff_iso = week_ago_utc_naive.isoformat()
+        # Set of (severity) per package with new USN in window
+        recent_pkgs: set[str] = set()
+        for pkg, entries in index.items():
+            for e in entries:
+                pub = e.get("published") or ""
+                if pub and pub >= cutoff_iso:
+                    recent_pkgs.add(pkg)
+                    sev = (e.get("severity") or "unknown").lower()
+                    if sev not in new_cves_by_severity:
+                        sev = "unknown"
+                    new_cves_by_severity[sev] += 1
+        new_cve_pkgs = recent_pkgs
+        # How many servers have *any* pending package matching a recent USN package
+        for sd in server_data:
+            chk = sd["check"]
+            if not chk or not chk.packages_json:
+                continue
+            try:
+                pkgs = json.loads(chk.packages_json)
+            except Exception:
+                continue
+            names = {p.get("name") for p in pkgs if isinstance(p, dict)}
+            if names & recent_pkgs:
+                affected_servers_for_new_cves += 1
+    except Exception as exc:
+        logger.debug("Weekly digest: CVE summary skipped: %s", exc)
+
+    date_range = f"{week_ago_local.date().isoformat()} → {now_local.date().isoformat()}"
+
+    headline = {
+        "packages_upgraded": total_pkgs_upgraded,
+        "security_packages_upgraded": security_pkgs_upgraded,
+        "servers_upgraded": len(servers_upgraded_ids),
+        "servers_pending": len(pending),
+        "new_cves": sum(new_cves_by_severity.values()),
+        "new_cve_packages": len(new_cve_pkgs),
+        "affected_servers_for_new_cves": affected_servers_for_new_cves,
+    }
+
+    health = {
+        "offline_24h": offline_24h,
+        "boot_disk_alerts": boot_alerts,
+        "kernel_age_180d": kernel_old,
+        "eol_within_90d": eol_soon,
+    }
+
+    cve_summary = {
+        "by_severity": new_cves_by_severity,
+        "package_count": len(new_cve_pkgs),
+        "affected_servers": affected_servers_for_new_cves,
+    }
+
+    payload = {
+        "event": "weekly_digest",
+        "date_range": date_range,
+        "generated_at": now_local.isoformat(),
+        "headline": headline,
+        "by_server": by_server,
+        "pending": pending,
+        "cve_summary": cve_summary,
+        "health": health,
+    }
+
+    subject = (
+        f"apt-ui digest — {date_range}: "
+        f"{total_pkgs_upgraded} packages upgraded across {len(servers_upgraded_ids)} servers"
+    )
+    payload["subject"] = subject
+    payload["html_body"] = _build_weekly_html(subject, payload)
+    payload["text_body"] = _build_weekly_text(subject, payload)
+    payload["telegram_body"] = _build_weekly_telegram(subject, payload)
+
+    return payload
+
+
+def _build_weekly_text(subject: str, p: dict) -> str:
+    h = p["headline"]
+    lines = [subject, "=" * len(subject), ""]
+    lines.append(
+        f"Packages upgraded: {h['packages_upgraded']} "
+        f"({h['security_packages_upgraded']} security-flagged) "
+        f"on {h['servers_upgraded']} server(s)"
+    )
+    lines.append(f"Servers still pending updates: {h['servers_pending']}")
+    lines.append(
+        f"New CVEs this week: {h['new_cves']} "
+        f"across {h['new_cve_packages']} package(s); "
+        f"{h['affected_servers_for_new_cves']} server(s) affected"
+    )
+    lines.append("")
+    if p["by_server"]:
+        lines.append("By server (last 7d upgrades):")
+        for r in p["by_server"]:
+            lines.append(
+                f"  {r['server']:<24} runs={r['runs']:<3} pkgs={r['packages']:<4} "
+                f"status={r['status']}"
+            )
+        lines.append("")
+    if p["pending"]:
+        lines.append("Still pending:")
+        for r in p["pending"][:30]:
+            flags = []
+            if r["security_packages"]:
+                flags.append(f"{r['security_packages']} security")
+            if r["reboot_required"]:
+                flags.append("reboot required")
+            extra = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"  • {r['server']} ({r['hostname']}) — {r['packages_available']} pkg{extra}")
+        if len(p["pending"]) > 30:
+            lines.append(f"  …and {len(p['pending']) - 30} more")
+        lines.append("")
+    sev = p["cve_summary"]["by_severity"]
+    if sum(sev.values()):
+        lines.append("CVE summary (new USNs this week):")
+        for label in ("critical", "high", "medium", "low", "unknown"):
+            if sev.get(label):
+                lines.append(f"  {label}: {sev[label]}")
+        lines.append("")
+    health = p["health"]
+    if any(health.values()):
+        lines.append("Health flags:")
+        if health["offline_24h"]:
+            lines.append(f"  offline >24h: {', '.join(r['server'] for r in health['offline_24h'])}")
+        if health["boot_disk_alerts"]:
+            lines.append(
+                "  /boot low: "
+                + ", ".join(
+                    f"{r['server']} ({r['boot_free_mb']}/{r['boot_total_mb']} MB)"
+                    for r in health["boot_disk_alerts"]
+                )
+            )
+        if health["kernel_age_180d"]:
+            lines.append(
+                "  kernel >180d: "
+                + ", ".join(f"{r['server']} ({r['kernel_age_days']}d)" for r in health["kernel_age_180d"])
+            )
+        if health["eol_within_90d"]:
+            lines.append(
+                "  OS EOL ≤90d: "
+                + ", ".join(f"{r['server']} ({r['days_remaining']}d)" for r in health["eol_within_90d"])
+            )
+        lines.append("")
+    lines.append("See /reports for the full breakdown.")
+    return "\n".join(lines)
+
+
+def _build_weekly_html(subject: str, p: dict) -> str:  # noqa: C901
+    h = p["headline"]
+    sev = p["cve_summary"]["by_severity"]
+    health = p["health"]
+
+    def stat_card(value, label, color):
+        return (
+            f'<td width="25%" style="padding:4px;">'
+            f'<div style="background:#fff;border-radius:8px;padding:14px 8px;'
+            f'text-align:center;border:1px solid #e5e7eb;">'
+            f'<div style="font-size:24px;font-weight:700;color:{color};font-family:-apple-system,monospace;">{value}</div>'
+            f'<div style="font-size:11px;color:#6b7280;margin-top:3px;">{label}</div>'
+            f'</div></td>'
+        )
+
+    overview = (
+        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>'
+        + stat_card(h["packages_upgraded"], "Packages upgraded", "#16a34a")
+        + stat_card(h["servers_upgraded"], "Servers upgraded", "#0891b2")
+        + stat_card(h["servers_pending"], "Pending", "#d97706" if h["servers_pending"] else "#6b7280")
+        + stat_card(h["new_cves"], "New CVEs", "#dc2626" if h["new_cves"] else "#6b7280")
+        + '</tr></table>'
+    )
+
+    # By-server table
+    by_server_rows = ""
+    for r in p["by_server"][:50]:
+        status_color = {
+            "ok": "#16a34a",
+            "pending": "#d97706",
+            "error": "#dc2626",
+            "no-check": "#6b7280",
+        }.get(r["status"], "#6b7280")
+        last_check = (r["last_check"] or "").replace("T", " ")[:16]
+        by_server_rows += (
+            f"<tr style='border-bottom:1px solid #f3f4f6;'>"
+            f"<td style='padding:6px 10px;font-size:13px;color:#111827;'><strong>{r['server']}</strong>"
+            f"<div style='font-size:11px;color:#6b7280;font-family:monospace;'>{r['hostname']}</div></td>"
+            f"<td style='padding:6px 10px;text-align:right;font-family:monospace;font-size:12px;'>{r['runs']}</td>"
+            f"<td style='padding:6px 10px;text-align:right;font-family:monospace;font-size:12px;color:#16a34a;'>{r['packages']}</td>"
+            f"<td style='padding:6px 10px;font-family:monospace;font-size:11px;color:#6b7280;'>{last_check}</td>"
+            f"<td style='padding:6px 10px;text-align:right;'>"
+            f"<span style='display:inline-block;font-size:11px;padding:2px 8px;border-radius:4px;"
+            f"background:#f3f4f6;color:{status_color};font-weight:600;'>{r['status']}</span></td>"
+            f"</tr>"
+        )
+    by_server_section = ""
+    if by_server_rows:
+        by_server_section = (
+            "<div style='background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:12px;overflow:hidden;'>"
+            "<div style='background:#f9fafb;padding:10px 16px;border-bottom:1px solid #e5e7eb;'>"
+            "<span style='font-size:14px;font-weight:600;color:#111827;'>By server (last 7 days)</span></div>"
+            "<table width='100%' style='border-collapse:collapse;'>"
+            "<thead><tr style='background:#f9fafb;'>"
+            "<th style='padding:6px 10px;text-align:left;font-size:10px;color:#9ca3af;'>SERVER</th>"
+            "<th style='padding:6px 10px;text-align:right;font-size:10px;color:#9ca3af;'>RUNS</th>"
+            "<th style='padding:6px 10px;text-align:right;font-size:10px;color:#9ca3af;'>PKGS</th>"
+            "<th style='padding:6px 10px;text-align:left;font-size:10px;color:#9ca3af;'>LAST CHECK</th>"
+            "<th style='padding:6px 10px;text-align:right;font-size:10px;color:#9ca3af;'>STATUS</th>"
+            f"</tr></thead><tbody>{by_server_rows}</tbody></table></div>"
+        )
+
+    # Pending list
+    pending_rows = ""
+    for r in p["pending"][:30]:
+        sec_badge = (
+            f"<span style='display:inline-block;background:#fef2f2;color:#dc2626;"
+            f"font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;'>"
+            f"{r['security_packages']} security</span>"
+            if r["security_packages"] else ""
+        )
+        reboot_badge = (
+            "<span style='display:inline-block;background:#fef3c7;color:#92400e;"
+            "font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;'>↻ reboot</span>"
+            if r["reboot_required"] else ""
+        )
+        pending_rows += (
+            f"<tr style='border-bottom:1px solid #f3f4f6;'>"
+            f"<td style='padding:6px 10px;font-size:13px;color:#111827;'><strong>{r['server']}</strong>"
+            f"<div style='font-size:11px;color:#6b7280;font-family:monospace;'>{r['hostname']}</div></td>"
+            f"<td style='padding:6px 10px;text-align:right;font-family:monospace;font-size:12px;color:#d97706;'>{r['packages_available']}{sec_badge}{reboot_badge}</td>"
+            f"</tr>"
+        )
+    pending_section = ""
+    if pending_rows:
+        pending_section = (
+            "<div style='background:#fff;border-radius:8px;border:1px solid #fde68a;margin-bottom:12px;overflow:hidden;'>"
+            "<div style='background:#fffbeb;padding:10px 16px;border-bottom:1px solid #fde68a;'>"
+            f"<span style='font-size:14px;font-weight:600;color:#92400e;'>Still pending — oldest first ({len(p['pending'])} server(s))</span></div>"
+            f"<table width='100%' style='border-collapse:collapse;'>{pending_rows}</table></div>"
+        )
+
+    # CVE
+    cve_rows = ""
+    for label, color in (
+        ("critical", "#7f1d1d"),
+        ("high", "#dc2626"),
+        ("medium", "#d97706"),
+        ("low", "#0891b2"),
+        ("unknown", "#6b7280"),
+    ):
+        n = sev.get(label, 0)
+        if n:
+            cve_rows += (
+                f"<tr><td style='padding:4px 10px;font-size:13px;text-transform:capitalize;color:{color};font-weight:600;'>{label}</td>"
+                f"<td style='padding:4px 10px;text-align:right;font-family:monospace;'>{n}</td></tr>"
+            )
+    cve_section = ""
+    if cve_rows:
+        cve_section = (
+            "<div style='background:#fff;border-radius:8px;border:1px solid #fca5a5;margin-bottom:12px;overflow:hidden;'>"
+            "<div style='background:#fef2f2;padding:10px 16px;border-bottom:1px solid #fca5a5;'>"
+            f"<span style='font-size:14px;font-weight:600;color:#dc2626;'>New CVEs this week — {p['cve_summary']['package_count']} package(s), {p['cve_summary']['affected_servers']} affected server(s)</span></div>"
+            f"<table width='100%' style='border-collapse:collapse;'>{cve_rows}</table></div>"
+        )
+
+    # Health
+    health_items = []
+    if health["offline_24h"]:
+        items = ", ".join(f"<strong>{r['server']}</strong>" for r in health["offline_24h"])
+        health_items.append(f"<li><span style='color:#dc2626;'>Offline &gt;24h:</span> {items}</li>")
+    if health["boot_disk_alerts"]:
+        items = ", ".join(
+            f"<strong>{r['server']}</strong> ({r['boot_free_mb']}/{r['boot_total_mb']} MB)"
+            for r in health["boot_disk_alerts"]
+        )
+        health_items.append(f"<li><span style='color:#d97706;'>/boot &lt;10% free:</span> {items}</li>")
+    if health["kernel_age_180d"]:
+        items = ", ".join(
+            f"<strong>{r['server']}</strong> ({r['kernel_age_days']}d)"
+            for r in health["kernel_age_180d"]
+        )
+        health_items.append(f"<li><span style='color:#d97706;'>Kernel age &gt;180d:</span> {items}</li>")
+    if health["eol_within_90d"]:
+        items = ", ".join(
+            f"<strong>{r['server']}</strong> ({r['days_remaining']}d to {r['eol_date']})"
+            for r in health["eol_within_90d"]
+        )
+        health_items.append(f"<li><span style='color:#dc2626;'>OS EOL ≤90d:</span> {items}</li>")
+    health_section = ""
+    if health_items:
+        health_section = (
+            "<div style='background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:12px;overflow:hidden;'>"
+            "<div style='background:#f9fafb;padding:10px 16px;border-bottom:1px solid #e5e7eb;'>"
+            "<span style='font-size:14px;font-weight:600;color:#111827;'>Health flags</span></div>"
+            f"<ul style='margin:0;padding:12px 16px 12px 32px;font-size:13px;color:#374151;line-height:1.7;'>{''.join(health_items)}</ul></div>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>{subject}</title></head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:20px;">
+  <div style="background:#1a1f2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="font-size:11px;color:#60a5fa;letter-spacing:.1em;font-weight:600;text-transform:uppercase;margin-bottom:4px;">APT-UI · WEEKLY DIGEST</div>
+    <div style="font-size:20px;font-weight:700;color:#f9fafb;">{p['date_range']}</div>
+    <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
+      {h['packages_upgraded']} packages upgraded · {h['servers_upgraded']} servers · {h['servers_pending']} pending · {h['new_cves']} new CVEs
+    </div>
+  </div>
+  {overview}
+  {by_server_section}
+  {pending_section}
+  {cve_section}
+  {health_section}
+  <div style="text-align:center;padding:16px 0 0;font-size:11px;color:#9ca3af;">
+    <a href="/reports" style="color:#60a5fa;text-decoration:none;">View full reports →</a>
+    <div style="margin-top:6px;">apt-ui · weekly digest</div>
+  </div>
+</div></body></html>"""
+
+
+def _build_weekly_telegram(subject: str, p: dict) -> str:
+    h = p["headline"]
+    sev = p["cve_summary"]["by_severity"]
+    health = p["health"]
+    lines = [f"*apt-ui weekly digest*", f"_{p['date_range']}_", ""]
+    lines.append(
+        f"📦 *{h['packages_upgraded']}* pkgs upgraded "
+        f"({h['security_packages_upgraded']} security) on *{h['servers_upgraded']}* server(s)"
+    )
+    if h["servers_pending"]:
+        lines.append(f"⏳ *{h['servers_pending']}* server(s) still pending")
+    if h["new_cves"]:
+        lines.append(
+            f"🛡️ *{h['new_cves']}* new CVE(s) across {h['new_cve_packages']} pkg(s); "
+            f"{h['affected_servers_for_new_cves']} affected"
+        )
+    lines.append("")
+    if p["by_server"]:
+        lines.append("*Top movers:*")
+        for r in p["by_server"][:8]:
+            lines.append(f"  • `{r['server']}` — {r['packages']} pkg, {r['runs']} run(s)")
+        lines.append("")
+    if p["pending"]:
+        lines.append("*Still pending (oldest first):*")
+        for r in p["pending"][:8]:
+            extras = []
+            if r["security_packages"]:
+                extras.append(f"{r['security_packages']} sec")
+            if r["reboot_required"]:
+                extras.append("↻")
+            extra = f" \\[{', '.join(extras)}]" if extras else ""
+            lines.append(f"  • `{r['server']}` — {r['packages_available']} pkg{extra}")
+        if len(p["pending"]) > 8:
+            lines.append(f"  …and {len(p['pending']) - 8} more")
+        lines.append("")
+    if sum(sev.values()):
+        parts = [f"{label}: {sev[label]}" for label in ("critical", "high", "medium", "low") if sev.get(label)]
+        if parts:
+            lines.append("*New CVEs:* " + ", ".join(parts))
+    flag_parts = []
+    if health["offline_24h"]:
+        flag_parts.append(f"{len(health['offline_24h'])} offline >24h")
+    if health["boot_disk_alerts"]:
+        flag_parts.append(f"{len(health['boot_disk_alerts'])} /boot low")
+    if health["kernel_age_180d"]:
+        flag_parts.append(f"{len(health['kernel_age_180d'])} kernel >180d")
+    if health["eol_within_90d"]:
+        flag_parts.append(f"{len(health['eol_within_90d'])} EOL ≤90d")
+    if flag_parts:
+        lines.append("*Health:* " + " · ".join(flag_parts))
+    return "\n".join(lines)
+
+
+async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
+    """Compose and dispatch the weekly digest. Returns per-channel send results."""
+    payload = await compose_weekly_digest(db)
+    subject = payload["subject"]
+
+    results: dict[str, str] = {"email": "skipped", "telegram": "skipped", "webhook": "skipped"}
+
+    if cfg.email_enabled and getattr(cfg, "notify_weekly_digest_email", True):
+        try:
+            await _send_email(
+                cfg, subject, payload["html_body"], payload["text_body"],
+                event_type="weekly_digest",
+            )
+            results["email"] = "sent"
+        except Exception as exc:
+            logger.error("Weekly digest email failed: %s", exc)
+            results["email"] = f"error: {exc}"
+
+    if cfg.telegram_enabled and getattr(cfg, "notify_weekly_digest_telegram", True):
+        try:
+            await _send_telegram(cfg, payload["telegram_body"], event_type="weekly_digest")
+            results["telegram"] = "sent"
+        except Exception as exc:
+            logger.error("Weekly digest telegram failed: %s", exc)
+            results["telegram"] = f"error: {exc}"
+
+    if cfg.webhook_enabled and getattr(cfg, "notify_weekly_digest_webhook", True):
+        try:
+            # Webhook payload mirrors daily_summary shape: structured JSON,
+            # `event` discriminator added by _send_webhook.
+            wh_payload = {
+                "date_range": payload["date_range"],
+                "generated_at": payload["generated_at"],
+                "headline": payload["headline"],
+                "by_server": payload["by_server"],
+                "pending": payload["pending"],
+                "cve_summary": payload["cve_summary"],
+                "health": payload["health"],
+            }
+            await _send_webhook(cfg, "weekly_digest", wh_payload)
+            results["webhook"] = "sent"
+        except Exception as exc:
+            logger.error("Weekly digest webhook failed: %s", exc)
+            results["webhook"] = f"error: {exc}"
+
+    return results
 
 
 async def get_telegram_updates(bot_token: str) -> list[dict]:
