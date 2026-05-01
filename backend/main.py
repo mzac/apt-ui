@@ -108,6 +108,7 @@ from backend.routers import release_check as release_check_router
 from backend.routers import hooks as hooks_router
 from backend.routers import reports as reports_router
 from backend.routers import calendar as calendar_router
+from backend.routers import security as security_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -131,6 +132,7 @@ app.include_router(release_check_router.router)
 app.include_router(hooks_router.router)
 app.include_router(reports_router.router)
 app.include_router(calendar_router.router)
+app.include_router(security_router.router)
 
 
 @app.get("/api/config/features")

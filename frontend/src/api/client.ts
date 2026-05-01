@@ -429,6 +429,35 @@ export const reports = {
   }>(`/api/reports/security-sla?sla_days=${slaDays}&window_days=${windowDays}`),
 }
 
+// ---------------------------------------------------------------------------
+// Security / CVE inventory (issue #54)
+// ---------------------------------------------------------------------------
+
+export interface CveListParams {
+  status?: 'pending' | 'fixed' | 'all'
+  severity?: string         // CSV: "critical,high"
+  group_id?: number
+  tag?: string
+  since?: string            // ISO date
+  until?: string            // ISO date
+}
+
+export const security = {
+  list: (params?: CveListParams) => {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.severity) q.set('severity', params.severity)
+    if (params?.group_id != null) q.set('group_id', String(params.group_id))
+    if (params?.tag) q.set('tag', params.tag)
+    if (params?.since) q.set('since', params.since)
+    if (params?.until) q.set('until', params.until)
+    return get<import('@/types').CveInventoryRow[]>(
+      `/api/security/cves${q.toString() ? '?' + q : ''}`
+    )
+  },
+  summary: () => get<import('@/types').CveSummary>('/api/security/summary'),
+}
+
 export const sshAudit = {
   list: (params?: { server_id?: number; page?: number; limit?: number }) => {
     const q = new URLSearchParams()

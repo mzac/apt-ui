@@ -94,6 +94,39 @@ export interface CveRef {
   fixed_version: string
 }
 
+export type CveSeverity = 'critical' | 'high' | 'medium' | 'low' | 'unknown'
+export type CveRowStatus = 'pending' | 'partial' | 'fixed'
+
+export interface CveAffectedServer {
+  id: number
+  name: string
+  hostname: string
+  installed_version: string
+  fixed_version: string
+  status: 'pending' | 'fixed'
+}
+
+export interface CveInventoryRow {
+  cve_id: string                  // e.g. "CVE-2025-12345" or "USN-1234-1" if no CVE id
+  usn_ids: string[]               // ["USN-1234-1", ...]
+  severity: CveSeverity
+  package: string
+  fixed_version: string
+  url: string
+  first_seen_in_fleet: string | null   // ISO datetime (UTC)
+  status: CveRowStatus
+  affected_servers: CveAffectedServer[]
+  affected_count: number
+  pending_count: number
+}
+
+export interface CveSummary {
+  open_total: number
+  critical: number
+  high: number
+  fixed_last_7d: number
+}
+
 export interface PackageInfo {
   name: string
   current_version: string
