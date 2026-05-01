@@ -3,6 +3,14 @@ name: Build and push Docker image
 on:
   release:
     types: [published]
+  # Manual trigger so we can rebuild any existing tag (e.g. backfill an image
+  # for a release whose original workflow run misconfigured tagging).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to build (e.g. 2026.05.01-02)'
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -18,6 +26,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # On manual dispatch, check out the requested tag instead of the
+          # default branch. On release: published, github.ref already points
+          # at the tag, so this is a no-op there.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -34,10 +47,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Use the literal git tag as the image tag — apt-ui uses date-based
+          # versions like 2026.05.01-02 which aren't SemVer, so the prior
+          # `type=semver` rules silently produced no version-tagged image.
+          # On manual workflow_dispatch the input value drives the tag name.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=ref,event=tag
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest
 
       - name: Build and push Docker image
@@ -47,7 +63,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: APP_VERSION=${{ github.ref_name }}
+          build-args: APP_VERSION=${{ github.event.inputs.tag || github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
