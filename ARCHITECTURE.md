@@ -32,7 +32,7 @@ graph TB
         end
 
         subgraph data_layer["Data Layer"]
-            DB[("SQLite\n/data/apt-dashboard.db\n────────────\n14 tables · 40 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log")]
+            DB[("SQLite\n/data/apt-ui.db\n────────────\n14 tables · 40 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log")]
             CRYPTO["Fernet Encryption\nAES-128-CBC + HMAC-SHA256\nPer-server SSH keys in DB\nKey: SHA-256(ENCRYPTION_KEY)\nfallback → JWT_SECRET"]
         end
 
@@ -116,7 +116,7 @@ The frontend is a **React 18 SPA** built with Vite and TypeScript, served as sta
 
 FastAPI handles all HTTP traffic on port 8000 — both the REST API and static file serving. The React `index.html` is returned for any path not matched by an API route (SPA fallback).
 
-**Authentication** uses a single `apt_dashboard_token` httpOnly cookie containing an HS256-signed JWT (24 h expiry). All `/api/*` routes except `/api/auth/login` and `/health` require a valid cookie via the `get_current_user` FastAPI dependency. WebSocket endpoints call `get_current_user_ws` during the handshake and close with code 1008 on failure.
+**Authentication** uses a single `apt_ui_token` httpOnly cookie containing an HS256-signed JWT (24 h expiry). All `/api/*` routes except `/api/auth/login` and `/health` require a valid cookie via the `get_current_user` FastAPI dependency. WebSocket endpoints call `get_current_user_ws` during the handshake and close with code 1008 on failure.
 
 **Router summary:**
 
@@ -217,7 +217,7 @@ Events: `upgrade_complete`, `upgrade_failed`, `security_updates_found`, `reboot_
 
 ### Data Layer
 
-The SQLite database lives at `/data/apt-dashboard.db` inside the container (mounted as a Docker volume). SQLAlchemy async is used throughout the API layer; the CLI tool uses synchronous SQLAlchemy.
+The SQLite database lives at `/data/apt-ui.db` inside the container (mounted as a Docker volume). SQLAlchemy async is used throughout the API layer; the CLI tool uses synchronous SQLAlchemy.
 
 Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE` statements in `init_db()`. Errors are silently swallowed, so the same list is safe against both fresh installs and existing databases.
 

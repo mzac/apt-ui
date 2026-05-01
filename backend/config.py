@@ -1,6 +1,6 @@
 import os
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/apt-dashboard.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/apt-ui.db")
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
 
 SSH_PRIVATE_KEY = os.getenv("SSH_PRIVATE_KEY", "")

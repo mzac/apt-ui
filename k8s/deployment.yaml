@@ -68,7 +68,7 @@ spec:
             - name: TZ
               value: America/Montreal
             - name: DATABASE_PATH
-              value: /data/apt-dashboard.db
+              value: /data/apt-ui.db
           volumeMounts:
             - name: data
               mountPath: /data

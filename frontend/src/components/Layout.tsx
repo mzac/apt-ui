@@ -149,7 +149,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Top bar */}
       <header className="bg-surface border-b border-border h-12 flex items-center px-3 gap-3 sticky top-0 z-40">
         <Link to="/" className="font-mono text-green font-medium tracking-tight text-sm hover:text-green/80 transition-colors shrink-0">
-          ⬡ <span className="hidden sm:inline">apt-dashboard</span>
+          ⬡ <span className="hidden sm:inline">apt-ui</span>
         </Link>
         <nav className="flex gap-0.5 flex-1 overflow-x-auto min-w-0">
           {nav.map(({ to, label }) => (

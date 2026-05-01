@@ -63,7 +63,7 @@ The dashboard executes commands on managed servers over SSH. All commands are co
 
 ### Data storage
 
-- All persistent state is stored in a SQLite database at `/data/apt-dashboard.db` inside the container.
+- All persistent state is stored in a SQLite database at `/data/apt-ui.db` inside the container.
 - The database is mounted as a Docker volume — it is the operator's responsibility to secure volume access on the host.
 - SMTP passwords and Telegram bot tokens are stored as plaintext in the database. The database should be protected at the filesystem level.
 - Upgrade terminal output is capped at 1 MB per session before being written to the database.

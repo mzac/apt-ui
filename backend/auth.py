@@ -105,7 +105,7 @@ def decode_token(token: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def get_current_user(
-    apt_dashboard_token: str | None = Cookie(default=None),
+    apt_ui_token: str | None = Cookie(default=None),
     authorization: str | None = Header(default=None),
 ):
     """FastAPI dependency — resolves the logged-in User or raises 401.
@@ -141,11 +141,11 @@ async def get_current_user(
                 return user
 
     # Path 2: JWT cookie (existing behaviour)
-    if not apt_dashboard_token:
+    if not apt_ui_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
-    username = decode_token(apt_dashboard_token)
+    username = decode_token(apt_ui_token)
 
     from backend.models import User as _User
 

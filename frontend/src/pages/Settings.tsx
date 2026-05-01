@@ -493,7 +493,7 @@ function ServersTab() {
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
               a.href = url
-              a.download = `apt-dashboard-servers-${new Date().toISOString().slice(0, 10)}.csv`
+              a.download = `apt-ui-servers-${new Date().toISOString().slice(0, 10)}.csv`
               a.click()
               URL.revokeObjectURL(url)
             }}
@@ -2643,7 +2643,7 @@ function BackupTab() {
       const a = document.createElement('a')
       a.href = url
       const date = new Date().toISOString().slice(0, 10)
-      a.download = `apt-dashboard-config-${date}.json`
+      a.download = `apt-ui-config-${date}.json`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e: unknown) {

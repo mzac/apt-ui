@@ -104,7 +104,7 @@ Then set `username = root` when adding each server in the dashboard. No sudo con
 
 ```bash
 # Run on each managed server
-echo "youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/apt-dashboard
+echo "youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/apt-ui
 ```
 
 ### SSH key options
@@ -172,7 +172,7 @@ Default login: `admin` / `admin` — **change this immediately** via Settings �
 
 ## Configuration
 
-All runtime configuration (SMTP, Telegram, schedules, server list) is managed through the web UI and stored in the SQLite database at `/data/apt-dashboard.db`. No restart required to change settings.
+All runtime configuration (SMTP, Telegram, schedules, server list) is managed through the web UI and stored in the SQLite database at `/data/apt-ui.db`. No restart required to change settings.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -180,7 +180,7 @@ All runtime configuration (SMTP, Telegram, schedules, server list) is managed th
 | `SSH_AUTH_SOCK` | — | Path to SSH agent socket inside the container (e.g. `/run/ssh-agent.sock`). Alternative to `SSH_PRIVATE_KEY` — allows passphrase-protected keys. See compose file for socket mount. |
 | `JWT_SECRET` | random | JWT signing secret. Set to persist sessions across restarts |
 | `ENCRYPTION_KEY` | — | Master key used to encrypt per-server SSH keys stored in the database. Falls back to `JWT_SECRET` if not set. Set explicitly to decouple the two secrets. |
-| `DATABASE_PATH` | `/data/apt-dashboard.db` | SQLite file path |
+| `DATABASE_PATH` | `/data/apt-ui.db` | SQLite file path |
 | `TZ` | `America/Montreal` | Timezone for scheduled jobs |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `ENABLE_TERMINAL` | `false` | Set to `true` to enable the interactive SSH shell terminal in the UI. Only enable if you trust all dashboard users. |
@@ -193,16 +193,16 @@ Admin operations can be run from inside the container:
 
 ```bash
 # Reset password (interactive prompt)
-docker compose exec apt-dashboard python -m backend.cli reset-password
+docker compose exec apt-ui python -m backend.cli reset-password
 
 # Reset password inline
-docker compose exec apt-dashboard python -m backend.cli reset-password --username admin --password newpass123
+docker compose exec apt-ui python -m backend.cli reset-password --username admin --password newpass123
 
 # Create a new user
-docker compose exec apt-dashboard python -m backend.cli create-user --username zac --password mypass
+docker compose exec apt-ui python -m backend.cli create-user --username zac --password mypass
 
 # List all users
-docker compose exec apt-dashboard python -m backend.cli list-users
+docker compose exec apt-ui python -m backend.cli list-users
 ```
 
 ---
@@ -222,7 +222,7 @@ Add to your `.env`:
 
 ```
 TS_AUTHKEY=tskey-client-...   # generate at tailscale.com/settings/keys
-TS_HOSTNAME=apt-dashboard     # how it appears on your tailnet
+TS_HOSTNAME=apt-ui            # how it appears on your tailnet
 ```
 
 Then run with the overlay:
@@ -235,7 +235,7 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 
 ### Enable tailscale serve (HTTPS on your tailnet)
 
-`tailscale serve` proxies HTTPS `:443` → app `:8000` and provisions a Let's Encrypt cert automatically for your node's DNS name (e.g. `apt-dashboard.your-tailnet.ts.net`).
+`tailscale serve` proxies HTTPS `:443` → app `:8000` and provisions a Let's Encrypt cert automatically for your node's DNS name (e.g. `apt-ui.your-tailnet.ts.net`).
 
 In `docker-compose.tailscale.yml`, uncomment these two lines under the `tailscale` service:
 
@@ -252,7 +252,7 @@ The manifest at [`k8s/deployment.yaml`](k8s/deployment.yaml) contains a ready-to
 
 ```bash
 # Add the auth key to your existing secret
-kubectl create secret generic apt-dashboard-secrets \
+kubectl create secret generic apt-ui-secrets \
   --from-literal=ssh-private-key="$(cat ~/.ssh/id_rsa)" \
   --from-literal=jwt-secret="$(openssl rand -hex 32)" \
   --from-literal=ts-authkey="tskey-client-..."
@@ -273,7 +273,7 @@ A ready-to-use manifest is provided at [`k8s/deployment.yaml`](k8s/deployment.ya
 
 ```bash
 # Create the secret first
-kubectl create secret generic apt-dashboard-secrets \
+kubectl create secret generic apt-ui-secrets \
   --from-literal=ssh-private-key="$(cat ~/.ssh/id_rsa)" \
   --from-literal=jwt-secret="$(openssl rand -hex 32)"
 
@@ -319,7 +319,7 @@ graph TB
         direction TB
         API["FastAPI  —  14 routers · 50+ REST endpoints · 17 WebSocket streams\n/api/*  (JWT cookie auth)     /health  (liveness probe)     /*  (SPA static)"]
         BG["APScheduler  ·  Update Checker  ·  Upgrade Manager  ·  Notifier\ncron jobs · per-server asyncio.Lock · Email · Telegram · Webhook · Notification Log"]
-        DB[("SQLite  /data/apt-dashboard.db\n14 tables · 40 migrations")]
+        DB[("SQLite  /data/apt-ui.db\n14 tables · 40 migrations")]
         SSH["asyncssh  —  fresh connection per command\nKey priority: per-server → agent → global SSH_PRIVATE_KEY"]
     end
 

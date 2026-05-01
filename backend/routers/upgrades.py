@@ -130,7 +130,7 @@ async def search_packages(
 async def ws_install(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -213,7 +213,7 @@ async def ws_install(websocket: WebSocket, server_id: int):
 async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -296,7 +296,7 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 async def ws_apt_proxy(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -404,7 +404,7 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
     """
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -471,7 +471,7 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
     """Run pveupgrade on a Proxmox VE node, streaming output live."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -552,7 +552,7 @@ async def ws_dry_run(websocket: WebSocket, server_id: int):
     """Run apt-get upgrade/dist-upgrade --dry-run and stream the output."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -679,7 +679,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
     # Auth via cookie
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -746,7 +746,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
 async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -813,7 +813,7 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
 async def ws_upgrade_all(websocket: WebSocket):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -915,7 +915,7 @@ async def ws_shell(websocket: WebSocket, server_id: int):
         return
 
     # Auth via cookie
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -1006,7 +1006,7 @@ async def ws_shell(websocket: WebSocket, server_id: int):
 async def ws_template_apply(websocket: WebSocket, template_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -1098,7 +1098,7 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
     """Run `sudo apt-get update` on the server and stream the output."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -1146,7 +1146,7 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
 async def ws_autoremove(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
@@ -1322,7 +1322,7 @@ async def upload_deb(
 async def ws_install_deb(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_dashboard_token")
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:

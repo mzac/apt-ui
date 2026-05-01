@@ -20,7 +20,7 @@ from backend.schemas import ChangePasswordRequest, LoginRequest, UserOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-COOKIE_NAME = "apt_dashboard_token"
+COOKIE_NAME = "apt_ui_token"
 COOKIE_MAX_AGE = 60 * 60 * 24  # 24 hours
 
 

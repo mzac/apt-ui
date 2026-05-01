@@ -3,7 +3,7 @@ Upgrade execution — runs apt-get upgrade/dist-upgrade over SSH with live WebSo
 
 Prerequisites on remote servers:
   - The SSH user must have passwordless sudo configured.
-    Example /etc/sudoers.d/apt-dashboard:
+    Example /etc/sudoers.d/apt-ui:
       deploy ALL=(ALL) NOPASSWD: /usr/bin/apt-get
 """
 

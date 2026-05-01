@@ -1,6 +1,34 @@
+import logging
+import os
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from backend.config import DATABASE_URL
+from backend.config import DATABASE_PATH, DATABASE_URL
+
+_db_logger = logging.getLogger(__name__)
+
+
+def _migrate_db_path() -> None:
+    """Rename apt-dashboard.db → apt-ui.db on first boot after the rename.
+
+    Only runs when DATABASE_PATH is the new default; skips if the operator
+    has overridden DATABASE_PATH, if the new file already exists, or if the
+    old file doesn't exist.
+    """
+    old = os.path.join(os.path.dirname(DATABASE_PATH), "apt-dashboard.db")
+    if (
+        DATABASE_PATH.endswith("/apt-ui.db")
+        and not os.path.exists(DATABASE_PATH)
+        and os.path.exists(old)
+    ):
+        try:
+            os.rename(old, DATABASE_PATH)
+            _db_logger.info("Migrated database: %s → %s", old, DATABASE_PATH)
+        except OSError as exc:
+            _db_logger.warning("Could not rename database file: %s", exc)
+
+
+_migrate_db_path()
 
 
 engine = create_async_engine(
