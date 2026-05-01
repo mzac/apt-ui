@@ -2002,6 +2002,15 @@ function NotificationsTab() {
     }
   }
 
+  async function sendTestSlack() {
+    try {
+      await notifApi.testSlack()
+      setTestMsg(m => ({ ...m, slack: '✓ Test message sent' }))
+    } catch (err: unknown) {
+      setTestMsg(m => ({ ...m, slack: `✗ ${(err as Error).message}` }))
+    }
+  }
+
   async function detectChatId() {
     try {
       const result = await notifApi.detectChatId()
@@ -2070,6 +2079,35 @@ function NotificationsTab() {
         )}
       </section>
 
+      {/* Slack */}
+      <section className="card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-text-primary">Slack</h2>
+          <input type="checkbox" checked={form.slack_enabled ?? false} onChange={e => setForm(f => ({ ...f, slack_enabled: e.target.checked }))} className="w-4 h-4 accent-green" />
+        </div>
+        {form.slack_enabled && (
+          <div className="space-y-3">
+            <p className="text-xs text-text-muted">
+              Create an <a href="https://api.slack.com/messaging/webhooks" target="_blank" rel="noreferrer" className="text-cyan hover:underline">Incoming Webhook</a> in your Slack workspace,
+              copy the URL below. The webhook is bound to one channel; the optional override only works for legacy webhooks.
+            </p>
+            <div>
+              <label className="label">Webhook URL</label>
+              <input className="input" type="url" placeholder="https://hooks.slack.com/services/..." value={form.slack_webhook_url ?? ''} onChange={e => setForm(f => ({ ...f, slack_webhook_url: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">Channel override (optional)</label>
+              <input className="input" placeholder="#alerts" value={form.slack_channel ?? ''} onChange={e => setForm(f => ({ ...f, slack_channel: e.target.value }))} />
+              <p className="text-xs text-text-muted mt-1">Leave blank to post to the channel the webhook is bound to.</p>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button type="button" onClick={sendTestSlack} className="btn-secondary text-xs">Send Test Message</button>
+              {testMsg.slack && <span className={`text-xs ${testMsg.slack.startsWith('✓') ? 'text-green' : 'text-red'}`}>{testMsg.slack}</span>}
+            </div>
+          </div>
+        )}
+      </section>
+
       {/* Webhook */}
       <section className="card p-4 space-y-4">
         <div className="flex items-center justify-between">
@@ -2106,6 +2144,7 @@ function NotificationsTab() {
                 <th className="text-center py-1 px-3">Enabled</th>
                 <th className="text-center py-1 px-3">Email</th>
                 <th className="text-center py-1 px-3">Telegram</th>
+                <th className="text-center py-1 px-3">Slack</th>
                 <th className="text-center py-1 px-3">Webhook</th>
               </tr>
             </thead>
@@ -2127,6 +2166,12 @@ function NotificationsTab() {
                   <input type="checkbox" checked={form.daily_summary_telegram ?? true}
                     onChange={e => setForm(f => ({ ...f, daily_summary_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.daily_summary_slack ?? true}
+                    disabled={!form.slack_enabled}
+                    onChange={e => setForm(f => ({ ...f, daily_summary_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.daily_summary_webhook ?? true}
@@ -2152,6 +2197,12 @@ function NotificationsTab() {
                   <input type="checkbox" checked={form.notify_upgrade_telegram ?? true}
                     onChange={e => setForm(f => ({ ...f, notify_upgrade_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_upgrade_slack ?? true}
+                    disabled={!form.slack_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_upgrade_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_upgrade_webhook ?? true}
@@ -2181,6 +2232,12 @@ function NotificationsTab() {
                   <input type="checkbox" checked={form.notify_security_telegram ?? true}
                     disabled={!form.notify_security_updates}
                     onChange={e => setForm(f => ({ ...f, notify_security_telegram: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_security_slack ?? true}
+                    disabled={!form.slack_enabled || !form.notify_security_updates}
+                    onChange={e => setForm(f => ({ ...f, notify_security_slack: e.target.checked }))}
                     className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
                 <td className="py-2 px-3 text-center">
@@ -2214,6 +2271,12 @@ function NotificationsTab() {
                     className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
                 <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_reboot_slack ?? true}
+                    disabled={!form.slack_enabled || !form.notify_reboot_required}
+                    onChange={e => setForm(f => ({ ...f, notify_reboot_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
+                <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_reboot_webhook ?? true}
                     disabled={!form.webhook_enabled || !form.notify_reboot_required}
                     onChange={e => setForm(f => ({ ...f, notify_reboot_webhook: e.target.checked }))}
@@ -2237,6 +2300,12 @@ function NotificationsTab() {
                   <input type="checkbox" checked={form.notify_error_telegram ?? true}
                     onChange={e => setForm(f => ({ ...f, notify_error_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_error_slack ?? true}
+                    disabled={!form.slack_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_error_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
                 </td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_error_webhook ?? true}

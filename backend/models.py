@@ -296,6 +296,15 @@ class NotificationConfig(Base):
     notify_reboot_email: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_reboot_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_reboot_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Slack channel (issue #53) — incoming-webhook URL, optional channel override.
+    slack_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    slack_webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    slack_channel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    daily_summary_slack: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_upgrade_slack: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_error_slack: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_security_slack: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_reboot_slack: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ScheduleConfig(Base):
