@@ -12,6 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from zoneinfo import ZoneInfo
+
 from backend.auth import get_current_user, require_admin
 from backend.config import TZ
 from backend.database import get_db
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
 
 
 def _now_local() -> datetime:
-    return datetime.now(tz=TZ)
+    return datetime.now(tz=ZoneInfo(TZ))
 
 
 def is_in_window(window: MaintenanceWindow, now: datetime | None = None) -> bool:

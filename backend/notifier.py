@@ -234,7 +234,8 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
     # Use the configured TZ for both subject date and body timestamp so they
     # don't drift around midnight UTC (e.g. subject shows Mar 5 while body shows Mar 4).
     from backend.config import TZ
-    now_local = datetime.now(tz=TZ)
+    from zoneinfo import ZoneInfo
+    now_local = datetime.now(tz=ZoneInfo(TZ))
     today = now_local.date().isoformat()
     today_str = now_local.strftime("%Y-%m-%d %H:%M %Z")
     subject = f"Apt Dashboard — Daily Summary — {today}"
@@ -1020,8 +1021,9 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
     """
     from backend.config import TZ
     from backend.eol_data import get_eol_status_from_os_info
+    from zoneinfo import ZoneInfo
 
-    now_local = datetime.now(tz=TZ)
+    now_local = datetime.now(tz=ZoneInfo(TZ))
     week_ago_local = now_local - timedelta(days=7)
     # The DB stores naive UTC; compare against the UTC-equivalent cutoff.
     week_ago_utc_naive = (now_local.astimezone(tz=None) - timedelta(days=7)).replace(tzinfo=None)
