@@ -9,54 +9,59 @@ This document describes the application architecture and CI/CD pipeline for apt-
 ### Diagram
 
 ```mermaid
-graph TB
-    subgraph browser["Browser"]
-        SPA["React SPA\nVite · TypeScript · Tailwind CSS\n──────────────────────\n6 Pages · 6 Components · 4 Hooks\nZustand state · ansi-to-html terminal\nxterm.js shell · Recharts"]
+flowchart TB
+    subgraph browser["🌐 Browser"]
+        SPA["🖥 React 18 SPA<br/>Vite · TypeScript · Tailwind<br/>10 pages · Zustand state<br/>ansi-to-html · xterm.js · Recharts"]
     end
 
-    subgraph container["Docker Container  (:8000)"]
+    subgraph container["🐳 Docker Container — :8000"]
         direction TB
 
-        subgraph api_layer["FastAPI  —  22 Routers"]
+        subgraph api_layer["⚡ FastAPI — 23 Routers"]
             direction LR
-            REST["REST API\n60+ endpoints\napt_repos · aptcache · auth\ncalendar · config_io · dpkg_log\ngroups · hooks · maintenance\nmetrics · notifications · release_check\nreports · scheduler · servers\nstats · status_page · tags\ntailscale · templates · updates\nupgrades"]
-            WS["WebSocket  (16 streams)\nupgrade · upgrade-all\nupgrade-selective · dry-run\ninstall · install-deb\napt-update · autoremove\nautoremove-all\nauto-security-updates\neeprom-update · apt-proxy\npveupgrade · shell\ntemplate-apply · apt-repos-test"]
+            REST["🌿 REST API · 70+ endpoints<br/>auth · servers · groups · tags<br/>updates · upgrades · stats · scheduler<br/>notifications · config_io · templates<br/>aptcache · tailscale · dpkg_log<br/>apt_repos · metrics · status_page<br/>maintenance · release_check · hooks<br/>reports · calendar · security"]
+            WS["🔌 WebSocket · 17 streams<br/>upgrade · upgrade-all · upgrade-selective<br/>dry-run · install · install-deb · apt-update<br/>autoremove · autoremove-all · reboot-all<br/>auto-security-updates · eeprom-update<br/>apt-proxy · pveupgrade · shell<br/>template-apply · apt-repos-test"]
         end
 
-        subgraph background["Background Services"]
+        subgraph background["⏰ Background services"]
             direction LR
-            SCHED["APScheduler\n────────────\ncheck_all  cron\nauto_upgrade  cron\nping_all  every 5 min\nlog_purge  03:00 daily\ndaily_summary  configurable\nreboot_check  one-shot"]
-            CHECKER["Update Checker\n────────────\napt list --upgradable\napt-cache show\napt-get autoremove --dry-run\nrpi-eeprom-update\nhostname -I  · df · uname\nlsb_release · systemd-detect-virt"]
-            UPGRADER["Upgrade Manager\n────────────\napt-get upgrade / dist-upgrade\nDEBIAN_FRONTEND=noninteractive\nconffile action options\nper-server asyncio.Lock\npost-upgrade check trigger"]
-            NOTIFIER["Notifier\n────────────\nEmail  aiosmtplib\nTelegram  httpx Bot API\nWebhook  HMAC-SHA256\n────────────\nEvents: upgrade_complete\nupgrade_error · security_found\nreboot_required · daily_summary\n────────────\nLogs every send → notification_log"]
+            SCHED["📅 APScheduler<br/>check_all · auto_upgrade<br/>ping_all (every 5 min)<br/>log_purge (03:00 daily)<br/>daily_summary · weekly_digest<br/>reboot_check (one-shot)"]
+            CHECKER["🔍 Update Checker · CVE Matcher<br/>apt list --upgradable<br/>dist-upgrade --dry-run<br/>autoremove --dry-run<br/>uname · df · lsb_release<br/>USN annotation"]
+            UPGRADER["📦 Upgrade Manager · Hooks · Rings<br/>apt-get upgrade / dist-upgrade<br/>DEBIAN_FRONTEND=noninteractive<br/>per-server asyncio.Lock<br/>pre/post-upgrade hooks · ring tags"]
+            NOTIFIER["🔔 Notifier<br/>Email · Telegram · Slack · Webhook<br/>upgrade_complete · upgrade_error<br/>security_found · reboot_required<br/>daily_summary · weekly_digest<br/>logs every send → notification_log"]
         end
 
-        subgraph data_layer["Data Layer"]
-            DB[("SQLite\n/data/apt-ui.db\n────────────\n20 tables · 52 migrations\nusers · servers · server_groups\nserver_group_memberships · tags\nserver_tags · update_checks\nupdate_history · server_stats\nnotification_config · schedule_config\napp_config · apt_cache_servers\ntemplates · template_packages\nnotification_log\nmaintenance_windows · upgrade_hooks\nssh_audit_log · api_tokens")]
-            CRYPTO["Fernet Encryption\nAES-128-CBC + HMAC-SHA256\nPer-server SSH keys in DB\nKey: SHA-256(ENCRYPTION_KEY)\nfallback → JWT_SECRET"]
+        subgraph data_layer["💾 Data layer"]
+            DB[("🗄 SQLite · /data/apt-ui.db<br/>20 tables · 50+ migrations<br/>servers · groups · tags · users<br/>update_checks · update_history<br/>server_stats · notification_config<br/>schedule_config · maintenance_windows<br/>upgrade_hooks · ssh_audit_log · api_tokens<br/>notification_log · templates · …")]
+            CRYPTO["🔐 Fernet Encryption<br/>AES-128-CBC + HMAC-SHA256<br/>Per-server SSH keys · TOTP secrets<br/>Key: SHA-256(ENCRYPTION_KEY)<br/>fallback → JWT_SECRET"]
         end
 
-        SSH_CLIENT["asyncssh Client\n────────────\nFresh connection per command\nNo host-key verification\nAuth priority:\n1. Per-server encrypted key\n2. SSH agent socket\n3. Global SSH_PRIVATE_KEY"]
+        SSH_CLIENT["🔗 asyncssh client<br/>Fresh connection per command<br/>known_hosts=None (trusted LAN)<br/>Auth priority:<br/>1. Per-server encrypted key<br/>2. SSH agent socket<br/>3. Global SSH_PRIVATE_KEY"]
     end
 
-    subgraph managed["Managed Servers  (SSH :22)"]
+    subgraph managed["🖧 Managed servers — SSH :22"]
         direction LR
-        LINUX["Ubuntu · Debian\nRaspbian · Armbian"]
-        PI["Raspberry Pi\n(EEPROM firmware)"]
-        PVE["Proxmox VE\n(pveversion detection)"]
+        LINUX["🐧 Ubuntu · Debian<br/>Raspbian · Armbian"]
+        PI["🍓 Raspberry Pi<br/>EEPROM firmware"]
+        PVE["🔶 Proxmox VE / PBS / PMG"]
     end
 
-    subgraph external["External Services  (optional)"]
+    subgraph notifications["🔔 Notification channels (optional)"]
         direction LR
-        SMTP["SMTP Server"]
-        TG["Telegram Bot API"]
-        HOOK["Webhook Endpoint"]
-        TS["Tailscale daemon\n(sidecar container)"]
-        APTCACHE["apt-cacher-ng\n(cache monitor)"]
+        SMTP["📧 SMTP server"]
+        TG["✈️ Telegram Bot API"]
+        SLACK["💬 Slack incoming-webhook"]
+        HOOK["🪝 Webhook endpoint"]
     end
 
-    SPA -- "HTTP REST  /api/*\nhttpOnly JWT cookie  (HS256 · 24h)" --> REST
-    SPA -- "WebSocket  /api/ws/*" --> WS
+    subgraph integrations["🌐 Integrations (optional)"]
+        direction LR
+        TS["🔒 Tailscale daemon<br/>sidecar container"]
+        APTCACHE["📦 apt-cacher-ng<br/>cache monitor"]
+    end
+
+    SPA -- "HTTP REST · httpOnly JWT cookie<br/>HS256 · 24 h" --> REST
+    SPA -- "WebSocket · /api/ws/*" --> WS
     REST --> DB
     REST --> CRYPTO
     REST --> SSH_CLIENT
@@ -72,12 +77,33 @@ graph TB
     UPGRADER --> DB
     NOTIFIER --> SMTP
     NOTIFIER --> TG
+    NOTIFIER --> SLACK
     NOTIFIER --> HOOK
-    REST -- "/api/tailscale/status\nUnix socket" --> TS
-    REST -- "/api/aptcache/stats\nHTTP" --> APTCACHE
-    SSH_CLIENT -- "sudo apt-get · dpkg\nsystemctl · hostname\nuname · df · lsb_release" --> LINUX
+    REST -- "Unix socket" --> TS
+    REST -- "HTTP" --> APTCACHE
+    SSH_CLIENT --> LINUX
     SSH_CLIENT --> PI
     SSH_CLIENT --> PVE
+
+    classDef frontend fill:#3b82f6,stroke:#1d4ed8,color:#fff,stroke-width:2px
+    classDef rest fill:#10b981,stroke:#047857,color:#fff,stroke-width:2px
+    classDef ws fill:#06b6d4,stroke:#0e7490,color:#fff,stroke-width:2px
+    classDef sched fill:#f59e0b,stroke:#b45309,color:#fff,stroke-width:2px
+    classDef data fill:#8b5cf6,stroke:#6d28d9,color:#fff,stroke-width:2px
+    classDef ssh fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef external fill:#475569,stroke:#1e293b,color:#fff,stroke-width:2px
+    classDef notif fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px
+    classDef integration fill:#14b8a6,stroke:#0f766e,color:#fff,stroke-width:2px
+
+    class SPA frontend
+    class REST rest
+    class WS ws
+    class SCHED,CHECKER,UPGRADER,NOTIFIER sched
+    class DB,CRYPTO data
+    class SSH_CLIENT ssh
+    class LINUX,PI,PVE external
+    class SMTP,TG,SLACK,HOOK notif
+    class TS,APTCACHE integration
 ```
 
 ---
@@ -111,6 +137,7 @@ The frontend is a **React 18 SPA** built with Vite and TypeScript, served as sta
 | Compare | `/compare` | Side-by-side installed package comparison across multiple servers |
 | Search | `/search` | Fleet-wide package search with installed/missing filter and version divergence |
 | Reports | `/reports` | Per-server and fleet-wide upgrade activity reports; CSV export |
+| Security | `/security` | Fleet-wide CVE inventory; CVE → servers and Server → CVEs views with filters and CSV export |
 
 ---
 
@@ -146,6 +173,7 @@ FastAPI handles all HTTP traffic on port 8000 — both the REST API and static f
 | `release_check` | `/api/release/` | GitHub release polling; latest version + update-available flag |
 | `reports` | `/api/reports/` | Upgrade activity reports with CSV export |
 | `calendar` | `/api/calendar.ics` | RFC 5545 iCal feed of maintenance windows; query-param API-token auth |
+| `security` | `/api/security/` | Fleet-wide CVE inventory aggregation: pivots per-package CVE data into CVE → servers view |
 
 ---
 
@@ -186,6 +214,7 @@ Five recurring jobs and one on-demand job type run on the `AsyncIOScheduler`, al
 | `ping_all` | Every 5 minutes | TCP-connects to each server's SSH port (3 s timeout); updates `is_reachable` + `last_seen` without SSH |
 | `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, `server_stats`, `notification_log`, and `ssh_audit_log` records older than `log_retention_days` |
 | `daily_summary` | Time-of-day (default 07:00) | Sends fleet summary across enabled channels |
+| `weekly_digest` | Cron (configurable, opt-in) | Composes and dispatches the weekly patch digest across email / Telegram / webhook |
 | `reboot_check_{id}` | One-shot (post-reboot delay) | Polls until the server responds, then triggers a check |
 
 Schedule and notification config changes made in the UI take effect immediately — the scheduler is reconfigured live without a restart.
@@ -218,6 +247,7 @@ Three outbound channels, each independently toggleable per event type:
 |---|---|---|
 | Email | aiosmtplib, STARTTLS or SSL, HTML + text fallback | — |
 | Telegram | httpx POST to Bot API, splits messages >4000 chars | — |
+| Slack | httpx POST to incoming-webhook URL, Block Kit (header + section blocks); long output goes in a code-fenced section truncated to ~2900 chars | — |
 | Webhook | httpx POST, JSON payload, optional `X-Hub-Signature-256` HMAC-SHA256 header | `webhook_secret` env |
 
 Events: `upgrade_complete`, `upgrade_failed`, `security_updates_found`, `reboot_required`, `daily_summary`.
@@ -262,51 +292,52 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 
 ```mermaid
 flowchart LR
-    subgraph triggers["Triggers"]
-        T1["git push\nmain"]
-        T2["Pull Request\nopened / updated"]
-        T3["GitHub Release\npublished"]
-        T4["Schedule\nweekly"]
+    subgraph triggers["🎯 Triggers"]
+        T1["git push<br/>main"]
+        T2["Pull Request<br/>opened / updated"]
+        T3["GitHub Release<br/>published"]
+        T4["Schedule<br/>weekly"]
+        T5["workflow_dispatch<br/>manual rebuild"]
     end
 
-    subgraph codeql["CodeQL  (GitHub-managed)"]
+    subgraph codeql["🛡 CodeQL · GitHub-managed"]
         CQ1["Checkout"]
-        CQ2["Analyse Python\nCodeQL engine"]
-        CQ3["Security Alerts\n→ Security tab"]
+        CQ2["Analyse Python<br/>CodeQL engine"]
+        CQ3["Security Alerts<br/>→ Security tab"]
         CQ1 --> CQ2 --> CQ3
     end
 
-    subgraph dependabot["Dependabot  (GitHub-managed)"]
-        D1["npm\nfrontend/"]
-        D2["pip\nbackend/requirements.txt"]
-        D3["Docker base images\nDockerfile"]
-        D4["GitHub Actions\n.github/workflows/"]
+    subgraph dependabot["🤖 Dependabot · GitHub-managed"]
+        D1["npm<br/>frontend/"]
+        D2["pip<br/>backend/requirements.txt"]
+        D3["Docker base images<br/>Dockerfile"]
+        D4["GitHub Actions<br/>.github/workflows/"]
     end
 
-    subgraph release_wf["Release Workflow\n.github/workflows/release.yml"]
+    subgraph release_wf["🚀 Release workflow<br/>.github/workflows/release.yml"]
         direction TB
         R1["actions/checkout@v6"]
-        R2["docker/setup-buildx-action@v4\nQEMU multi-platform"]
-        R3["docker/login-action@v4\nghcr.io  ←  GITHUB_TOKEN"]
-        R4["docker/metadata-action@v6\nSemVer tag matrix"]
-        R5["docker/build-push-action@v7\nplatforms: linux/amd64 + arm64\ncache: type=gha"]
+        R2["docker/setup-buildx-action@v4<br/>QEMU multi-platform"]
+        R3["docker/login-action@v4<br/>ghcr.io ← GITHUB_TOKEN"]
+        R4["docker/metadata-action@v6<br/>type=ref,event=tag<br/>+ type=raw,value=latest"]
+        R5["docker/build-push-action@v7<br/>platforms: linux/amd64 + arm64<br/>cache: type=gha"]
         R1 --> R2 --> R3 --> R4 --> R5
     end
 
-    subgraph dockerfile["Dockerfile  (multi-stage)"]
-        DF1["Stage 1: node:20-alpine\nnpm ci\nnpm run build\n→ /app/frontend/dist/"]
-        DF2["Stage 2: python:3.12-slim\npip install -r requirements.txt\nCopy backend/\nCopy dist/ → static/\nEXPOSE 8000"]
+    subgraph dockerfile["📦 Dockerfile · multi-stage"]
+        DF1["Stage 1: node:20-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
+        DF2["Stage 2: python:3.12-slim<br/>pip install -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
         DF1 --> DF2
     end
 
-    subgraph registry["GitHub Container Registry"]
-        IMG[":latest\n:1.x.x\n:1.x\n:1\nghcr.io/mzac/apt-ui"]
+    subgraph registry["🐙 GitHub Container Registry"]
+        IMG[":latest<br/>:2026.MM.DD-NN<br/>ghcr.io/mzac/apt-ui<br/>multi-arch · amd64 + arm64"]
     end
 
-    subgraph deploy["Deployment Targets"]
-        DC["Docker Compose\ndocker-compose.ghcr.yml\nport 8111:8000"]
-        K8S["Kubernetes / k3s\nk8s/deployment.yaml\nClusterIP :8000\nLonghorn PVC"]
-        TS_OPT["+ Tailscale sidecar\n(optional overlay)"]
+    subgraph deploy["🚀 Deployment targets"]
+        DC["🐳 Docker Compose<br/>docker-compose.ghcr.yml<br/>port 8111:8000"]
+        K8S["☸️ Kubernetes / k3s<br/>k8s/deployment.yaml<br/>ClusterIP :8000<br/>Longhorn PVC"]
+        TS_OPT["🔒 + Tailscale sidecar<br/>optional overlay"]
     end
 
     T1 --> codeql
@@ -314,12 +345,27 @@ flowchart LR
     T1 --> dependabot
     T4 --> dependabot
     T3 --> release_wf
+    T5 --> release_wf
     release_wf --> dockerfile
     dockerfile --> registry
     registry --> DC
     registry --> K8S
     K8S -.-> TS_OPT
     DC -.-> TS_OPT
+
+    classDef trigger fill:#f59e0b,stroke:#b45309,color:#fff,stroke-width:2px
+    classDef scan fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px
+    classDef build fill:#10b981,stroke:#047857,color:#fff,stroke-width:2px
+    classDef pkg fill:#8b5cf6,stroke:#6d28d9,color:#fff,stroke-width:2px
+    classDef registry fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px
+    classDef deploy fill:#3b82f6,stroke:#1d4ed8,color:#fff,stroke-width:2px
+
+    class T1,T2,T3,T4,T5 trigger
+    class CQ1,CQ2,CQ3,D1,D2,D3,D4 scan
+    class R1,R2,R3,R4,R5 build
+    class DF1,DF2 pkg
+    class IMG registry
+    class DC,K8S,TS_OPT deploy
 ```
 
 ---
