@@ -233,11 +233,10 @@ async def send_daily_summary(cfg: NotificationConfig, db: AsyncSession):
 
     # Use the configured TZ for both subject date and body timestamp so they
     # don't drift around midnight UTC (e.g. subject shows Mar 5 while body shows Mar 4).
-    from backend.config import TZ
-    from zoneinfo import ZoneInfo
-    now_local = datetime.now(tz=ZoneInfo(TZ))
-    today = now_local.date().isoformat()
-    today_str = now_local.strftime("%Y-%m-%d %H:%M %Z")
+    from backend.config import now_local
+    now = now_local()
+    today = now.date().isoformat()
+    today_str = now.strftime("%Y-%m-%d %H:%M %Z")
     subject = f"Apt Dashboard — Daily Summary — {today}"
 
     # Gather fleet state (reuses the shared helper; add held list per server)
@@ -1019,14 +1018,13 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
     Returns a dict with the structured data plus pre-rendered email/Telegram
     bodies. The dict is also the shape sent to the webhook.
     """
-    from backend.config import TZ
+    from backend.config import now_local
     from backend.eol_data import get_eol_status_from_os_info
-    from zoneinfo import ZoneInfo
 
-    now_local = datetime.now(tz=ZoneInfo(TZ))
-    week_ago_local = now_local - timedelta(days=7)
+    now = now_local()
+    week_ago_local = now - timedelta(days=7)
     # The DB stores naive UTC; compare against the UTC-equivalent cutoff.
-    week_ago_utc_naive = (now_local.astimezone(tz=None) - timedelta(days=7)).replace(tzinfo=None)
+    week_ago_utc_naive = (now.astimezone(tz=None) - timedelta(days=7)).replace(tzinfo=None)
     now_utc_naive = datetime.utcnow()
 
     # Headline counters from update_history (last 7d)
@@ -1184,7 +1182,7 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
     except Exception as exc:
         logger.debug("Weekly digest: CVE summary skipped: %s", exc)
 
-    date_range = f"{week_ago_local.date().isoformat()} → {now_local.date().isoformat()}"
+    date_range = f"{week_ago_local.date().isoformat()} → {now.date().isoformat()}"
 
     headline = {
         "packages_upgraded": total_pkgs_upgraded,
@@ -1212,7 +1210,7 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
     payload = {
         "event": "weekly_digest",
         "date_range": date_range,
-        "generated_at": now_local.isoformat(),
+        "generated_at": now.isoformat(),
         "headline": headline,
         "by_server": by_server,
         "pending": pending,

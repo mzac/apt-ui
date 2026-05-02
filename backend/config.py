@@ -1,4 +1,6 @@
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/apt-ui.db")
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
@@ -13,9 +15,20 @@ JWT_EXPIRY_HOURS = 24
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 TZ = os.getenv("TZ", "America/Montreal")
+LOCAL_ZONE = ZoneInfo(TZ)
 
 # Set to "true" to enable the interactive SSH shell terminal in the UI.
 # Disabled by default — only enable if you trust all dashboard users.
 ENABLE_TERMINAL = os.getenv("ENABLE_TERMINAL", "false").lower() == "true"
 
 APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+
+def now_local() -> datetime:
+    """Return the current time as a tz-aware datetime in the configured TZ.
+
+    Use this anywhere you need a timezone-aware "now" — the bare
+    `datetime.now(tz=TZ)` pattern is wrong because `datetime.now()`
+    requires a `tzinfo` subclass, not a string.
+    """
+    return datetime.now(tz=LOCAL_ZONE)
