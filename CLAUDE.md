@@ -83,7 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up --build 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown. High-level:
 
 - **Single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files from `static/`.
-- **22 backend routers** in `backend/routers/` — REST + 16 WebSocket streams.
+- **23 backend routers** in `backend/routers/` — REST + 17 WebSocket streams.
 - **SQLite** at `/data/apt-ui.db` (Docker volume). Async SQLAlchemy throughout the API; sync SQLAlchemy in the CLI only.
 - **APScheduler** (`AsyncIOScheduler`) for cron-based checks, auto-upgrades, log purge, and daily summary. Reconfigured live from the DB without restart.
 - **asyncssh**: fresh connection per command, no pool. `known_hosts=None` (trusted LAN). Auth priority: per-server encrypted key → SSH agent → global `SSH_PRIVATE_KEY`.
@@ -107,6 +107,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - API token hashing uses `hashlib.scrypt` with a fixed salt (`b"apt-ui-api-token"`) for deterministic, memory-hard hashing. SHA-256 / HMAC-SHA256 are rejected by CodeQL as "insufficient" for credential storage.
 - The iCal feed at `/api/calendar.ics` authenticates via a `?token=` query parameter, not the cookie or `Authorization` header — calendar clients (Apple Calendar, Google Calendar, Thunderbird) can't carry custom headers when subscribing. Reuses the existing API token system.
 - EOL data lives in `backend/eol_data.py` as a hardcoded `{os_id: {version_id: ISO-date}}` table — no external API. Proxmox VE / Backup Server / Mail Gateway are tracked as separate keys (`proxmox-ve` / `proxmox-pbs` / `proxmox-pmg`) because they share the `-pve` kernel suffix but have distinct version cycles. The os_info detection in `backend/update_checker.py` probes `proxmox-backup-manager` and `pmgversion` before the kernel-fallback branch so PBS/PMG hosts are correctly labeled.
+- Rolling reboot orchestration (`/api/ws/reboot-all`, `backend/routers/upgrades.py:ws_reboot_all`) reuses the same ring-grouping pattern as the auto-upgrade staged rollout (`backend/scheduler.py:_job_auto_upgrade`). Servers are grouped by their `ring:*` tag (alphabetical, `ring:default` for untagged). The ring helper is inlined in both spots — keep them in sync if the grouping logic changes.
+- Slack notifications use an incoming-webhook URL (not a bot token); single channel pinned by the webhook URL itself. Block Kit messages built in `_send_slack` mirror `_send_telegram` shape so adding Mattermost/Discord later can share the abstraction.
+- The release workflow (`.github/workflows/release.yml`) tags GHCR images using `type=ref,event=tag`, **not** `type=semver`. The date-based version scheme (`YYYY.MM.DD-NN`) is not strict SemVer, so `type=semver` rules silently produce no tags. The workflow also has a `workflow_dispatch` input so any existing git tag can be rebuilt manually (`gh workflow run release.yml -f tag=2026.05.01-02`).
 - `check_server` runs `apt-get dist-upgrade --dry-run` in parallel alongside `apt list --upgradable`. This is necessary because new dependency packages (e.g. a new kernel version pulled in when upgrading `linux-generic`) do not appear in `apt list --upgradable` at all — they are only visible via dist-upgrade. The dry-run also detects "kept back" packages (upgradable but blocked by plain `apt-get upgrade`). Results stored as `is_new`, `is_kernel`, and `needs_dist_upgrade` flags in `packages_json`.
 
 ### Router → file mapping
@@ -118,7 +121,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Groups | `backend/routers/groups.py` |
 | Tags | `backend/routers/tags.py` |
 | Update checks | `backend/routers/updates.py` |
-| Upgrade WebSockets (16 streams, incl. pveupgrade + autoremove-all) | `backend/routers/upgrades.py` |
+| Upgrade WebSockets (17 streams, incl. pveupgrade + autoremove-all + reboot-all) | `backend/routers/upgrades.py` |
 | Fleet stats + history | `backend/routers/stats.py` |
 | Schedule config | `backend/routers/scheduler.py` |
 | Notification config + test + history log | `backend/routers/notifications.py` |
@@ -135,6 +138,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | GitHub release check (6h cache) | `backend/routers/release_check.py` |
 | Upgrade activity reports + CSV | `backend/routers/reports.py` |
 | iCal feed for maintenance windows | `backend/routers/calendar.py` |
+| Fleet-wide CVE inventory aggregation | `backend/routers/security.py` |
 
 ### Frontend pages
 
@@ -143,6 +147,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Dashboard | `frontend/src/pages/Dashboard.tsx` |
 | Server detail (Packages / Upgrade / Health / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
 | Fleet-wide history (Upgrade History / Notification History / SSH Audit Log sub-tabs) | `frontend/src/pages/History.tsx` |
+| Fleet-wide CVE inventory (CVE → servers / Server → CVEs views) | `frontend/src/pages/Security.tsx` |
 | Settings (Schedule / Hooks / Maintenance / Notifications / Users / Servers / Account) | `frontend/src/pages/Settings.tsx` |
 | Package templates | `frontend/src/pages/Templates.tsx` |
 | Multi-server package comparison | `frontend/src/pages/Compare.tsx` |
