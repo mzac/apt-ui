@@ -4,6 +4,18 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.05.02-01] — 2026-05-02
+
+### Fixed
+
+- **`TypeError: tzinfo argument must be None or of a tzinfo subclass, not type 'str'`** when sending the daily summary, weekly digest, or hitting any maintenance-window endpoint. Same crash class as the earlier reboot-scheduling fix — `datetime.now(tz=)` requires a `tzinfo` subclass, not a string, and `TZ` from the environment is a string. Wrapped the three remaining call sites with `ZoneInfo()`.
+
+### Changed
+
+- **Single source of truth for "now in TZ"** — added `backend.config.now_local()` and routed every tz-aware `datetime.now()` callsite through it (scheduler, notifier daily summary, weekly digest, maintenance-window helpers). The `ZoneInfo` is constructed once at module import. Future code that needs the current local time should `from backend.config import now_local` rather than re-wrapping `TZ` at the callsite — eliminates the recurring class of bug above.
+
+---
+
 ## [2026.05.01-03] — 2026-05-01
 
 ### Added
