@@ -230,11 +230,11 @@ export const servers = {
     post<{ package: string; hold: boolean; results: Record<string, { success: boolean; stdout: string; stderr: string }> }>(
       '/api/servers/bulk-hold', { server_ids, package: pkg, hold }
     ),
-  uploadDeb: (id: number, file: File) => {
+  uploadDeb: (id: number, file: File, signal?: AbortSignal) => {
     const form = new FormData()
     form.append('file', file)
     return fetch(`/api/servers/${id}/upload-deb`, {
-      method: 'POST', credentials: 'include', body: form,
+      method: 'POST', credentials: 'include', body: form, signal,
     }).then(async r => {
       if (!r.ok) {
         const body = await r.json().catch(() => ({}))

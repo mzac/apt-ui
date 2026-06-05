@@ -232,7 +232,7 @@ function NotificationHistory() {
   }
 
   const channelBadge = (ch: string) => {
-    const map: Record<string, string> = { email: 'text-blue', telegram: 'text-cyan', webhook: 'text-purple' }
+    const map: Record<string, string> = { email: 'text-blue', telegram: 'text-cyan', webhook: 'text-purple', slack: 'text-amber' }
     return <span className={`text-[10px] font-mono uppercase tracking-wide ${map[ch] ?? 'text-text-muted'}`}>{ch}</span>
   }
 

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import Convert from 'ansi-to-html'
 import { servers as serversApi, createInstallDebWebSocket } from '@/api/client'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
@@ -32,6 +33,8 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
   const [success, setSuccess] = useState<boolean | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
+  const mountedRef = useRef(true)
+  const uploadAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (termRef.current) {
@@ -40,13 +43,21 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
   }, [lines])
 
   useEffect(() => {
-    return () => { wsRef.current?.close() }
+    return () => {
+      mountedRef.current = false
+      wsRef.current?.close()
+      uploadAbortRef.current?.abort()
+    }
   }, [])
 
   function handleClose() {
+    uploadAbortRef.current?.abort()
     wsRef.current?.close()
     onClose()
   }
+
+  // Escape closes the modal (matches the always-available Cancel/Close button).
+  useEscapeKey(handleClose)
 
   async function handleValidate() {
     if (!url.trim()) return
@@ -101,12 +112,17 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
     setLines([])
     setSuccess(null)
 
+    const controller = new AbortController()
+    uploadAbortRef.current = controller
+
     let remotePath: string
     try {
-      const result = await serversApi.uploadDeb(serverId, file)
+      const result = await serversApi.uploadDeb(serverId, file, controller.signal)
+      if (!mountedRef.current) return   // modal closed mid-upload — don't install on a dead component
       remotePath = result.remote_path
       setUploadProgress(null)
     } catch (e: unknown) {
+      if (!mountedRef.current) return   // aborted by close — nothing to report
       setUploadProgress(null)
       setLines([`Upload failed: ${e}`])
       setPhase('done')
@@ -159,7 +175,12 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
               {(['url', 'upload'] as Mode[]).map(m => (
                 <button
                   key={m}
-                  onClick={() => { setMode(m); setValidationResult(null); setFile(null) }}
+                  onClick={() => {
+                    setMode(m)
+                    // Only reset the state for the mode being left, so switching tabs
+                    // and back doesn't discard a completed URL validation or chosen file.
+                    if (m === 'url') setFile(null); else setValidationResult(null)
+                  }}
                   disabled={busy}
                   className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${
                     mode === m ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'

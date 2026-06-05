@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apt Dashboard</title>
+    <script>
+      // Apply the persisted theme before React mounts, so the login / "initializing"
+      // screens (rendered outside Layout, which is the only useTheme consumer) are
+      // themed and there's no dark→light flash on load.
+      try { if (localStorage.getItem('apt:theme') === 'light') document.documentElement.classList.add('light') } catch (e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

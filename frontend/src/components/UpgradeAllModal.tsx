@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import type { Server } from '@/types'
 import { createUpgradeWebSocket } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -49,6 +50,9 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   useEffect(() => {
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Escape closes the modal before start or once the run is done (not mid-run).
+  useEscapeKey(handleClose, !started || done)
 
   function start() {
     const snapshot = servers

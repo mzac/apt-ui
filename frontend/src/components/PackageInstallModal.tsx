@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { servers as serversApi, createInstallWebSocket } from '@/api/client'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import type { PackageSearchResult } from '@/types'
 import Convert from 'ansi-to-html'
 
@@ -62,6 +63,9 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   useEffect(() => {
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Escape closes the modal when it's safe to (before start or once done).
+  useEscapeKey(handleClose, !started || done)
 
   function toggleSelect(name: string) {
     setSelected(prev => {

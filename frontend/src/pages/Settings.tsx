@@ -1579,20 +1579,14 @@ function CalendarSubscribeModal({ onClose }: { onClose: () => void }) {
             </form>
           ) : !createdToken ? (
             <div className="space-y-2">
-              <label className="label">Use existing API token</label>
-              <select
-                value={selectedId ?? ''}
-                onChange={e => setSelectedId(e.target.value ? parseInt(e.target.value) : null)}
-                className="input text-sm"
-              >
-                {tokens.map(t => (
-                  <option key={t.id} value={t.id}>{t.name} ({t.prefix}…)</option>
-                ))}
-              </select>
+              <p className="text-xs text-text-muted">
+                You have {tokens.length} existing API token{tokens.length === 1 ? '' : 's'}
+                {tokens.length > 0 && <> ({tokens.map(t => `${t.prefix}…`).join(', ')})</>}.
+              </p>
               <p className="text-[10px] text-amber/80 mt-1">
-                The raw token value is shown only once at creation — paste yours into the URL below
-                in place of <span className="font-mono">&lt;paste-your-api-token-here&gt;</span>.
-                If you don&apos;t have it saved, mint a new token below.
+                A token&apos;s raw value is shown only once at creation and can&apos;t be retrieved here.
+                If you saved an existing one, paste it into the URL below in place of
+                <span className="font-mono"> &lt;paste-your-api-token-here&gt;</span> — otherwise mint a new token.
               </p>
               <form onSubmit={createToken} className="flex items-center gap-2 pt-2 border-t border-border/30">
                 <input

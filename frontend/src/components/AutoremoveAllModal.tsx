@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import type { Server } from '@/types'
 import { createAutoremoveAllWebSocket } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -33,6 +34,9 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   useEffect(() => {
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Escape closes the modal before start or once done (not mid-run).
+  useEscapeKey(handleClose, !started || done)
 
   function start() {
     const snapshot = servers

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import type { Server, ScheduleConfig } from '@/types'
 import { createRebootAllWebSocket, scheduler as schedulerApi } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 
 interface Props {
   servers: Server[]
@@ -56,6 +57,9 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
     schedulerApi.status().then(setCfg).catch(() => {})
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Escape closes the modal before start or once done (not mid-rollout).
+  useEscapeKey(handleClose, !started || done)
 
   const rings = useMemo(() => groupByRing(servers), [servers])
   const ringNames = useMemo(() => Object.keys(rings).sort(), [rings])
