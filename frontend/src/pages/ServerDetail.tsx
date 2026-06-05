@@ -1859,7 +1859,7 @@ function StatsTab({ serverId }: { serverId: number }) {
         .map(h => ({
           date: new Date(h.started_at).toLocaleDateString(),
           packages: h.packages_upgraded?.length ?? 0,
-          security: 0,
+          security: (h.packages_upgraded ?? []).filter(p => p.is_security).length,
         }))
       setData(points)
     })
@@ -1870,16 +1870,23 @@ function StatsTab({ serverId }: { serverId: number }) {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <h3 className="text-xs text-text-muted uppercase tracking-wide mb-4">Packages upgraded per run (recent)</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xs text-text-muted uppercase tracking-wide">Packages upgraded per run (recent)</h3>
+          <div className="flex items-center gap-3 text-[10px] text-text-muted font-mono">
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#22c55e' }} />total</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: '#ef4444' }} />security</span>
+          </div>
+        </div>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data}>
             <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 11 }} />
-            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
+            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} allowDecimals={false} />
             <Tooltip
               contentStyle={{ background: '#1a1d27', border: '1px solid #2e3347', borderRadius: '4px', fontSize: '12px' }}
               labelStyle={{ color: '#e5e7eb' }}
             />
-            <Line type="monotone" dataKey="packages" stroke="#22c55e" dot={data.length <= 2} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="packages" name="total" stroke="#22c55e" dot={data.length <= 2} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="security" name="security" stroke="#ef4444" dot={data.length <= 2} strokeWidth={1.5} />
           </LineChart>
         </ResponsiveContainer>
       </div>

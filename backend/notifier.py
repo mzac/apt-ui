@@ -1046,9 +1046,14 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
         except Exception:
             pkgs = []
         n = len(pkgs)
-        # We don't have per-package security flags in update_history, so we use
-        # an approximate name-based heuristic for the security counter.
+        # Prefer the persisted per-package is_security flag (recorded since the
+        # upgrade-history enrichment carries classification flags). Fall back to the
+        # old name-based heuristic only for legacy rows written before that change.
         for p in pkgs:
+            if isinstance(p, dict) and "is_security" in p:
+                if p.get("is_security"):
+                    security_pkgs_upgraded += 1
+                continue
             name = p.get("name") if isinstance(p, dict) else str(p)
             if isinstance(name, str) and any(tok in name for tok in ("-security", "linux-image", "openssl", "openssh")):
                 security_pkgs_upgraded += 1
