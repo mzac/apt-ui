@@ -38,11 +38,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   })
 
   if (res.status === 401) {
-    // Redirect to login unless already there
+    // Preserve the backend's detail (e.g. "2FA code required", "Invalid credentials",
+    // "Invalid 2FA code") so callers like Login can react. Without this, every 401 was
+    // flattened to "Session expired", which made 2FA login impossible.
+    let detail = 'Session expired'
+    try {
+      const body = await res.json()
+      if (body?.detail) detail = body.detail
+    } catch {}
+    // Redirect to login unless already there (the login page surfaces the detail instead).
     if (!window.location.pathname.startsWith('/login')) {
       window.location.href = '/login?expired=1'
     }
-    throw new ApiError(401, 'Session expired')
+    throw new ApiError(401, detail)
   }
 
   if (!res.ok) {
@@ -490,11 +498,23 @@ export const aptcache = {
 // WebSocket helpers
 // ---------------------------------------------------------------------------
 
+// Shared onclose wrapper: forwards the CloseEvent to the caller (so consumers can
+// distinguish a clean completion from a failure via ev.wasClean / ev.code) and, on
+// an auth-failure close (server sends 1008), redirects to login like an HTTP 401 does.
+function wsClose(onClose?: (ev?: CloseEvent) => void) {
+  return (ev: CloseEvent) => {
+    if (ev.code === 1008 && !window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login?expired=1'
+    }
+    onClose?.(ev)
+  }
+}
+
 export function createUpgradeWebSocket(
   serverId: number | 'all',
   params: { action: string; allow_phased: boolean; reboot_if_required?: boolean },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = serverId === 'all'
     ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/upgrade-all`
@@ -512,7 +532,7 @@ export function createUpgradeWebSocket(
     } catch {}
   }
 
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
 
   return ws
 }
@@ -521,25 +541,25 @@ export function createSelectiveUpgradeWebSocket(
   serverId: number,
   params: { packages: string[]; allow_phased: boolean },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/upgrade-selective/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createAptUpdateWebSocket(
   serverId: number,
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-update/${serverId}`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -547,37 +567,37 @@ export function createAutoremoveWebSocket(
   serverId: number,
   params: { packages: string[] | null },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/autoremove/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createAutoremoveAllWebSocket(
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/autoremove-all`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createRebootAllWebSocket(
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
   params?: { server_ids?: number[] },
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/reboot-all`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params ?? {})) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -585,13 +605,13 @@ export function createInstallWebSocket(
   serverId: number,
   packages: string[],
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify({ packages })) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -599,37 +619,37 @@ export function createDryRunWebSocket(
   serverId: number,
   params: { action: string; allow_phased: boolean },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/dry-run/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createEepromUpdateWebSocket(
   serverId: number,
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/eeprom-update/${serverId}`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createPveUpgradeWebSocket(
   serverId: number,
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/pveupgrade/${serverId}`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -637,13 +657,13 @@ export function createAptProxyWebSocket(
   serverId: number,
   params: { enable: boolean; mode?: 'manual' | 'auto'; proxy_url?: string },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-proxy/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -651,13 +671,13 @@ export function createAutoSecurityUpdatesWebSocket(
   serverId: number,
   params: { enable: boolean },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/auto-security-updates/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -665,13 +685,13 @@ export function createTemplateApplyWebSocket(
   templateId: number,
   serverIds: number[],
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/template-apply/${templateId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify({ server_ids: serverIds })) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
@@ -679,24 +699,24 @@ export function createInstallDebWebSocket(
   serverId: number,
   params: { source: 'url'; url: string } | { source: 'remote'; path: string },
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/install-deb/${serverId}`
   const ws = new WebSocket(url)
   ws.onopen = () => { ws.send(JSON.stringify(params)) }
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }
 
 export function createAptReposTestWebSocket(
   serverId: number,
   onMessage: (msg: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/apt-repos-test/${serverId}`
   const ws = new WebSocket(url)
   ws.onmessage = (event) => { try { onMessage(JSON.parse(event.data)) } catch {} }
-  ws.onclose = () => onClose?.()
+  ws.onclose = wsClose(onClose)
   return ws
 }

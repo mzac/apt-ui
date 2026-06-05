@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { auth } from '@/api/client'
 import { useAuthStore } from '@/hooks/useAuth'
 
@@ -12,12 +12,15 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const { setUser, user } = useAuthStore()
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const expired = searchParams.get('expired') === '1'
+  // RequireAuth stashes the page the user originally tried to reach in location.state.from.
+  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || '/'
 
   useEffect(() => {
-    if (user) navigate('/', { replace: true })
-  }, [user, navigate])
+    if (user) navigate(from, { replace: true })
+  }, [user, navigate, from])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -26,7 +29,7 @@ export default function Login() {
     try {
       const u = await auth.login(username, password, needs2fa ? totpCode : undefined)
       setUser(u)
-      navigate('/', { replace: true })
+      navigate(from, { replace: true })
     } catch (err: unknown) {
       const msg = (err as Error).message || 'Login failed'
       // Backend signals 2FA needed via the error detail (issue #18)

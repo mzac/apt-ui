@@ -47,6 +47,13 @@ export default function Compare() {
     }
   }
 
+  // Servers that actually returned data. Errored servers are listed in result.servers
+  // but omitted from each package's versions map, so they must NOT count toward the
+  // "present on every server" denominator — otherwise every package looks diverged.
+  const respondingCount = result
+    ? result.servers.length - Object.keys(result.errors).length
+    : 0
+
   // Derive filtered package list
   const filteredPackages = result
     ? Object.entries(result.packages).filter(([name, versions]) => {
@@ -55,7 +62,7 @@ export default function Compare() {
         const vals = Object.values(versions)
         if (filter === 'diff') {
           const nonNull = vals.filter(v => v != null)
-          return nonNull.length > 0 && nonNull.length < result.servers.length
+          return nonNull.length > 0 && nonNull.length < respondingCount
         }
         if (filter === 'common') {
           return vals.every(v => v != null)
@@ -68,7 +75,7 @@ export default function Compare() {
     ? Object.values(result.packages).filter(versions => {
         const vals = Object.values(versions)
         const nonNull = vals.filter(v => v != null)
-        return nonNull.length > 0 && nonNull.length < result.servers.length
+        return nonNull.length > 0 && nonNull.length < respondingCount
       }).length
     : 0
 
@@ -208,7 +215,7 @@ export default function Compare() {
                 ) : (
                   filteredPackages.map(([name, versions]) => {
                     const presentCount = Object.values(versions).filter(v => v != null).length
-                    const isDiff = presentCount < result.servers.length
+                    const isDiff = presentCount < respondingCount
                     return (
                       <tr key={name} className={isDiff ? 'bg-amber/5' : ''}>
                         <td className="px-3 py-1.5 text-text-primary sticky left-0 bg-inherit z-10">
