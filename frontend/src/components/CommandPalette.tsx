@@ -169,11 +169,12 @@ export default function CommandPalette() {
   const [filter, setFilter] = useState<FilterChip>('all')
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const prevFocusRef = useRef<HTMLElement | null>(null)
 
   const navigate = useNavigate()
   const { logout } = useAuthStore()
   const { jobs } = useJobStore()
-  const { servers, loaded, load, setServers } = useServersStore()
+  const { servers, load } = useServersStore()
 
   // ----- open/close --------------------------------------------------------
 
@@ -212,19 +213,23 @@ export default function CommandPalette() {
     }
   }, [openPalette])
 
-  // Hydrate the server list when the palette is first opened
+  // Refresh the server list every time the palette opens, so servers added or
+  // removed in Settings (which mutate component state, not this store) show up,
+  // and deleted ones disappear, without waiting for the 30s dashboard poll.
   useEffect(() => {
-    if (open && !loaded) {
-      load()
-    }
-  }, [open, loaded, load])
+    if (open) load()
+  }, [open, load])
 
-  // Focus input on open
+  // Focus input on open; restore focus to the previously-focused element on close.
   useEffect(() => {
     if (open) {
+      prevFocusRef.current = document.activeElement as HTMLElement | null
       // Defer to next paint so the input is mounted
       const t = setTimeout(() => inputRef.current?.focus(), 0)
-      return () => clearTimeout(t)
+      return () => {
+        clearTimeout(t)
+        prevFocusRef.current?.focus?.()
+      }
     }
   }, [open])
 
@@ -398,7 +403,9 @@ export default function CommandPalette() {
     }
 
     return out
-  }, [servers, jobs, navigate, logout])
+    // `open` is a dep so the recent-servers list (read from localStorage) is
+    // re-evaluated each time the palette opens.
+  }, [servers, jobs, navigate, logout, open])
 
   // ----- filter + score ----------------------------------------------------
 
@@ -418,12 +425,12 @@ export default function CommandPalette() {
     for (const it of filtered) {
       const m = fuzzyMatch(q, it.haystack)
       if (!m) continue
-      // Keep label-position highlight, mapping haystack indices that fall in
-      // the label slice. Since haystack starts with `${label} ...` this is
-      // a clean prefix slice of positions <= label.length.
-      const labelLen = it.label.length
-      const labelPositions = m.positions.filter((p) => p < labelLen)
-      scored.push({ item: it, positions: labelPositions, score: m.score })
+      // Score against the haystack (so hint matches still rank), but compute the
+      // highlight positions against the label itself. The haystack and label can
+      // diverge (e.g. label "Settings · X" vs haystack "settings x ...") which
+      // previously shifted the bolded characters onto the " · " separator.
+      const labelMatch = fuzzyMatch(q, it.label.toLowerCase())
+      scored.push({ item: it, positions: labelMatch ? labelMatch.positions : [], score: m.score })
     }
     scored.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score
@@ -571,7 +578,7 @@ export default function CommandPalette() {
                     <button
                       key={entry.item.id}
                       data-idx={idx}
-                      onMouseEnter={() => setActiveIdx(idx)}
+                      onMouseMove={() => setActiveIdx(idx)}
                       onClick={() => { entry.item.perform(); closePalette() }}
                       className={`w-full text-left px-3 py-2 flex items-center gap-3 transition-colors ${
                         active ? 'bg-surface-2 text-text-primary' : 'text-text-muted hover:bg-surface-2/60'

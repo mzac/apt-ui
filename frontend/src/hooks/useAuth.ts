@@ -31,6 +31,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: async () => {
     await auth.logout()
     set({ user: null })
+    // Clear per-user device-local state so it doesn't leak to the next user on a
+    // shared browser (e.g. the command palette's recently-visited servers).
+    try { localStorage.removeItem('palette:recentServers') } catch {}
     window.location.href = '/login'
   },
 }))
