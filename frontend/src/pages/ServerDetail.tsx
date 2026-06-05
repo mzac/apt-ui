@@ -77,8 +77,11 @@ export default function ServerDetail() {
       const s = list.find(x => x.id === serverId) || null
       setServer(s)
       setGroupList(glist)
-    } finally {
+      // Only mark loaded on a successful fetch, so a transient/network error keeps
+      // showing "Loading…" rather than a misleading "Server not found".
       setLoaded(true)
+    } catch {
+      // Swallow so the effect's load() doesn't produce an unhandled rejection.
     }
   }, [serverId])
 

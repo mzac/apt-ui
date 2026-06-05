@@ -15,8 +15,11 @@ export default function Login() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const expired = searchParams.get('expired') === '1'
-  // RequireAuth stashes the page the user originally tried to reach in location.state.from.
-  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || '/'
+  // RequireAuth stashes the full location the user originally tried to reach in
+  // location.state.from — preserve its search/hash too so deep links like
+  // /settings?tab=Users land on the right tab after login, not just the pathname.
+  const fromLoc = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from
+  const from = fromLoc ? `${fromLoc.pathname ?? '/'}${fromLoc.search ?? ''}${fromLoc.hash ?? ''}` : '/'
 
   useEffect(() => {
     if (user) navigate(from, { replace: true })
