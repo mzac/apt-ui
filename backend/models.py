@@ -309,6 +309,7 @@ class NotificationConfig(Base):
     notify_weekly_digest_email: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_weekly_digest_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_weekly_digest_webhook: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_weekly_digest_slack: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ScheduleConfig(Base):

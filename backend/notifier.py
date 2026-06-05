@@ -1537,7 +1537,7 @@ async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
     payload = await compose_weekly_digest(db)
     subject = payload["subject"]
 
-    results: dict[str, str] = {"email": "skipped", "telegram": "skipped", "webhook": "skipped"}
+    results: dict[str, str] = {"email": "skipped", "telegram": "skipped", "webhook": "skipped", "slack": "skipped"}
 
     if cfg.email_enabled and getattr(cfg, "notify_weekly_digest_email", True):
         try:
@@ -1576,6 +1576,19 @@ async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
         except Exception as exc:
             logger.error("Weekly digest webhook failed: %s", exc)
             results["webhook"] = f"error: {exc}"
+
+    if cfg.slack_enabled and getattr(cfg, "notify_weekly_digest_slack", True):
+        try:
+            await _send_slack(
+                cfg,
+                payload["headline"],
+                body=payload.get("telegram_body") or payload.get("text_body"),
+                event_type="weekly_digest",
+            )
+            results["slack"] = "sent"
+        except Exception as exc:
+            logger.error("Weekly digest slack failed: %s", exc)
+            results["slack"] = f"error: {exc}"
 
     return results
 

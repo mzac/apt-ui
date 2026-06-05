@@ -401,6 +401,7 @@ class NotificationConfigOut(BaseModel):
     notify_weekly_digest_email: bool = True
     notify_weekly_digest_telegram: bool = True
     notify_weekly_digest_webhook: bool = True
+    notify_weekly_digest_slack: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -454,6 +455,7 @@ class NotificationConfigUpdate(BaseModel):
     notify_weekly_digest_email: Optional[bool] = None
     notify_weekly_digest_telegram: Optional[bool] = None
     notify_weekly_digest_webhook: Optional[bool] = None
+    notify_weekly_digest_slack: Optional[bool] = None
 
 
 class NotificationLogOut(BaseModel):

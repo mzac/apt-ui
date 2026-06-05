@@ -2380,9 +2380,12 @@ function NotificationsTab() {
                     onChange={e => setForm(f => ({ ...f, notify_weekly_digest_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
                 </td>
-                {/* No weekly-digest Slack toggle — empty placeholder keeps the 6-column
-                    layout aligned so Webhook lands under the Webhook header, not Slack. */}
-                <td className="py-2 px-3 text-center text-text-muted text-xs">—</td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_weekly_digest_slack ?? true}
+                    disabled={!form.slack_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_weekly_digest_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_weekly_digest_webhook ?? true}
                     disabled={!form.webhook_enabled}

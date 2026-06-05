@@ -256,6 +256,7 @@ export interface NotificationConfig {
   notify_weekly_digest_email: boolean
   notify_weekly_digest_telegram: boolean
   notify_weekly_digest_webhook: boolean
+  notify_weekly_digest_slack: boolean
 }
 
 export interface TemplatePackage {
