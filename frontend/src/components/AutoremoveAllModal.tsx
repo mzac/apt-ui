@@ -18,6 +18,9 @@ interface ServerProgress {
 
 export default function AutoremoveAllModal({ servers, onClose }: Props) {
   const [started, setStarted] = useState(false)
+  // Snapshot of targets at start(); running view renders from this so the dashboard
+  // poll mutating the live `servers` prop can't make rows vanish mid-operation.
+  const [runServers, setRunServers] = useState<Server[]>([])
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
   const [filterServer, setFilterServer] = useState<number | null>(null)
@@ -32,16 +35,18 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   }, [])
 
   function start() {
+    const snapshot = servers
     setStarted(true)
-    pendingRef.current = servers.length
+    setRunServers(snapshot)
+    pendingRef.current = snapshot.length
     const initial: Record<number, ServerProgress> = {}
-    servers.forEach(s => { initial[s.id] = { status: 'pending', lines: [] } })
+    snapshot.forEach(s => { initial[s.id] = { status: 'pending', lines: [] } })
     setProgress(initial)
 
     addJob({
       id: 'autoremove-all',
       type: 'upgrade-all',
-      label: `Autoremove All (${servers.length} servers)`,
+      label: `Autoremove All (${snapshot.length} servers)`,
       status: 'running',
       link: '/',
       startedAt: Date.now(),
@@ -78,7 +83,25 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
           updateJob('autoremove-all', { status: 'error', completedAt: Date.now() })
         }
       }
-    }, () => setDone(true))
+    }, (ev) => {
+      setDone(true)
+      if (pendingRef.current > 0) {
+        pendingRef.current = 0
+        updateJob('autoremove-all', { status: 'error', completedAt: Date.now() })
+        const note = ev && !ev.wasClean
+          ? '✗ Connection closed before this server finished.'
+          : '✗ Stream ended without a completion message.'
+        setProgress(p => {
+          const next: Record<number, ServerProgress> = {}
+          for (const [k, v] of Object.entries(p)) {
+            next[+k] = (v.status === 'pending' || v.status === 'running')
+              ? { ...v, status: 'error', lines: [...v.lines, note] }
+              : v
+          }
+          return next
+        })
+      }
+    }, { server_ids: servers.map(s => s.id) })
 
     wsRef.current = ws
   }
@@ -136,7 +159,7 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
               >
                 All
               </button>
-              {servers.map(s => {
+              {runServers.map(s => {
                 const p = progress[s.id]
                 const active = filterServer === s.id
                 const borderColor =
@@ -163,7 +186,7 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
               className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary min-h-0"
               style={{ maxHeight: '40vh' }}
             >
-              {servers.flatMap(s => {
+              {runServers.flatMap(s => {
                 if (filterServer !== null && filterServer !== s.id) return []
                 return (progress[s.id]?.lines || []).map((line, i) => (
                   <div key={`${s.id}-${i}`}>
