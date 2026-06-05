@@ -311,7 +311,7 @@ export interface AptCacheStats extends AptCacheServer {
   data_fetched_recent: string
   data_served_startup: string
   data_served_recent: string
-  daily: AptCacheDailyRow[]
+  daily?: AptCacheDailyRow[]   // absent when the server is unreachable (ok: false)
 }
 
 export interface NotificationLog {

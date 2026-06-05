@@ -1174,8 +1174,11 @@ function HitBar({ pct }: { pct: number }) {
 }
 
 function AptCacheCard({ s }: { s: AptCacheStats }) {
-  const today = s.daily[0] as AptCacheDailyRow | undefined
-  const shown = s.daily.slice(0, 7)
+  // `daily` is absent when the apt-cacher-ng server is unreachable (backend returns
+  // { ok: false } with no daily key); guard so the card renders the offline state
+  // instead of throwing a TypeError that blanks the whole page (no error boundary).
+  const today = (s.daily ?? [])[0] as AptCacheDailyRow | undefined
+  const shown = (s.daily ?? []).slice(0, 7)
 
   return (
     <div className="card p-3 space-y-3">
