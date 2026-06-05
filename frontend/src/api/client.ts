@@ -512,7 +512,7 @@ function wsClose(onClose?: (ev?: CloseEvent) => void) {
 
 export function createUpgradeWebSocket(
   serverId: number | 'all',
-  params: { action: string; allow_phased: boolean; reboot_if_required?: boolean },
+  params: { action: string; allow_phased: boolean; reboot_if_required?: boolean; server_ids?: number[] },
   onMessage: (msg: Record<string, unknown>) => void,
   onClose?: (ev?: CloseEvent) => void,
 ): WebSocket {
