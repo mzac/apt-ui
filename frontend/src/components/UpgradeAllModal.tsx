@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import type { Server } from '@/types'
 import { createUpgradeWebSocket } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -33,6 +34,9 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   const [allowPhased, setAllowPhased] = useState(false)
   const [rebootIfRequired, setRebootIfRequired] = useState(false)
   const [started, setStarted] = useState(false)
+  // Snapshot of the target servers taken at start(); the running view renders from this
+  // so the 30s dashboard poll mutating the live `servers` prop can't make rows vanish.
+  const [runServers, setRunServers] = useState<Server[]>([])
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
   const [filterServer, setFilterServer] = useState<number | null>(null)
@@ -47,24 +51,31 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
     return () => { wsRef.current?.close() }
   }, [])
 
+  // Escape closes the modal before start or once the run is done (not mid-run).
+  useEscapeKey(handleClose, !started || done)
+
   function start() {
+    const snapshot = servers
     setStarted(true)
-    pendingRef.current = servers.length
+    setRunServers(snapshot)
+    pendingRef.current = snapshot.length
     const initial: Record<number, ServerProgress> = {}
-    servers.forEach(s => { initial[s.id] = { status: 'pending', lines: [] } })
+    snapshot.forEach(s => { initial[s.id] = { status: 'pending', lines: [] } })
     setProgress(initial)
 
     addJob({
       id: 'upgrade-all',
       type: 'upgrade-all',
-      label: `Upgrade All (${servers.length} servers)`,
+      label: `Upgrade All (${snapshot.length} servers)`,
       status: 'running',
       link: '/',
       action: 'restore-upgrade-all',
       startedAt: Date.now(),
     })
 
-    const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired }, (msg) => {
+    // Send the explicit target ids so the backend upgrades exactly the filtered set,
+    // not every enabled server. Without this, "Upgrade All (3)" upgraded the whole fleet.
+    const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired, server_ids: snapshot.map(s => s.id) }, (msg) => {
       const sid = msg.server_id as number
       if (!sid) return
 
@@ -95,7 +106,27 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
           updateJob('upgrade-all', { status: 'error', completedAt: Date.now(), action: undefined })
         }
       }
-    }, () => setDone(true))
+    }, (ev) => {
+      setDone(true)
+      // If the socket closed before every server reported back, the run did NOT fully
+      // succeed — mark the stragglers as errored instead of showing a clean "Done".
+      if (pendingRef.current > 0) {
+        pendingRef.current = 0
+        updateJob('upgrade-all', { status: 'error', completedAt: Date.now(), action: undefined })
+        const note = ev && !ev.wasClean
+          ? '✗ Connection closed before this server finished.'
+          : '✗ Stream ended without a completion message.'
+        setProgress(p => {
+          const next: Record<number, ServerProgress> = {}
+          for (const [k, v] of Object.entries(p)) {
+            next[+k] = (v.status === 'pending' || v.status === 'running')
+              ? { ...v, status: 'error', lines: [...v.lines, note] }
+              : v
+          }
+          return next
+        })
+      }
+    })
 
     wsRef.current = ws
   }
@@ -223,7 +254,7 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
               >
                 All
               </button>
-              {servers.map(s => {
+              {runServers.map(s => {
                 const p = progress[s.id]
                 const active = filterServer === s.id
                 const borderColor =
@@ -253,7 +284,7 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
               className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary min-h-0"
               style={{ maxHeight: '40vh' }}
             >
-              {servers.flatMap(s => {
+              {runServers.flatMap(s => {
                 if (filterServer !== null && filterServer !== s.id) return []
                 return (progress[s.id]?.lines || []).map((line, i) => (
                   <div key={`${s.id}-${i}`}>

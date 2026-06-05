@@ -171,9 +171,11 @@ export default function Dashboard() {
     return () => window.removeEventListener('apt:refresh', handler)
   }, [load])
 
-  // Reachability: single endpoint with server-side TTL caching
+  // Reachability: single endpoint with server-side TTL caching. usePolling already
+  // does the initial load() on mount, so we only kick off the ping cycle here
+  // (pingAll hits its own endpoint and doesn't depend on the server list load).
   useEffect(() => {
-    load().then(() => pingAll())
+    pingAll()
     const id = setInterval(() => pingAll(), 5 * 60_000)
     return () => clearInterval(id)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,10 +388,13 @@ export default function Dashboard() {
                 <button
                   key={label}
                   onClick={() => {
-                    setStatusFilter(statusFilter === filter ? null : filter)
-                    if (opensModal) setShowUpdatesSummary(true)
-                    if (opensAutoremove) setShowAutoremoveAll(true)
-                    if (opensRollingReboot) setShowRollingReboot(true)
+                    // Only open the modal when the click activates the filter — clicking
+                    // an already-active tile clears the filter and should not re-open it.
+                    const willActivate = statusFilter !== filter
+                    setStatusFilter(willActivate ? filter : null)
+                    if (willActivate && opensModal) setShowUpdatesSummary(true)
+                    if (willActivate && opensAutoremove) setShowAutoremoveAll(true)
+                    if (willActivate && opensRollingReboot) setShowRollingReboot(true)
                   }}
                   className={`card px-3 py-2 text-center cursor-pointer hover:border-text-muted transition-colors ${statusFilter === filter ? 'border-green/50 bg-green/5' : ''}`}
                   style={{ minWidth: 72 }}
@@ -587,10 +592,16 @@ export default function Dashboard() {
               ) : 'No servers match your filter.'}
             </div>
           )}
-          {Array.from(new Map(
-            filtered.map(s => [s.group_name ?? null, s.group_color ?? null])
-          ).entries()).map(([groupName, groupColor]) => {
-            const groupServers = filtered.filter(s => (s.group_name ?? null) === groupName)
+          {(() => {
+            // When filtering by a specific group, render a single section for it.
+            // Bucketing by the legacy group_name would file multi-group servers under
+            // their primary group, contradicting the active (any-membership) filter.
+            const activeGroupObj = activeGroup != null ? groupList.find(g => g.id === activeGroup) : null
+            const buckets: [string | null, string | null][] = activeGroupObj
+              ? [[activeGroupObj.name, activeGroupObj.color ?? null]]
+              : Array.from(new Map(filtered.map(s => [s.group_name ?? null, s.group_color ?? null])).entries())
+            return buckets.map(([groupName, groupColor]) => {
+            const groupServers = activeGroupObj ? filtered : filtered.filter(s => (s.group_name ?? null) === groupName)
             return (
               <div key={groupName ?? 'ungrouped'}>
                 <div className="flex items-center gap-2 mb-2">
@@ -612,7 +623,8 @@ export default function Dashboard() {
                 </div>
               </div>
             )
-          })}
+            })
+          })()}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -942,9 +954,9 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
             <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
           </div>
           <div className="flex items-center font-mono text-xs text-text-muted truncate group/host">
-            {reachable === false && <span title="Unreachable" className="w-2 h-2 rounded-full bg-red inline-block mr-1 shrink-0" />}
-            {reachable === true && <span title="Reachable" className="w-2 h-2 rounded-full bg-green inline-block mr-1 shrink-0" />}
-            {(reachable === null || reachable === undefined) && <span className="w-2 h-2 rounded-full bg-gray-600 inline-block mr-1 shrink-0" />}
+            {reachable === false && <span title="SSH unreachable" className="w-2 h-2 rounded-full bg-red inline-block mr-1 shrink-0" />}
+            {reachable === true && <span title="SSH OK" className="w-2 h-2 rounded-full bg-green inline-block mr-1 shrink-0" />}
+            {(reachable === null || reachable === undefined) && <span title="SSH status unknown" className="w-2 h-2 rounded-full bg-gray-600 inline-block mr-1 shrink-0" />}
             <span className="truncate">{s.hostname}</span>
             <span className="ml-1.5 opacity-0 group-hover/host:opacity-100 transition-opacity shrink-0" onClick={e => e.stopPropagation()}>
               <CopySshButton username={s.username} hostname={s.hostname} port={s.ssh_port} />
@@ -1174,8 +1186,11 @@ function HitBar({ pct }: { pct: number }) {
 }
 
 function AptCacheCard({ s }: { s: AptCacheStats }) {
-  const today = s.daily[0] as AptCacheDailyRow | undefined
-  const shown = s.daily.slice(0, 7)
+  // `daily` is absent when the apt-cacher-ng server is unreachable (backend returns
+  // { ok: false } with no daily key); guard so the card renders the offline state
+  // instead of throwing a TypeError that blanks the whole page (no error boundary).
+  const today = (s.daily ?? [])[0] as AptCacheDailyRow | undefined
+  const shown = (s.daily ?? []).slice(0, 7)
 
   return (
     <div className="card p-3 space-y-3">

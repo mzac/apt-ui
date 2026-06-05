@@ -305,10 +305,15 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
   const [done, setDone] = useState(false)
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [filterSrv, setFilterSrv] = useState<number | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
     serversApi.list().then(s => setServerList(s.filter(x => x.is_enabled)))
   }, [])
+
+  // Close the apply stream if the modal unmounts mid-run (e.g. navigate away via
+  // the command palette) so the socket and its handlers don't leak.
+  useEffect(() => () => { wsRef.current?.close() }, [])
 
   function toggleServer(id: number) {
     setSelectedServers(prev => {
@@ -327,7 +332,7 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
     ids.forEach(id => { initial[id] = { status: 'pending', lines: [] } })
     setProgress(initial)
 
-    createTemplateApplyWebSocket(template.id, ids, (msg) => {
+    wsRef.current = createTemplateApplyWebSocket(template.id, ids, (msg) => {
       const sid = msg.server_id as number
       if (!sid) return
       if (msg.type === 'output') {

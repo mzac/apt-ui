@@ -830,13 +830,19 @@ async def ws_upgrade_all(websocket: WebSocket):
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
         reboot_if_required = params.get("reboot_if_required", False)
+        # Optional explicit target set (e.g. the dashboard's active filter). When omitted
+        # we fall back to every enabled server, preserving the original behaviour.
+        explicit_ids = params.get("server_ids") or None
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
         concurrency = cfg.upgrade_concurrency if cfg else 5
         run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
-        srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+        srv_query = select(Server).where(Server.is_enabled == True)
+        if explicit_ids:
+            srv_query = srv_query.where(Server.id.in_(explicit_ids))
+        srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
 
         to_upgrade = []
@@ -1209,11 +1215,22 @@ async def ws_autoremove_all(websocket: WebSocket):
             await websocket.close(code=1008)
             return
 
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            params = json.loads(raw)
+        except Exception:
+            params = {}
+        # Optional explicit target set (the dashboard's active filter); omitted = all enabled.
+        explicit_ids = params.get("server_ids") or None
+
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
         concurrency = cfg.upgrade_concurrency if cfg else 5
 
-        srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
+        srv_query = select(Server).where(Server.is_enabled == True)
+        if explicit_ids:
+            srv_query = srv_query.where(Server.id.in_(explicit_ids))
+        srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
 
         to_clean = []

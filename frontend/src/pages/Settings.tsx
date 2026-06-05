@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { useSearchParams } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi, hooks as hooksApi } from '@/api/client'
 import type { MaintenanceWindow, UpgradeHook } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
@@ -29,24 +30,19 @@ function pickDistinctColor(existingColors: string[]): string {
 export default function Settings() {
   const { user } = useAuthStore()
 
-  // Initial tab can be supplied via ?tab=<name> — used by the command palette
-  // and other deep links. Falls back to 'Servers' for any unknown value.
-  const initialTab: Tab = (() => {
-    const param = new URLSearchParams(window.location.search).get('tab')
-    if (param && (TABS as readonly string[]).includes(param)) return param as Tab
-    return 'Servers'
-  })()
-  const [tab, setTab] = useState<Tab>(initialTab)
-
-  // Re-sync if the query string changes (e.g. user opens the palette twice)
-  useEffect(() => {
-    function onPopState() {
-      const param = new URLSearchParams(window.location.search).get('tab')
-      if (param && (TABS as readonly string[]).includes(param)) setTab(param as Tab)
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [])
+  // The active tab is driven by ?tab=<name> so deep links (command palette, etc.)
+  // re-sync on every navigation — not just on popstate. Previously a react-router
+  // navigate() to /settings?tab=Users while already on /settings left the tab stuck.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const tab: Tab = (tabParam && (TABS as readonly string[]).includes(tabParam)) ? (tabParam as Tab) : 'Servers'
+  const setTab = (t: Tab) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', t)
+      return next
+    }, { replace: true })
+  }
 
   // Hide admin-only tabs for read-only users
   const visibleTabs = TABS.filter(t => {
@@ -1023,12 +1019,40 @@ function describeCronField(val: string, singular: string, plural: string, names?
   return parts.join(', ')
 }
 
-function describeCron(expr: string): string | null {
+// Per-field cron ranges: minute, hour, day-of-month, month, day-of-week (0 or 7 = Sun).
+const CRON_RANGES: [number, number][] = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]]
+
+function cronFieldValid(v: string, lo: number, hi: number): boolean {
+  if (v === '*') return true
+  if (v.startsWith('*/')) {
+    const step = v.slice(2)
+    const n = parseInt(step)
+    return String(n) === step && n >= 1 && n <= hi   // step must be >= 1 (rejects */0)
+  }
+  return v.split(',').every(part => {
+    if (part.includes('-')) {
+      const [a, b] = part.split('-')
+      const na = parseInt(a), nb = parseInt(b)
+      return String(na) === a && String(nb) === b && na >= lo && nb <= hi && na <= nb
+    }
+    const n = parseInt(part)
+    return String(n) === part && n >= lo && n <= hi
+  })
+}
+
+// Range-aware cron validity. The old regex accepted out-of-range values like "*/0",
+// "60 6 * * *", or "0 25 * * *" as valid, which let a bad cron be persisted and then
+// silently crash job registration server-side (taking the scheduler down until fixed).
+function isValidCron(expr: string): boolean {
   const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return null
+  if (parts.length !== 5) return false
+  return parts.every((p, i) => cronFieldValid(p, CRON_RANGES[i][0], CRON_RANGES[i][1]))
+}
+
+function describeCron(expr: string): string | null {
+  if (!isValidCron(expr)) return null
+  const parts = expr.trim().split(/\s+/)
   const [min, hour, dom, month, dow] = parts
-  const validPart = (v: string) => /^(\*|(\*\/\d+)|\d+(,\d+)*(-\d+)?)$/.test(v)
-  if (!parts.every(validPart)) return null
 
   const minuteDesc = describeCronField(min, 'minute', 'minutes')
   const hourDesc = describeCronField(hour, 'hour', 'hours')
@@ -1069,7 +1093,7 @@ function CronInput({ value, onChange }: { value: string; onChange: (v: string) =
         placeholder="0 6 * * *"
         spellCheck={false}
       />
-      {invalid && <p className="text-xs text-red">Invalid cron expression — must be 5 fields (min hour dom month dow)</p>}
+      {invalid && <p className="text-xs text-red">Invalid cron — need 5 fields in range (min 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7)</p>}
       {desc && <p className="text-xs text-green font-mono">{desc}</p>}
     </div>
   )
@@ -1079,17 +1103,30 @@ function ScheduleTab() {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const [form, setForm] = useState<Partial<ScheduleConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     schedulerApi.status().then(c => { setCfg(c); setForm(c) })
   }, [])
 
+  const cronInvalid = !!form.check_cron && !isValidCron(form.check_cron)
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const updated = await schedulerApi.update(form)
-    setCfg(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (cronInvalid) { setError('Fix the cron expression before saving.'); return }
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await schedulerApi.update(form)
+      setCfg(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
@@ -1188,8 +1225,9 @@ function ScheduleTab() {
         {/* Save button lives inside the last form section so it's clearly tied
             to the schedule above, not the unrelated Maintenance Windows section below. */}
         <div className="flex items-center justify-end gap-3 pt-3 mt-2 border-t border-border/30">
+          {error && <span className="text-xs text-red">{error}</span>}
           {saved && <span className="text-xs text-green">✓ Saved</span>}
-          <button type="submit" className="btn-primary text-sm">Save Schedule</button>
+          <button type="submit" className="btn-primary text-sm" disabled={saving || cronInvalid}>{saving ? 'Saving…' : 'Save Schedule'}</button>
         </div>
       </section>
     </form>
@@ -1541,20 +1579,14 @@ function CalendarSubscribeModal({ onClose }: { onClose: () => void }) {
             </form>
           ) : !createdToken ? (
             <div className="space-y-2">
-              <label className="label">Use existing API token</label>
-              <select
-                value={selectedId ?? ''}
-                onChange={e => setSelectedId(e.target.value ? parseInt(e.target.value) : null)}
-                className="input text-sm"
-              >
-                {tokens.map(t => (
-                  <option key={t.id} value={t.id}>{t.name} ({t.prefix}…)</option>
-                ))}
-              </select>
+              <p className="text-xs text-text-muted">
+                You have {tokens.length} existing API token{tokens.length === 1 ? '' : 's'}
+                {tokens.length > 0 && <> ({tokens.map(t => `${t.prefix}…`).join(', ')})</>}.
+              </p>
               <p className="text-[10px] text-amber/80 mt-1">
-                The raw token value is shown only once at creation — paste yours into the URL below
-                in place of <span className="font-mono">&lt;paste-your-api-token-here&gt;</span>.
-                If you don&apos;t have it saved, mint a new token below.
+                A token&apos;s raw value is shown only once at creation and can&apos;t be retrieved here.
+                If you saved an existing one, paste it into the URL below in place of
+                <span className="font-mono"> &lt;paste-your-api-token-here&gt;</span> — otherwise mint a new token.
               </p>
               <form onSubmit={createToken} className="flex items-center gap-2 pt-2 border-t border-border/30">
                 <input
@@ -1814,17 +1846,30 @@ function PreferencesTab() {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const [form, setForm] = useState<Partial<ScheduleConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     schedulerApi.status().then(c => { setCfg(c); setForm(c) })
   }, [])
 
+  const cronInvalid = !!form.auto_upgrade_enabled && !!form.auto_upgrade_cron && !isValidCron(form.auto_upgrade_cron)
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const updated = await schedulerApi.update(form)
-    setCfg(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (cronInvalid) { setError('Fix the auto-upgrade cron expression before saving.'); return }
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await schedulerApi.update(form)
+      setCfg(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
@@ -1898,12 +1943,12 @@ function PreferencesTab() {
         <h2 className="text-sm font-medium text-text-primary">Concurrency & Retention</h2>
         <div>
           <label className="label">Max simultaneous upgrades</label>
-          <input type="number" className="input w-24" min={1} max={20} value={form.upgrade_concurrency ?? 5} onChange={e => setForm(f => ({ ...f, upgrade_concurrency: parseInt(e.target.value) }))} />
+          <input type="number" className="input w-24" min={1} max={20} value={form.upgrade_concurrency ?? 5} onChange={e => setForm(f => ({ ...f, upgrade_concurrency: parseInt(e.target.value) || 5 }))} />
           <p className="text-xs text-text-muted mt-1">Applies to both manual "Upgrade All" and auto-upgrades.</p>
         </div>
         <div>
           <label className="label">Log retention (days, 0 = forever)</label>
-          <input type="number" className="input w-24" min={0} value={form.log_retention_days ?? 90} onChange={e => setForm(f => ({ ...f, log_retention_days: parseInt(e.target.value) }))} />
+          <input type="number" className="input w-24" min={0} value={form.log_retention_days ?? 90} onChange={e => { const n = parseInt(e.target.value); setForm(f => ({ ...f, log_retention_days: Number.isNaN(n) ? 0 : n })) }} />
           <p className="text-xs text-text-muted mt-1">Check history and upgrade logs older than this are purged nightly.</p>
         </div>
       </section>
@@ -1994,7 +2039,10 @@ function PreferencesTab() {
       </section>
 
       <DisplayPreferencesSection />
-      <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>
+      <div className="flex items-center gap-3">
+        <button type="submit" className="btn-primary" disabled={saving || cronInvalid}>{saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Preferences'}</button>
+        {error && <span className="text-xs text-red">{error}</span>}
+      </div>
     </form>
     </div>
   )
@@ -2066,6 +2114,8 @@ function NotificationsTab() {
   const [cfg, setCfg] = useState<NotificationConfig | null>(null)
   const [form, setForm] = useState<Partial<NotificationConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [chatIds, setChatIds] = useState<{ id: number; title: string }[]>([])
 
@@ -2075,15 +2125,33 @@ function NotificationsTab() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await notifApi.updateConfig(form)
+      setCfg(updated)
+      setForm(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Test/detect endpoints read the persisted DB config, so save the current form
+  // first — otherwise they silently test stale or empty saved credentials. The
+  // backend ignores masked secret placeholders, so unchanged secrets are preserved.
+  async function persistForm() {
     const updated = await notifApi.updateConfig(form)
     setCfg(updated)
     setForm(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   async function sendTestEmail() {
     try {
+      await persistForm()
       await notifApi.testEmail()
       setTestMsg(m => ({ ...m, email: '✓ Test email sent' }))
     } catch (err: unknown) {
@@ -2093,6 +2161,7 @@ function NotificationsTab() {
 
   async function sendTestTelegram() {
     try {
+      await persistForm()
       await notifApi.testTelegram()
       setTestMsg(m => ({ ...m, telegram: '✓ Test message sent' }))
     } catch (err: unknown) {
@@ -2102,6 +2171,7 @@ function NotificationsTab() {
 
   async function sendTestSlack() {
     try {
+      await persistForm()
       await notifApi.testSlack()
       setTestMsg(m => ({ ...m, slack: '✓ Test message sent' }))
     } catch (err: unknown) {
@@ -2112,6 +2182,7 @@ function NotificationsTab() {
   async function sendTestWeeklyDigest() {
     setTestMsg(m => ({ ...m, weekly: '… sending' }))
     try {
+      await persistForm()
       const r = await notifApi.testWeeklyDigest()
       const parts = Object.entries(r.results).map(([ch, status]) => `${ch}:${status}`).join('  ')
       setTestMsg(m => ({ ...m, weekly: `✓ ${parts}` }))
@@ -2122,6 +2193,7 @@ function NotificationsTab() {
 
   async function detectChatId() {
     try {
+      await persistForm()
       const result = await notifApi.detectChatId()
       setChatIds(result.chats)
     } catch (err: unknown) {
@@ -2142,7 +2214,7 @@ function NotificationsTab() {
         {form.email_enabled && (
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">SMTP Host</label><input className="input" value={form.smtp_host ?? ''} onChange={e => setForm(f => ({ ...f, smtp_host: e.target.value }))} /></div>
-            <div><label className="label">Port</label><input type="number" className="input" value={form.smtp_port ?? 587} onChange={e => setForm(f => ({ ...f, smtp_port: parseInt(e.target.value) }))} /></div>
+            <div><label className="label">Port</label><input type="number" className="input" value={form.smtp_port ?? 587} onChange={e => setForm(f => ({ ...f, smtp_port: parseInt(e.target.value) || 587 }))} /></div>
             <div><label className="label">Username</label><input className="input" value={form.smtp_username ?? ''} onChange={e => setForm(f => ({ ...f, smtp_username: e.target.value }))} /></div>
             <div><label className="label">Password</label><input type="password" className="input" value={form.smtp_password ?? ''} onChange={e => setForm(f => ({ ...f, smtp_password: e.target.value }))} placeholder="unchanged" /></div>
             <div><label className="label">From</label><input className="input" value={form.email_from ?? ''} onChange={e => setForm(f => ({ ...f, email_from: e.target.value }))} /></div>
@@ -2308,6 +2380,9 @@ function NotificationsTab() {
                     onChange={e => setForm(f => ({ ...f, notify_weekly_digest_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
                 </td>
+                {/* No weekly-digest Slack toggle — empty placeholder keeps the 6-column
+                    layout aligned so Webhook lands under the Webhook header, not Slack. */}
+                <td className="py-2 px-3 text-center text-text-muted text-xs">—</td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_weekly_digest_webhook ?? true}
                     disabled={!form.webhook_enabled}
@@ -2471,7 +2546,10 @@ function NotificationsTab() {
         </div>
       </section>
 
-      <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Notifications'}</button>
+      <div className="flex items-center gap-3">
+        <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Notifications'}</button>
+        {error && <span className="text-xs text-red">{error}</span>}
+      </div>
     </form>
   )
 }
@@ -2770,21 +2848,26 @@ function AccountTab() {
   const [form, setForm] = useState({ current_password: '', new_password: '', confirm: '' })
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault()
+    if (saving) return
     setMsg('')
     setError('')
     if (form.new_password !== form.confirm) {
       setError('New passwords do not match')
       return
     }
+    setSaving(true)
     try {
       await auth.changePassword(form.current_password, form.new_password)
       setMsg('Password changed successfully')
       setForm({ current_password: '', new_password: '', confirm: '' })
     } catch (err: unknown) {
       setError((err as Error).message)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -2803,7 +2886,7 @@ function AccountTab() {
           <div><label className="label">Confirm New Password</label><input type="password" className="input" value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} /></div>
           {error && <p className="text-red text-sm">{error}</p>}
           {msg && <p className="text-green text-sm">{msg}</p>}
-          <button type="submit" className="btn-primary">Change Password</button>
+          <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Changing…' : 'Change Password'}</button>
         </form>
       </div>
 

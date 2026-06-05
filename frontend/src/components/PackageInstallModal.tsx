@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { servers as serversApi, createInstallWebSocket } from '@/api/client'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 import type { PackageSearchResult } from '@/types'
 import Convert from 'ansi-to-html'
 
@@ -24,6 +25,7 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   const [results, setResults] = useState<PackageSearchResult[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [searching, setSearching] = useState(false)
+  const [started, setStarted] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [termLines, setTermLines] = useState<string[]>([])
   const [done, setDone] = useState(false)
@@ -31,6 +33,7 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const completedRef = useRef(false)
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) { setResults([]); return }
@@ -61,6 +64,9 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
     return () => { wsRef.current?.close() }
   }, [])
 
+  // Escape closes the modal when it's safe to (before start or once done).
+  useEscapeKey(handleClose, !started || done)
+
   function toggleSelect(name: string) {
     setSelected(prev => {
       const next = new Set(prev)
@@ -72,23 +78,36 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
 
   function startInstall() {
     if (selected.size === 0) return
+    setStarted(true)
     setInstalling(true)
     setTermLines([])
     setDone(false)
     setError('')
+    completedRef.current = false
 
     const ws = createInstallWebSocket(serverId, Array.from(selected), (msg) => {
       if (msg.type === 'output') {
         setTermLines(l => [...l, msg.data as string])
       } else if (msg.type === 'complete') {
+        completedRef.current = true
         setDone(true)
         window.dispatchEvent(new CustomEvent('apt:refresh'))
       } else if (msg.type === 'error') {
+        completedRef.current = true
         setError(msg.data as string)
         setDone(true)
       }
-    }, () => {
+    }, (ev) => {
       setInstalling(false)
+      // The socket closing is NOT completion — only a 'complete'/'error' message is.
+      // If it closes first (auth drop, network), surface it instead of silently
+      // snapping back to the empty search view.
+      if (!completedRef.current) {
+        setError(prev => prev || (ev && !ev.wasClean
+          ? 'Connection closed before the install finished — check the server.'
+          : 'Install ended without a completion message.'))
+        setDone(true)
+      }
     })
     wsRef.current = ws
   }
@@ -101,18 +120,18 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   const modal = (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
-      onClick={e => { if (e.target === e.currentTarget) handleClose() }}
+      onClick={e => { if (e.target === e.currentTarget) { e.stopPropagation(); handleClose() } }}
     >
       <div className="bg-surface border border-border rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="p-4 border-b border-border flex items-center justify-between">
           <h2 className="font-mono text-sm text-text-primary">Install Packages — {serverName}</h2>
-          {(!installing || done) && (
+          {(!started || done) && (
             <button onClick={handleClose} className="text-text-muted hover:text-red">✕</button>
           )}
         </div>
 
-        {!installing ? (
+        {!started ? (
           <div className="flex flex-col flex-1 overflow-hidden p-4 gap-3">
             {/* Search input */}
             <div className="relative">

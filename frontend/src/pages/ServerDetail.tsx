@@ -61,6 +61,7 @@ export default function ServerDetail() {
   const location = useLocation()
 
   const [server, setServer] = useState<Server | null>(null)
+  const [loaded, setLoaded] = useState(false)
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
@@ -71,10 +72,17 @@ export default function ServerDetail() {
   const { addJob, updateJob } = useJobStore()
 
   const load = useCallback(async () => {
-    const [list, glist] = await Promise.all([serversApi.list(), groupsApi.list()])
-    const s = list.find(x => x.id === serverId) || null
-    setServer(s)
-    setGroupList(glist)
+    try {
+      const [list, glist] = await Promise.all([serversApi.list(), groupsApi.list()])
+      const s = list.find(x => x.id === serverId) || null
+      setServer(s)
+      setGroupList(glist)
+      // Only mark loaded on a successful fetch, so a transient/network error keeps
+      // showing "Loading…" rather than a misleading "Server not found".
+      setLoaded(true)
+    } catch {
+      // Swallow so the effect's load() doesn't produce an unhandled rejection.
+    }
   }, [serverId])
 
   useEffect(() => { load() }, [load])
@@ -125,9 +133,19 @@ export default function ServerDetail() {
     }
   }
 
-  if (!server) return (
-    <div className="flex items-center justify-center py-20 text-text-muted font-mono text-sm">Loading…</div>
-  )
+  if (!server) {
+    // Distinguish "still fetching" from "no such server" (bad/non-numeric/deleted id)
+    // so an unknown /servers/:id doesn't spin forever.
+    if (!loaded && !Number.isNaN(serverId)) return (
+      <div className="flex items-center justify-center py-20 text-text-muted font-mono text-sm">Loading…</div>
+    )
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-3 text-text-muted font-mono text-sm">
+        <span>Server not found.</span>
+        <Link to="/" className="text-green hover:underline">← Back to dashboard</Link>
+      </div>
+    )
+  }
 
   const c = server.latest_check
   const statusVal = checking ? 'checking' : (!c ? 'unknown' : c.status === 'error' ? 'error' : c.packages_available > 0 ? 'updates_available' : 'up_to_date')
@@ -293,6 +311,13 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
 
   useEffect(() => {
     tagsApi.list().then(setTagList)
+  }, [])
+
+  // Close any in-flight per-form streams on unmount (Cancel edit / Save / navigate away).
+  useEffect(() => () => {
+    eepromWsRef.current?.close()
+    autoSecWsRef.current?.close()
+    aptProxyWsRef.current?.close()
   }, [])
 
   useEffect(() => {
@@ -1363,7 +1388,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const dryTermRef = useRef<HTMLDivElement>(null)
   const { addJob, updateJob } = useJobStore()
 
-  useEffect(() => () => { wsRef.current?.close(); dryWsRef.current?.close() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { wsRef.current?.close(); dryWsRef.current?.close(); pveWsRef.current?.close() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Detect container-runtime packages in the upgrade list
   useEffect(() => {
@@ -1634,12 +1659,14 @@ function SshShellPanel({ serverId }: { serverId: number }) {
   const termRef = useRef<any>(null)   // Terminal instance
   const fitRef = useRef<any>(null)    // FitAddon instance
   const wsRef = useRef<WebSocket | null>(null)
+  const roRef = useRef<ResizeObserver | null>(null)
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     return () => {
       wsRef.current?.close()
+      roRef.current?.disconnect()
       termRef.current?.dispose()
     }
   }, [])
@@ -1651,6 +1678,7 @@ function SshShellPanel({ serverId }: { serverId: number }) {
 
     // Dispose any existing session
     wsRef.current?.close()
+    roRef.current?.disconnect()
     if (termRef.current) {
       termRef.current.dispose()
       termRef.current = null
@@ -1683,6 +1711,7 @@ function SshShellPanel({ serverId }: { serverId: number }) {
 
     const ro = new ResizeObserver(() => fitRef.current?.fit())
     ro.observe(containerRef.current)
+    roRef.current = ro
 
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/shell/${serverId}`
     const ws = new WebSocket(url)
@@ -1841,7 +1870,7 @@ function StatsTab({ serverId }: { serverId: number }) {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <h3 className="text-xs text-text-muted uppercase tracking-wide mb-4">Packages upgraded per run (last 30)</h3>
+        <h3 className="text-xs text-text-muted uppercase tracking-wide mb-4">Packages upgraded per run (recent)</h3>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data}>
             <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 11 }} />
@@ -1850,7 +1879,7 @@ function StatsTab({ serverId }: { serverId: number }) {
               contentStyle={{ background: '#1a1d27', border: '1px solid #2e3347', borderRadius: '4px', fontSize: '12px' }}
               labelStyle={{ color: '#e5e7eb' }}
             />
-            <Line type="monotone" dataKey="packages" stroke="#22c55e" dot={false} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="packages" stroke="#22c55e" dot={data.length <= 2} strokeWidth={1.5} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -2156,6 +2185,11 @@ function AptReposTab({ serverId }: { serverId: number }) {
         setTestResult(false)
         setTesting(false)
       }
+    }, () => {
+      // Socket closed: clear the spinner, and if no complete/error arrived
+      // (auth drop / dropped connection) surface it as a failure.
+      setTesting(false)
+      setTestResult(prev => (prev === null ? false : prev))
     })
   }
 

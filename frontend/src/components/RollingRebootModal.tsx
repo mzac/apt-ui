@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import type { Server, ScheduleConfig } from '@/types'
 import { createRebootAllWebSocket, scheduler as schedulerApi } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 
 interface Props {
   servers: Server[]
@@ -34,6 +35,9 @@ function groupByRing(servers: Server[]): Record<string, Server[]> {
 
 export default function RollingRebootModal({ servers, onClose }: Props) {
   const [started, setStarted] = useState(false)
+  // Snapshot of targets at start() so the dashboard poll mutating the live `servers`
+  // prop can't make rows vanish from the running view mid-reboot.
+  const [runServers, setRunServers] = useState<Server[]>([])
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
   const [filterServer, setFilterServer] = useState<number | null>(null)
@@ -47,11 +51,15 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   const wsRef = useRef<WebSocket | null>(null)
   const { addJob, updateJob } = useJobStore()
   const completedRef = useRef(0)
+  const abortedRef = useRef(false)
 
   useEffect(() => {
     schedulerApi.status().then(setCfg).catch(() => {})
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Escape closes the modal before start or once done (not mid-rollout).
+  useEscapeKey(handleClose, !started || done)
 
   const rings = useMemo(() => groupByRing(servers), [servers])
   const ringNames = useMemo(() => Object.keys(rings).sort(), [rings])
@@ -61,16 +69,19 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   const timeoutMinutes = cfg?.reboot_timeout_minutes ?? 10
 
   function start() {
+    const snapshot = servers
     setStarted(true)
+    setRunServers(snapshot)
     completedRef.current = 0
+    abortedRef.current = false
     const initial: Record<number, ServerProgress> = {}
-    servers.forEach(s => { initial[s.id] = { phase: 'pending' } })
+    snapshot.forEach(s => { initial[s.id] = { phase: 'pending' } })
     setProgress(initial)
 
     addJob({
       id: 'reboot-all',
       type: 'upgrade-all',
-      label: `Rolling Reboot (${servers.length} servers)`,
+      label: `Rolling Reboot (${snapshot.length} servers)`,
       status: 'running',
       link: '/',
       startedAt: Date.now(),
@@ -112,6 +123,7 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
       }
       if (t === 'abort') {
         const data = msg.data as { ring: string; reason: string }
+        abortedRef.current = true
         setAborted(true)
         setAbortReason(data.reason)
         setLogs(l => [...l, `[abort] ring ${data.ring}: ${data.reason}`])
@@ -139,7 +151,24 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
         setProgress(p => ({ ...p, [sid]: { phase: 'error', message: msg.data as string } }))
         completedRef.current += 1
       }
-    }, () => setDone(true))
+    }, (ev) => {
+      setDone(true)
+      // If the socket dropped before every server came back (and we didn't already
+      // abort), mark the unfinished servers as errored rather than implying success.
+      if (!abortedRef.current && completedRef.current < snapshot.length) {
+        updateJob('reboot-all', { status: 'error', completedAt: Date.now() })
+        const note = ev && !ev.wasClean ? 'connection closed before completion' : 'stream ended early'
+        setProgress(p => {
+          const next: Record<number, ServerProgress> = {}
+          for (const [k, v] of Object.entries(p)) {
+            next[+k] = (v.phase === 'pending' || v.phase === 'rebooting' || v.phase === 'waiting')
+              ? { phase: 'error', message: note }
+              : v
+          }
+          return next
+        })
+      }
+    }, { server_ids: snapshot.map(s => s.id) })
 
     wsRef.current = ws
   }
@@ -243,7 +272,7 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
               >
                 All
               </button>
-              {servers.map(s => {
+              {runServers.map(s => {
                 const p = progress[s.id]
                 const phase: RebootPhase = p?.phase ?? 'pending'
                 const active = filterServer === s.id
@@ -269,7 +298,7 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
               className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary min-h-0"
               style={{ maxHeight: '40vh' }}
             >
-              {servers
+              {runServers
                 .filter(s => filterServer === null || filterServer === s.id)
                 .map(s => {
                   const p = progress[s.id]

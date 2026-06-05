@@ -49,6 +49,10 @@ export const useJobStore = create<JobStore>()(
 
         set((s) => ({
           jobs: s.jobs.map(j => (j.id === id ? { ...j, ...update } : j)),
+          // Surface the amber "unseen completion" dot. Reset by markSeen() when the
+          // bell is opened — not by the auto-remove below, so the dot survives the
+          // 3s removal and still signals that something finished.
+          unseenCount: finishing ? s.unseenCount + 1 : s.unseenCount,
         }))
 
         if (finishing) {
@@ -57,14 +61,9 @@ export const useJobStore = create<JobStore>()(
       },
 
       removeJob: (id) =>
-        set((s) => {
-          const job = s.jobs.find(j => j.id === id)
-          const wasUnseen = job && job.status !== 'running'
-          return {
-            jobs: s.jobs.filter(j => j.id !== id),
-            unseenCount: wasUnseen ? Math.max(0, s.unseenCount - 1) : s.unseenCount,
-          }
-        }),
+        set((s) => ({
+          jobs: s.jobs.filter(j => j.id !== id),
+        })),
 
       markSeen: () => set({ unseenCount: 0 }),
     }),
