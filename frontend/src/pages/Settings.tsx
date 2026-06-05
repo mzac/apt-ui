@@ -1023,12 +1023,40 @@ function describeCronField(val: string, singular: string, plural: string, names?
   return parts.join(', ')
 }
 
-function describeCron(expr: string): string | null {
+// Per-field cron ranges: minute, hour, day-of-month, month, day-of-week (0 or 7 = Sun).
+const CRON_RANGES: [number, number][] = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]]
+
+function cronFieldValid(v: string, lo: number, hi: number): boolean {
+  if (v === '*') return true
+  if (v.startsWith('*/')) {
+    const step = v.slice(2)
+    const n = parseInt(step)
+    return String(n) === step && n >= 1 && n <= hi   // step must be >= 1 (rejects */0)
+  }
+  return v.split(',').every(part => {
+    if (part.includes('-')) {
+      const [a, b] = part.split('-')
+      const na = parseInt(a), nb = parseInt(b)
+      return String(na) === a && String(nb) === b && na >= lo && nb <= hi && na <= nb
+    }
+    const n = parseInt(part)
+    return String(n) === part && n >= lo && n <= hi
+  })
+}
+
+// Range-aware cron validity. The old regex accepted out-of-range values like "*/0",
+// "60 6 * * *", or "0 25 * * *" as valid, which let a bad cron be persisted and then
+// silently crash job registration server-side (taking the scheduler down until fixed).
+function isValidCron(expr: string): boolean {
   const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return null
+  if (parts.length !== 5) return false
+  return parts.every((p, i) => cronFieldValid(p, CRON_RANGES[i][0], CRON_RANGES[i][1]))
+}
+
+function describeCron(expr: string): string | null {
+  if (!isValidCron(expr)) return null
+  const parts = expr.trim().split(/\s+/)
   const [min, hour, dom, month, dow] = parts
-  const validPart = (v: string) => /^(\*|(\*\/\d+)|\d+(,\d+)*(-\d+)?)$/.test(v)
-  if (!parts.every(validPart)) return null
 
   const minuteDesc = describeCronField(min, 'minute', 'minutes')
   const hourDesc = describeCronField(hour, 'hour', 'hours')
@@ -1069,7 +1097,7 @@ function CronInput({ value, onChange }: { value: string; onChange: (v: string) =
         placeholder="0 6 * * *"
         spellCheck={false}
       />
-      {invalid && <p className="text-xs text-red">Invalid cron expression — must be 5 fields (min hour dom month dow)</p>}
+      {invalid && <p className="text-xs text-red">Invalid cron — need 5 fields in range (min 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7)</p>}
       {desc && <p className="text-xs text-green font-mono">{desc}</p>}
     </div>
   )
@@ -1079,17 +1107,30 @@ function ScheduleTab() {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const [form, setForm] = useState<Partial<ScheduleConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     schedulerApi.status().then(c => { setCfg(c); setForm(c) })
   }, [])
 
+  const cronInvalid = !!form.check_cron && !isValidCron(form.check_cron)
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const updated = await schedulerApi.update(form)
-    setCfg(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (cronInvalid) { setError('Fix the cron expression before saving.'); return }
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await schedulerApi.update(form)
+      setCfg(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
@@ -1188,8 +1229,9 @@ function ScheduleTab() {
         {/* Save button lives inside the last form section so it's clearly tied
             to the schedule above, not the unrelated Maintenance Windows section below. */}
         <div className="flex items-center justify-end gap-3 pt-3 mt-2 border-t border-border/30">
+          {error && <span className="text-xs text-red">{error}</span>}
           {saved && <span className="text-xs text-green">✓ Saved</span>}
-          <button type="submit" className="btn-primary text-sm">Save Schedule</button>
+          <button type="submit" className="btn-primary text-sm" disabled={saving || cronInvalid}>{saving ? 'Saving…' : 'Save Schedule'}</button>
         </div>
       </section>
     </form>
@@ -1814,17 +1856,30 @@ function PreferencesTab() {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const [form, setForm] = useState<Partial<ScheduleConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     schedulerApi.status().then(c => { setCfg(c); setForm(c) })
   }, [])
 
+  const cronInvalid = !!form.auto_upgrade_enabled && !!form.auto_upgrade_cron && !isValidCron(form.auto_upgrade_cron)
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const updated = await schedulerApi.update(form)
-    setCfg(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (cronInvalid) { setError('Fix the auto-upgrade cron expression before saving.'); return }
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await schedulerApi.update(form)
+      setCfg(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
@@ -1994,7 +2049,10 @@ function PreferencesTab() {
       </section>
 
       <DisplayPreferencesSection />
-      <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Preferences'}</button>
+      <div className="flex items-center gap-3">
+        <button type="submit" className="btn-primary" disabled={saving || cronInvalid}>{saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Preferences'}</button>
+        {error && <span className="text-xs text-red">{error}</span>}
+      </div>
     </form>
     </div>
   )
@@ -2066,6 +2124,8 @@ function NotificationsTab() {
   const [cfg, setCfg] = useState<NotificationConfig | null>(null)
   const [form, setForm] = useState<Partial<NotificationConfig>>({})
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [chatIds, setChatIds] = useState<{ id: number; title: string }[]>([])
 
@@ -2075,11 +2135,19 @@ function NotificationsTab() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    const updated = await notifApi.updateConfig(form)
-    setCfg(updated)
-    setForm(updated)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await notifApi.updateConfig(form)
+      setCfg(updated)
+      setForm(updated)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function sendTestEmail() {
@@ -2471,7 +2539,10 @@ function NotificationsTab() {
         </div>
       </section>
 
-      <button type="submit" className="btn-primary">{saved ? '✓ Saved' : 'Save Notifications'}</button>
+      <div className="flex items-center gap-3">
+        <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Notifications'}</button>
+        {error && <span className="text-xs text-red">{error}</span>}
+      </div>
     </form>
   )
 }

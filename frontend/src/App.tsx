@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import RequireAuth from '@/components/RequireAuth'
 import Layout from '@/components/Layout'
@@ -13,6 +13,16 @@ import Compare from '@/pages/Compare'
 import Search from '@/pages/Search'
 import Reports from '@/pages/Reports'
 import Security from '@/pages/Security'
+
+// Keyed by :id so navigating between servers (e.g. via the command palette) fully
+// remounts ServerDetail and all its tab children. Without this, react-router reuses
+// the same element across param changes, leaving per-tab state (notably the Apt Repos
+// editor) pointing at the previous server — which could save server A's repo files
+// onto server B.
+function ServerDetailRoute() {
+  const { id } = useParams()
+  return <ServerDetail key={id} />
+}
 
 export default function App() {
   const { init } = useAuthStore()
@@ -40,7 +50,7 @@ export default function App() {
           element={
             <RequireAuth>
               <Layout>
-                <ServerDetail />
+                <ServerDetailRoute />
               </Layout>
             </RequireAuth>
           }
