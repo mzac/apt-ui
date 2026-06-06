@@ -238,6 +238,17 @@ async def _build_server_out(
     # OS EOL status (issue #57) — derived from os_info string at serialize time
     eol = get_eol_status_from_os_info(server.os_info)
 
+    # Config drift file list — guard the JSON parse (issue #62): malformed data
+    # (corruption / manual edits / partial writes) must not 500 the whole endpoint.
+    drift_files = None
+    if stats_row and stats_row.drift_files:
+        try:
+            _parsed = json.loads(stats_row.drift_files)
+            if isinstance(_parsed, list):
+                drift_files = [str(p) for p in _parsed]
+        except (ValueError, TypeError):
+            drift_files = None
+
     return ServerOut(
         id=server.id,
         name=server.name,
@@ -276,6 +287,7 @@ async def _build_server_out(
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
         snapshot_capability=stats_row.snapshot_capability if stats_row else None,
         drift_count=stats_row.drift_count if stats_row else None,
+        drift_files=drift_files,
         os_eol_date=eol["date"],
         os_eol_days_remaining=eol["days_remaining"],
         os_eol_severity=eol["severity"],

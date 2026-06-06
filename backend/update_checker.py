@@ -178,12 +178,16 @@ async def _gather_stats(server: Server) -> dict:
             "elif [ -f /.dockerenv ] || systemd-detect-virt 2>/dev/null | grep -qE '^(lxc|docker)$'; then echo container; "
             "else echo none; fi"
         ),
-        # Config drift (issue #62) — count unmerged conffiles left by past upgrades.
+        # Config drift (issue #62) — unmerged conffiles left by past upgrades.
         # These (.dpkg-dist/.ucf-dist/.dpkg-new under /etc) are the most common
-        # post-patch breakage cause and are cheap to count.
+        # post-patch breakage cause and are cheap to find. Emit the TRUE (uncapped)
+        # count on line 1, then up to 200 sorted paths — so the count/badge stay
+        # accurate on hosts with >200 drifted files while the stored list is bounded.
         "drift": (
-            "find /etc \\( -name '*.dpkg-dist' -o -name '*.ucf-dist' -o -name '*.dpkg-new' \\) "
-            "2>/dev/null | wc -l"
+            "d=$(find /etc \\( -name '*.dpkg-dist' -o -name '*.ucf-dist' -o -name '*.dpkg-new' \\) "
+            "2>/dev/null | sort); "
+            "printf '%s\\n' \"$(printf '%s\\n' \"$d\" | grep -c .)\"; "
+            "printf '%s\\n' \"$d\" | head -n 200"
         ),
         # /boot disk usage (separate partition on most distros — kernel buildup fills it)
         "boot_disk": "df -P -BM /boot 2>/dev/null | awk 'NR==2{gsub(\"M\",\"\",$2); gsub(\"M\",\"\",$4); print $2\" \"$4}' || echo ''",
@@ -359,10 +363,18 @@ async def _gather_stats(server: Server) -> dict:
     if snapshot_capability not in ("btrfs", "zfs", "container", "none"):
         snapshot_capability = None
 
+    # Line 1 is the true (uncapped) count; remaining lines are up to 200 paths.
     drift_raw = results.get("drift")
+    drift_files: list[str] = []
     drift_count = None
-    if drift_raw and drift_raw.stdout.strip().isdigit():
-        drift_count = int(drift_raw.stdout.strip())
+    if drift_raw and drift_raw.stdout:
+        _lines = drift_raw.stdout.splitlines()
+        if _lines:
+            _first = _lines[0].strip()
+            drift_count = int(_first) if _first.isdigit() else None
+            drift_files = [ln.strip() for ln in _lines[1:] if ln.strip()]
+            if drift_count is None:  # unexpected output shape — fall back to list length
+                drift_count = len(drift_files)
 
     return {
         "uptime_seconds": uptime_seconds,
@@ -385,6 +397,7 @@ async def _gather_stats(server: Server) -> dict:
         "boot_free_mb": boot_free_mb,
         "snapshot_capability": snapshot_capability,
         "drift_count": drift_count,
+        "drift_files": json.dumps(drift_files) if drift_files else None,
     }
 
 
@@ -574,6 +587,7 @@ async def check_server(
         boot_free_mb=stats.get("boot_free_mb"),
         snapshot_capability=stats.get("snapshot_capability"),
         drift_count=stats.get("drift_count"),
+        drift_files=stats.get("drift_files"),
     )
     db.add(stat_row)
 

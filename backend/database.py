@@ -227,6 +227,8 @@ async def init_db():
             "ALTER TABLE upgrade_hooks ADD COLUMN hook_type TEXT DEFAULT 'shell'",
             # Config drift detection (issue #62)
             "ALTER TABLE server_stats ADD COLUMN drift_count INTEGER",
+            # Config drift — the actual drifted conffile paths (JSON list, capped) (issue #62)
+            "ALTER TABLE server_stats ADD COLUMN drift_files TEXT",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

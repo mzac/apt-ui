@@ -8,6 +8,7 @@ import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
+import SelectCheckbox from '@/components/SelectCheckbox'
 import FleetTrendCard from '@/components/FleetTrendCard'
 import { toast } from '@/hooks/useToast'
 import { confirmDialog } from '@/hooks/useConfirm'
@@ -15,6 +16,7 @@ import UpgradeAllModal from '@/components/UpgradeAllModal'
 import AutoremoveAllModal from '@/components/AutoremoveAllModal'
 import RollingRebootModal from '@/components/RollingRebootModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
+import DriftModal from '@/components/DriftModal'
 import CopySshButton from '@/components/CopySshButton'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
 
@@ -1087,8 +1089,7 @@ function ServerRow({ server: s, checking, onCheck, onToggleEnabled, reachable, s
       onClick={() => navigate(`/servers/${s.id}`)}
     >
       {onToggleSelect && (
-        <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
-          aria-label={`Select ${s.name}`} className="w-3.5 h-3.5 accent-green shrink-0" title="Select" />
+        <SelectCheckbox checked={!!selected} onChange={onToggleSelect} label={`Select ${s.name}`} />
       )}
       <StatusDot status={status} />
       {reachable === false && <span title="SSH unreachable" className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0 -ml-1.5" />}
@@ -1126,6 +1127,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
   const status = checking ? 'checking' : serverStatus(s)
   const c = s.latest_check
   const [showInstall, setShowInstall] = useState(false)
+  const [showDrift, setShowDrift] = useState(false)
 
   // Use the first group color for left border accent
   const primaryGroupColor = (s.groups ?? [])[0]?.color || s.group_color || null
@@ -1134,14 +1136,10 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
 
   return (
     <div
-      className={`card relative p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''} ${selected ? 'ring-1 ring-green/60' : ''}`}
+      className={`card group/card relative p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''} ${selected ? 'ring-1 ring-green/60' : ''}`}
       style={primaryGroupColor ? { borderLeft: `3px solid ${s.is_reachable === false ? '#ef4444' : primaryGroupColor}66` } : (s.is_reachable === false ? { borderLeft: '3px solid #ef444466' } : undefined)}
       onClick={() => navigate(`/servers/${s.id}`)}
     >
-      {onToggleSelect && (
-        <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
-          aria-label={`Select ${s.name}`} className="absolute top-2 right-2 w-3.5 h-3.5 accent-green z-10" title="Select" />
-      )}
       {s.is_enabled && s.is_reachable === false && (
         <div className="flex items-center gap-1.5 text-red text-[10px] font-mono bg-red/10 border border-red/20 rounded px-2 py-0.5 -mx-1 -mt-1">
           <span className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0" />
@@ -1153,7 +1151,21 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
         {/* Left: name, hostname, OS */}
         <div className="flex-1 min-w-0 space-y-0.5">
           <div className="flex items-center gap-1.5">
-            <StatusDot status={status} />
+            {/* Status dot doubles as the bulk-select control: the checkbox replaces the
+                dot on hover or when the card is selected — no overlap with corner status. */}
+            <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 shrink-0">
+              {onToggleSelect && (
+                <SelectCheckbox
+                  checked={!!selected}
+                  onChange={onToggleSelect}
+                  label={`Select ${s.name}`}
+                  className={selected ? '' : 'hidden group-hover/card:inline-flex'}
+                />
+              )}
+              <span className={selected ? 'hidden' : (onToggleSelect ? 'group-hover/card:hidden' : '')}>
+                <StatusDot status={status} />
+              </span>
+            </span>
             <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
           </div>
           <div className="flex items-center font-mono text-xs text-text-muted truncate group/host">
@@ -1286,9 +1298,20 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
             return <span key="boot-low" className="text-red" title={`/boot has only ${s.boot_free_mb} MB free (${pct.toFixed(0)}% of ${s.boot_total_mb} MB) — run autoremove to clear old kernels`}>💾 /boot {s.boot_free_mb}M</span>
           })(),
           (() => {
-            // Config drift badge (issue #62): unmerged conffiles left by upgrades
+            // Config drift badge (issue #62): unmerged conffiles left by upgrades.
+            // Clicking opens a detail modal (file list + how to reconcile) — stop the
+            // click from bubbling to the card's navigate-to-server handler.
             if (!s.drift_count || s.drift_count <= 0) return null
-            return <span key="drift" className="text-amber" title={`${s.drift_count} unmerged conffile(s) (.dpkg-dist/.ucf-dist/.dpkg-new) — review and reconcile`}>⚠ drift {s.drift_count}</span>
+            return (
+              <button
+                key="drift"
+                onClick={e => { e.stopPropagation(); setShowDrift(true) }}
+                className="text-amber hover:text-amber/80 hover:underline cursor-pointer"
+                title={`${s.drift_count} unmerged conffile(s) (.dpkg-dist/.ucf-dist/.dpkg-new) — click to review and reconcile`}
+              >
+                ⚠ drift {s.drift_count}
+              </button>
+            )
           })(),
         ].filter(Boolean)
 
@@ -1372,6 +1395,9 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           serverName={s.name}
           onClose={() => setShowInstall(false)}
         />
+      )}
+      {showDrift && (
+        <DriftModal server={s} onClose={() => setShowDrift(false)} />
       )}
     </div>
   )
