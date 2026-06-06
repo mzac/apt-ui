@@ -1,3 +1,4 @@
+import contextvars
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,32 @@ from backend import config
 # ---------------------------------------------------------------------------
 
 API_TOKEN_PREFIX = "aptui_"
+
+# Scopes of the API token used for the current request (None = interactive/cookie
+# session or an unscoped legacy token → full access). Set during get_current_user.
+ALL_SCOPES = ("read", "check", "upgrade", "calendar")
+_token_scopes: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("apt_ui_token_scopes", default=None)
+
+
+def current_token_scopes() -> set[str] | None:
+    try:
+        return _token_scopes.get()
+    except LookupError:
+        return None
+
+
+def require_scope(scope: str):
+    """Dependency factory: 403 if the request's API token doesn't include *scope*.
+    Cookie sessions and unscoped tokens are unrestricted."""
+    from fastapi import Depends
+
+    async def _impl(user=Depends(get_current_user)):
+        scopes = current_token_scopes()
+        if scopes is not None and scope not in scopes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"API token lacks the '{scope}' scope")
+        return user
+    return _impl
 
 
 def generate_api_token() -> tuple[str, str, str]:
@@ -134,12 +161,16 @@ async def get_current_user(
                 user = user_res.scalar_one_or_none()
                 if user is None:
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token owner not found")
+                # Record the token's scopes for require_scope() (empty/None = full access)
+                scopes = {s.strip() for s in (getattr(tok, "scopes", None) or "").split(",") if s.strip()}
+                _token_scopes.set(scopes or None)
                 # Update last_used_at (best effort)
                 tok.last_used_at = datetime.utcnow()
                 await session.commit()
                 return user
 
-    # Path 2: JWT cookie (existing behaviour)
+    # Path 2: JWT cookie (existing behaviour) — full access
+    _token_scopes.set(None)
     if not apt_ui_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"

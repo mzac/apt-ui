@@ -84,6 +84,7 @@ export interface ApiTokenSummary {
   created_at: string
   last_used_at: string | null
   expires_at: string | null
+  scopes?: string | null
 }
 
 export interface UserSummary {
@@ -102,8 +103,9 @@ export const auth = {
   changePassword: (current_password: string, new_password: string) =>
     put('/api/auth/password', { current_password, new_password }),
   listTokens: () => get<ApiTokenSummary[]>('/api/auth/tokens'),
-  createToken: (name: string) =>
-    post<ApiTokenSummary & { token: string }>('/api/auth/tokens', { name }),
+  createToken: (data: string | { name: string; scopes?: string[]; expires_days?: number }) =>
+    post<ApiTokenSummary & { token: string }>('/api/auth/tokens',
+      typeof data === 'string' ? { name: data } : data),
   revokeToken: (id: number) => del(`/api/auth/tokens/${id}`),
   // 2FA — issue #18
   totpSetup: () => post<{ secret: string; uri: string; qr_svg: string }>('/api/auth/2fa/setup'),

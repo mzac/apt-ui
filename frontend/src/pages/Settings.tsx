@@ -3058,9 +3058,13 @@ function TwoFactorSection() {
 // API tokens (issue #38)
 // ---------------------------------------------------------------------------
 
+const TOKEN_SCOPES = ['read', 'check', 'upgrade', 'calendar'] as const
+
 function ApiTokensSection() {
   const [tokens, setTokens] = useState<import('@/api/client').ApiTokenSummary[]>([])
   const [newName, setNewName] = useState('')
+  const [scopes, setScopes] = useState<Set<string>>(new Set())
+  const [expiresDays, setExpiresDays] = useState('')
   const [creating, setCreating] = useState(false)
   const [justCreated, setJustCreated] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -3085,9 +3089,16 @@ function ApiTokensSection() {
     }
     setCreating(true)
     try {
-      const t = await auth.createToken(newName.trim())
+      const days = parseInt(expiresDays)
+      const t = await auth.createToken({
+        name: newName.trim(),
+        scopes: [...scopes],
+        expires_days: Number.isNaN(days) ? undefined : days,
+      })
       setJustCreated(t.token)
       setNewName('')
+      setScopes(new Set())
+      setExpiresDays('')
       await reload()
     } catch (e: unknown) {
       setError((e as Error).message)
@@ -3128,18 +3139,40 @@ function ApiTokensSection() {
         </div>
       )}
 
-      <form onSubmit={create} className="flex items-center gap-2">
-        <input
-          type="text"
-          placeholder="Token name (e.g. ci-bot)"
-          value={newName}
-          onChange={e => setNewName(e.target.value)}
-          className="input flex-1 text-sm"
-          maxLength={100}
-        />
-        <button type="submit" disabled={creating || !newName.trim()} className="btn-primary text-sm">
-          {creating ? '…' : 'Create'}
-        </button>
+      <form onSubmit={create} className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="Token name (e.g. ci-bot)"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            className="input flex-1 text-sm"
+            maxLength={100}
+          />
+          <input
+            type="number"
+            min={1}
+            placeholder="expires (days)"
+            value={expiresDays}
+            onChange={e => setExpiresDays(e.target.value)}
+            className="input w-28 text-sm"
+            title="Optional expiry in days; blank = never expires"
+          />
+          <button type="submit" disabled={creating || !newName.trim()} className="btn-primary text-sm">
+            {creating ? '…' : 'Create'}
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-text-muted">Scopes (none = full access):</span>
+          {TOKEN_SCOPES.map(sc => (
+            <label key={sc} className="flex items-center gap-1 text-xs text-text-muted cursor-pointer">
+              <input type="checkbox" checked={scopes.has(sc)}
+                onChange={() => setScopes(prev => { const n = new Set(prev); n.has(sc) ? n.delete(sc) : n.add(sc); return n })}
+                className="w-3.5 h-3.5 accent-green" />
+              <span className="font-mono">{sc}</span>
+            </label>
+          ))}
+        </div>
       </form>
       {error && <p className="text-red text-xs">{error}</p>}
 
@@ -3151,7 +3184,9 @@ function ApiTokensSection() {
             <div key={t.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-border/30 last:border-0">
               <span className="font-mono text-text-primary truncate flex-1">{t.name}</span>
               <span className="font-mono text-text-muted">{t.prefix}…</span>
-              <span className="text-text-muted/70 hidden sm:inline" title={t.last_used_at ?? 'never used'}>
+              <span className="badge bg-surface-2 text-text-muted border border-border hidden sm:inline">{t.scopes || 'full'}</span>
+              {t.expires_at && <span className="text-amber hidden sm:inline" title="expires">exp {new Date(t.expires_at).toLocaleDateString()}</span>}
+              <span className="text-text-muted/70 hidden md:inline" title={t.last_used_at ?? 'never used'}>
                 {t.last_used_at ? `used ${new Date(t.last_used_at).toLocaleDateString()}` : 'unused'}
               </span>
               <button onClick={() => revoke(t.id)} className="text-red/70 hover:text-red">Revoke</button>

@@ -217,6 +217,8 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN reboot_timeout_minutes INTEGER DEFAULT 10",
             # TOTP replay protection (issue #62)
             "ALTER TABLE users ADD COLUMN totp_last_counter INTEGER",
+            # Scoped API tokens (issue #62)
+            "ALTER TABLE api_tokens ADD COLUMN scopes TEXT",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

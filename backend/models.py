@@ -98,6 +98,8 @@ class ApiToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # CSV of scopes (read/check/upgrade/calendar). NULL/empty = full access (issue #62).
+    scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ServerGroup(Base):
