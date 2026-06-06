@@ -29,6 +29,18 @@ export default function Reports() {
         <p className="text-sm text-text-muted">Compliance and SLA reports for audit / regulatory needs.</p>
       </div>
 
+      {/* Change record export (issue #62) */}
+      <div className="card p-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm text-text-primary">Change record (upgrade activity)</span>
+        <span className="text-xs text-text-muted">last</span>
+        {[7, 30, 90].map(d => (
+          <span key={d} className="flex items-center gap-1">
+            <a className="btn-secondary text-xs py-0.5" href={`/api/reports/change-record?days=${d}&fmt=md`}>{d}d .md</a>
+            <a className="btn-secondary text-xs py-0.5" href={`/api/reports/change-record?days=${d}&fmt=csv`}>.csv</a>
+          </span>
+        ))}
+      </div>
+
       <div className="flex gap-1 border-b border-border">
         {(
           [

@@ -5,9 +5,12 @@ Canned queries that aggregate UpdateCheck and UpdateHistory data for audit/SLA
 reporting. Exposed as JSON; the frontend offers CSV download.
 """
 
+import csv as _csv
+import io as _io
+import json as _json
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -220,3 +223,60 @@ async def security_sla(
         },
         "servers": rows,
     }
+
+
+@router.get("/change-record")
+async def change_record(
+    days: int = Query(default=7, ge=1, le=365),
+    fmt: str = Query(default="md", pattern="^(md|csv)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Exportable patch/change record (issue #62): every upgrade in the window as a
+    Markdown or CSV change ticket (server, action, packages, status, who, snapshot)."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    srv_map = {s.id: s.name for s in (await db.execute(select(Server))).scalars().all()}
+    rows = (await db.execute(
+        select(UpdateHistory).where(UpdateHistory.started_at >= cutoff).order_by(UpdateHistory.started_at.desc())
+    )).scalars().all()
+
+    def _pkgcount(h) -> int:
+        if not h.packages_upgraded:
+            return 0
+        try:
+            return len(_json.loads(h.packages_upgraded))
+        except Exception:
+            return 0
+
+    records = [
+        {
+            "started_at": h.started_at.isoformat() if h.started_at else "",
+            "server": srv_map.get(h.server_id, f"#{h.server_id}"),
+            "action": h.action,
+            "status": h.status,
+            "packages": _pkgcount(h),
+            "initiated_by": h.initiated_by,
+            "snapshot": h.snapshot_name or "",
+        }
+        for h in rows
+    ]
+
+    if fmt == "csv":
+        buf = _io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(["started_at", "server", "action", "status", "packages", "initiated_by", "snapshot"])
+        for r in records:
+            w.writerow([r["started_at"], r["server"], r["action"], r["status"], r["packages"], r["initiated_by"], r["snapshot"]])
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=change-record-{days}d.csv"})
+
+    # Markdown
+    lines = [f"# apt-ui change record — last {days} days", "",
+             f"Generated {datetime.utcnow().isoformat()}Z · {len(records)} upgrade events", "",
+             "| When | Server | Action | Status | Pkgs | By | Snapshot |",
+             "|---|---|---|---|---|---|---|"]
+    for r in records:
+        lines.append(f"| {r['started_at']} | {r['server']} | {r['action']} | {r['status']} | "
+                     f"{r['packages']} | {r['initiated_by']} | {r['snapshot']} |")
+    return Response(content="\n".join(lines), media_type="text/markdown",
+                    headers={"Content-Disposition": f"attachment; filename=change-record-{days}d.md"})
