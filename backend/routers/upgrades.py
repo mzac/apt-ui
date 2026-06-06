@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import get_current_user, get_current_user_ws
+from backend.actor import set_actor
 from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
@@ -136,6 +137,7 @@ async def ws_install(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -219,6 +221,7 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -302,6 +305,7 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -410,6 +414,7 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -477,6 +482,7 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -558,6 +564,7 @@ async def ws_dry_run(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -685,6 +692,7 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server = await db.execute(select(Server).where(Server.id == server_id))
         server = server.scalar_one_or_none()
@@ -752,6 +760,7 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -819,6 +828,7 @@ async def ws_upgrade_all(websocket: WebSocket):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -927,6 +937,7 @@ async def ws_shell(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -1018,6 +1029,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         from backend.models import Template, TemplatePackage
         template_result = await db.execute(select(Template).where(Template.id == template_id))
@@ -1158,6 +1170,7 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -1206,6 +1219,7 @@ async def ws_autoremove(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
@@ -1262,6 +1276,7 @@ async def ws_autoremove_all(websocket: WebSocket):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -1385,6 +1400,7 @@ async def ws_reboot_all(websocket: WebSocket):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -1730,6 +1746,7 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
         if user is None:
             await websocket.close(code=1008)
             return
+        set_actor(user.username)
 
         server_result = await db.execute(select(Server).where(Server.id == server_id))
         server = server_result.scalar_one_or_none()
