@@ -205,6 +205,7 @@ async def global_history(
             "packages_upgraded": pkgs,
             "log_output": h.log_output,
             "initiated_by": h.initiated_by,
+            "snapshot_name": h.snapshot_name,
         })
 
     return {"total": total, "page": page, "per_page": per_page, "items": items}
@@ -254,6 +255,7 @@ async def server_history(
             "packages_upgraded": pkgs,
             "log_output": h.log_output,
             "initiated_by": h.initiated_by,
+            "snapshot_name": h.snapshot_name,
         })
 
     return {"total": total, "page": page, "per_page": per_page, "items": items}

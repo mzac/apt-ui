@@ -1948,6 +1948,19 @@ function PreferencesTab() {
                     />
                     <span className="text-xs text-text-muted">hours</span>
                   </div>
+                  <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.canary_health_check ?? false}
+                      onChange={e => setForm(f => ({ ...f, canary_health_check: e.target.checked }))}
+                      className="w-4 h-4 accent-cyan"
+                    />
+                    Canary health check
+                  </label>
+                  <p className="text-xs text-text-muted pl-6 leading-snug">
+                    Upgrade the first server in each ring, then verify it has no failed systemd units before
+                    promoting the rest. Aborts the rollout if any upgraded server is unhealthy (not just on apt exit code).
+                  </p>
                 </div>
               )}
             </div>
@@ -2040,6 +2053,13 @@ function PreferencesTab() {
         </label>
         <p className="text-xs text-text-muted pl-6">
           When disabled (default), upgrades only install packages already known from the last "Check". Enabling this fetches the latest package index first, which may pull in updates not yet visible on the dashboard.
+        </p>
+        <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+          <input type="checkbox" className="w-4 h-4 accent-amber" checked={form.snapshot_before_upgrade ?? false} onChange={e => setForm(f => ({ ...f, snapshot_before_upgrade: e.target.checked }))} />
+          Create a <span className="font-mono text-text-primary">timeshift</span> snapshot before upgrading
+        </label>
+        <p className="text-xs text-text-muted pl-6">
+          Requires <span className="font-mono">timeshift</span> on the server. The snapshot name is recorded in upgrade history with a Rollback button. No-op where timeshift isn't installed.
         </p>
         <div className="space-y-1">
           <label className="text-sm text-text-muted">Config file handling</label>

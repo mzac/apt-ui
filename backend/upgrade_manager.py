@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 
-from backend.models import Server, UpdateCheck, UpdateHistory
+from backend.models import Server, UpdateCheck, UpdateHistory, ScheduleConfig
 from backend.ssh_manager import run_command, run_command_stream
 from backend.update_checker import check_server
 from backend.actor import get_actor
@@ -168,6 +168,14 @@ async def upgrade_server(
                         hr = await run_command_stream(server, hook.command, _send, timeout=600)
                         if hr.exit_code != 0:
                             raise RuntimeError(f"Pre-hook '{hook.name}' failed (exit {hr.exit_code}); aborting upgrade")
+
+                # Step 0.5: pre-upgrade snapshot (issue #62) — timeshift restore point
+                _cfg = (await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))).scalar_one_or_none()
+                if _cfg and getattr(_cfg, "snapshot_before_upgrade", False):
+                    snap = await _create_pre_upgrade_snapshot(server, _send)
+                    if snap:
+                        history.snapshot_name = snap
+                        await db.commit()
 
                 # Step 1: apt-get update (optional, controlled by preferences)
                 if run_apt_update:
@@ -567,6 +575,50 @@ def _parse_upgraded_packages(output: str) -> list[str]:
             else:
                 in_section = False
     return packages
+
+
+_SNAP_NAME_RE = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+
+async def _create_pre_upgrade_snapshot(server: Server, send_fn) -> str | None:
+    """Create a pre-upgrade timeshift snapshot (best-effort). Returns its name or None.
+
+    timeshift is used (rather than raw btrfs/zfs subvolume ops) because it handles
+    the bootloader and restore flow safely across distros. No-op if not installed.
+    """
+    sudo = _sudo(server)
+    chk = await run_command(server, "command -v timeshift", timeout=15)
+    if chk.exit_code != 0:
+        if send_fn:
+            await send_fn({"type": "output", "data": "\n→ snapshot: timeshift not installed; skipping\n"})
+        return None
+    if send_fn:
+        await send_fn({"type": "output", "data": "\n→ snapshot: creating pre-upgrade timeshift snapshot…\n"})
+    res = await run_command(server, f"{sudo}timeshift --create --scripted --comments 'apt-ui pre-upgrade'", timeout=900)
+    out = (res.stdout or "") + (res.stderr or "")
+    if res.exit_code != 0:
+        if send_fn:
+            await send_fn({"type": "output", "data": "→ snapshot: creation failed; continuing without it\n"})
+        return None
+    names = _SNAP_NAME_RE.findall(out)
+    if not names:
+        lst = await run_command(server, f"{sudo}timeshift --list", timeout=60)
+        names = _SNAP_NAME_RE.findall(lst.stdout or "")
+    name = names[-1] if names else None
+    if name and send_fn:
+        await send_fn({"type": "output", "data": f"→ snapshot: created {name}\n"})
+    return name
+
+
+async def restore_snapshot(server: Server, snapshot_name: str) -> "CommandResult":
+    """Restore a timeshift snapshot (admin-gated, dangerous — typically reboots)."""
+    if not _SNAP_NAME_RE.fullmatch(snapshot_name):
+        raise ValueError("Invalid snapshot name")
+    sudo = _sudo(server)
+    return await run_command(
+        server, f"{sudo}timeshift --restore --snapshot '{snapshot_name}' --scripted --yes",
+        timeout=900,
+    )
 
 
 async def _enrich_packages_with_versions(

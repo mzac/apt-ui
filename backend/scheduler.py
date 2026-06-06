@@ -93,6 +93,7 @@ async def _job_auto_upgrade():
         conffile_action = cfg.conffile_action if cfg else "confdef_confold"
         staged = cfg.staged_rollout_enabled if cfg else False
         ring_delay = cfg.ring_promotion_delay_hours if cfg else 24
+        canary = cfg.canary_health_check if cfg else False
 
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
@@ -152,6 +153,22 @@ async def _job_auto_upgrade():
                     initiated_by="scheduled",
                 )
 
+    async def _health_ok(server) -> tuple[bool, str]:
+        """Post-upgrade health probe: any failed systemd units = degraded."""
+        from backend.ssh_manager import run_command
+        sudo = "" if server.username == "root" else "sudo "
+        res = await run_command(
+            server,
+            f"{sudo}systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{{print $1}}'",
+            timeout=30,
+        )
+        if res.exit_code not in (0,):
+            return True, "health probe unavailable"  # don't block the rollout on a probe error
+        failed = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+        if failed:
+            return False, f"{len(failed)} failed unit(s): {', '.join(failed[:5])}"
+        return True, "ok"
+
     if not staged:
         await asyncio.gather(*[_do(s) for s in to_upgrade])
         return
@@ -163,7 +180,18 @@ async def _job_auto_upgrade():
     for i, ring_name in enumerate(ring_names):
         ring_servers = rings[ring_name]
         logger.info("Staged rollout: starting %s (%d servers)", ring_name, len(ring_servers))
-        await asyncio.gather(*[_do(s) for s in ring_servers])
+        if canary and len(ring_servers) > 1:
+            # Canary: upgrade the first server, verify its health, then promote the rest.
+            canary_srv, rest = ring_servers[0], ring_servers[1:]
+            await _do(canary_srv)
+            ok, summary = await _health_ok(canary_srv)
+            if not ok:
+                logger.error("Canary %s failed health (%s); aborting %s and further rings",
+                             canary_srv.name, summary, ring_name)
+                return
+            await asyncio.gather(*[_do(s) for s in rest])
+        else:
+            await asyncio.gather(*[_do(s) for s in ring_servers])
 
         # Check for failures in this ring's upgrade history
         async with AsyncSessionLocal() as db:
@@ -186,6 +214,15 @@ async def _job_auto_upgrade():
                         "Staged rollout: %s had %d failure(s); aborting promotion to remaining rings",
                         ring_name, len(failures),
                     )
+                    return
+
+        # Health-verify the whole ring before promoting (success != just apt exit code).
+        if canary:
+            for s in ring_servers:
+                ok, summary = await _health_ok(s)
+                if not ok:
+                    logger.error("Staged rollout: %s unhealthy after upgrade (%s); aborting promotion",
+                                 s.name, summary)
                     return
 
         # If not the last ring, wait the configured delay before promoting
