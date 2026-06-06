@@ -75,7 +75,8 @@ async def _run_hook(server: Server, hook, send_fn) -> int:
             if send_fn:
                 await send_fn({"type": "output", "data": f"  http hook '{hook.name}': invalid URL\n"})
             return 1
-        if parsed.hostname in ("169.254.169.254", "metadata.google.internal"):
+        host_norm = parsed.hostname.rstrip(".").lower()
+        if host_norm in ("169.254.169.254", "metadata.google.internal"):
             if send_fn:
                 await send_fn({"type": "output", "data": f"  http hook '{hook.name}': blocked metadata endpoint\n"})
             return 1

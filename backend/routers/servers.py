@@ -670,6 +670,17 @@ async def rollback_snapshot_endpoint(
     snap = (body.get("snapshot") or "").strip()
     if not snap:
         raise HTTPException(status_code=400, detail="snapshot name required")
+    # Only allow restoring a snapshot apt-ui actually recorded for THIS server, so a
+    # typo / arbitrary name can't roll the box back to an unrelated restore point.
+    from backend.models import UpdateHistory
+    known = (await db.execute(
+        select(UpdateHistory.id).where(
+            UpdateHistory.server_id == server_id,
+            UpdateHistory.snapshot_name == snap,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if known is None:
+        raise HTTPException(status_code=400, detail="Unknown snapshot for this server")
     from backend.upgrade_manager import restore_snapshot
     try:
         result = await restore_snapshot(server, snap)
@@ -992,7 +1003,10 @@ async def upgrade_impact(
     chk = await run_command(server, "command -v needrestart", timeout=15)
     if chk.exit_code != 0:
         return {"available": False, "detail": "needrestart is not installed on this server"}
-    res = await run_command(server, f"{sudo}needrestart -b 2>/dev/null", timeout=60)
+    res = await run_command(server, f"{sudo}needrestart -b", timeout=60)
+    if res.exit_code != 0 or "NEEDRESTART-" not in (res.stdout or ""):
+        detail = (res.stderr or res.stdout or "needrestart produced no output").strip()
+        return {"available": False, "detail": detail[:300]}
     ksta = kcur = kexp = None
     services: list[str] = []
     for line in (res.stdout or "").splitlines():
@@ -1048,7 +1062,9 @@ async def fleet_run_command(
     res = await db.execute(select(Server).where(Server.id.in_(server_ids), Server.is_enabled == True))
     servers = res.scalars().all()
 
-    sem = _asyncio.Semaphore(5)
+    from backend.models import ScheduleConfig
+    cfg = (await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))).scalar_one_or_none()
+    sem = _asyncio.Semaphore(max(1, cfg.upgrade_concurrency if cfg else 5))
 
     async def _run_one(s: Server):
         async with sem:

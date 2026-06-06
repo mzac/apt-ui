@@ -16,7 +16,13 @@ interface ConfirmState {
 
 export const useConfirmStore = create<ConfirmState>((set, get) => ({
   pending: null,
-  request: (opts) => new Promise<boolean>(resolve => set({ pending: { ...opts, resolve } })),
+  request: (opts) => new Promise<boolean>(resolve => {
+    // If a confirm is already open (double-click, overlapping actions), resolve the
+    // previous one as cancelled so its caller doesn't hang.
+    const prev = get().pending
+    if (prev) prev.resolve(false)
+    set({ pending: { ...opts, resolve } })
+  }),
   resolve: (v) => {
     const p = get().pending
     if (p) p.resolve(v)

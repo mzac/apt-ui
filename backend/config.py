@@ -21,6 +21,10 @@ LOCAL_ZONE = ZoneInfo(TZ)
 # Disabled by default — only enable if you trust all dashboard users.
 ENABLE_TERMINAL = os.getenv("ENABLE_TERMINAL", "false").lower() == "true"
 
+# Only honor X-Forwarded-For (for login lockout / audit IP) when behind a trusted
+# reverse proxy; otherwise a client could spoof the header (issue #62).
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+
 APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 

@@ -27,6 +27,7 @@ export default function ConfirmHost() {
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-label={pending.title || 'Confirm'}
       >
         {pending.title && <h3 className="font-mono text-text-primary">{pending.title}</h3>}
         <p className="text-sm text-text-muted whitespace-pre-line">{pending.message}</p>

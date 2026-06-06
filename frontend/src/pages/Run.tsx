@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { servers as serversApi } from '@/api/client'
 import type { Server } from '@/types'
 import { toast } from '@/hooks/useToast'
+import { useAuthStore } from '@/hooks/useAuth'
 
 // Safe fleet command runner (issue #62): run an allowlisted command across selected
 // servers and group identical outputs ("47 said X, 3 said Y").
@@ -12,13 +13,27 @@ const ALLOWLISTED = [
 ]
 
 export default function Run() {
+  const { user } = useAuthStore()
+  const isAdmin = !!user?.is_admin
   const [serverList, setServerList] = useState<Server[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [command, setCommand] = useState('uptime')
   const [running, setRunning] = useState(false)
   const [grouped, setGrouped] = useState<{ output: string; servers: string[]; count: number }[] | null>(null)
 
-  useEffect(() => { serversApi.list().then(s => setServerList(s.filter(x => x.is_enabled))).catch(() => {}) }, [])
+  useEffect(() => {
+    if (!isAdmin) return  // endpoint is admin-only; don't fetch for read-only users
+    serversApi.list().then(s => setServerList(s.filter(x => x.is_enabled))).catch(() => {})
+  }, [isAdmin])
+
+  if (!isAdmin) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        <h1 className="text-lg font-mono text-text-primary mb-1">Fleet Command Runner</h1>
+        <p className="text-sm text-text-muted">This page is available to administrators only.</p>
+      </div>
+    )
+  }
 
   function toggle(id: number) {
     setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -31,7 +46,7 @@ export default function Run() {
     try {
       const r = await serversApi.runCommand([...selected], command.trim())
       setGrouped(r.grouped)
-    } catch (e) { toast.error((e as Error).message) }
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)) }
     finally { setRunning(false) }
   }
 

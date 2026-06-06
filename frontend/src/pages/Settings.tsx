@@ -1830,7 +1830,11 @@ function UpgradeHooksSection() {
                 rows={3}
                 placeholder={editing.hook_type === 'http' ? 'https://haproxy.lan/drain?node=web1' : 'systemctl stop nginx'}
               />
-              <p className="text-[10px] text-text-muted mt-1">Runs as the SSH user on the managed server. Use sudo if needed.</p>
+              <p className="text-[10px] text-text-muted mt-1">
+                {editing.hook_type === 'http'
+                  ? 'apt-ui POSTs a small JSON payload to this URL (sent from apt-ui, not the managed server).'
+                  : 'Runs as the SSH user on the managed server. Use sudo if needed.'}
+              </p>
             </div>
 
             <div>
@@ -2680,7 +2684,7 @@ function UsersTab() {
       await auth.updateUser(u.id, { is_admin: !u.is_admin })
       await reload()
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -2690,7 +2694,7 @@ function UsersTab() {
       await auth.deleteUser(u.id)
       await reload()
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 

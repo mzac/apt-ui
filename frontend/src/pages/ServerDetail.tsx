@@ -6,6 +6,7 @@ import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/typ
 import { useJobStore } from '@/hooks/useJobStore'
 import { confirmDialog } from '@/hooks/useConfirm'
 import { toast } from '@/hooks/useToast'
+import { useAuthStore } from '@/hooks/useAuth'
 import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createAptProxyWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket, createPveUpgradeWebSocket } from '@/api/client'
 import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -971,7 +972,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                         onRefresh()
                                         loadPackages()
                                       } catch (err: unknown) {
-                                        toast.error((err as Error).message)
+                                        toast.error(err instanceof Error ? err.message : String(err))
                                       }
                                     }}
                                     className="text-blue/80 hover:text-blue text-[11px] font-mono"
@@ -1056,7 +1057,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                       onRefresh()
                       loadPackages()
                     } catch (e: unknown) {
-                      toast.error((e as Error).message)
+                      toast.error(e instanceof Error ? e.message : String(e))
                     }
                   }}
                   className="hover:text-red text-blue/70"
@@ -1612,7 +1613,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               onClick={async () => {
                 setImpactLoading(true)
                 try { setImpact(await serversApi.impact(serverId)) }
-                catch (e) { toast.error((e as Error).message) }
+                catch (e) { toast.error(e instanceof Error ? e.message : String(e)) }
                 finally { setImpactLoading(false) }
               }}
               disabled={impactLoading}
@@ -1837,6 +1838,7 @@ function SshShellPanel({ serverId }: { serverId: number }) {
 // History tab
 // ---------------------------------------------------------------------------
 function HistoryTab({ serverId }: { serverId: number }) {
+  const { user } = useAuthStore()
   const [items, setItems] = useState<UpdateHistory[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -1857,7 +1859,7 @@ function HistoryTab({ serverId }: { serverId: number }) {
     try {
       const r = await serversApi.rollback(serverId, snapshot)
       r.success ? toast.success('Rollback initiated — the server may reboot.') : toast.error(r.detail || 'Rollback failed')
-    } catch (e) { toast.error((e as Error).message) }
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)) }
   }
 
   if (items.length === 0) return <p className="text-text-muted text-sm py-8 text-center">No upgrade history.</p>
@@ -1891,7 +1893,9 @@ function HistoryTab({ serverId }: { serverId: number }) {
                 <div className="flex items-center gap-2 text-xs font-mono">
                   <span className="text-text-muted">pre-upgrade snapshot:</span>
                   <span className="text-cyan">{h.snapshot_name}</span>
-                  <button onClick={() => rollback(h.snapshot_name!)} className="btn-danger text-xs py-0.5 ml-1">Roll back to this</button>
+                  {user?.is_admin && (
+                    <button onClick={() => rollback(h.snapshot_name!)} className="btn-danger text-xs py-0.5 ml-1">Roll back to this</button>
+                  )}
                 </div>
               )}
               {h.log_output && (
@@ -2488,7 +2492,7 @@ function HealthTab({ serverId }: { serverId: number }) {
       else toast.success(`Restarted ${unit}`)
       await load()
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setRestarting(null)
     }

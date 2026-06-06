@@ -283,12 +283,14 @@ export default function Dashboard() {
     if (!ids.length) return
     toast.info(`Checking ${ids.length} server${ids.length === 1 ? '' : 's'}…`)
     setChecking(c => { const n = new Set(c); ids.forEach(id => n.add(id)); return n })
+    let failures = 0
     await _runCapped(ids, 4, async (id) => {
-      try { await serversApi.check(id) } catch {}
+      try { await serversApi.check(id) } catch { failures++ }
       setChecking(c => { const n = new Set(c); n.delete(id); return n })
     })
     await load()
-    toast.success(`Checked ${ids.length} server${ids.length === 1 ? '' : 's'}`)
+    if (failures) toast.error(`Checked ${ids.length - failures}/${ids.length} — ${failures} failed`)
+    else toast.success(`Checked ${ids.length} server${ids.length === 1 ? '' : 's'}`)
   }
 
   function bulkUpgrade() {
@@ -308,9 +310,12 @@ export default function Dashboard() {
     const ids = [...selectedIds]
     if (!ids.length) return
     if (!enable && !await confirmDialog({ message: `Disable ${ids.length} server${ids.length === 1 ? '' : 's'}? They'll be skipped by checks and upgrades.`, confirmLabel: 'Disable', danger: true })) return
-    await _runCapped(ids, 4, async (id) => { try { await serversApi.update(id, { is_enabled: enable }) } catch {} })
+    let failures = 0
+    await _runCapped(ids, 4, async (id) => { try { await serversApi.update(id, { is_enabled: enable }) } catch { failures++ } })
     await load()
-    toast.success(`${enable ? 'Enabled' : 'Disabled'} ${ids.length} server${ids.length === 1 ? '' : 's'}`)
+    const verb = enable ? 'Enabled' : 'Disabled'
+    if (failures) toast.error(`${verb} ${ids.length - failures}/${ids.length} — ${failures} failed`)
+    else toast.success(`${verb} ${ids.length} server${ids.length === 1 ? '' : 's'}`)
   }
 
   async function confirmDoDisable() {
@@ -1062,7 +1067,7 @@ function RebootButton({ serverId, serverName, className = '' }: {
 // Server card
 // ---------------------------------------------------------------------------
 // Compact single-row representation used by the dashboard "List" density mode.
-function ServerRow({ server: s, checking, onCheck, reachable, selected, onToggleSelect }: {
+function ServerRow({ server: s, checking, onCheck, onToggleEnabled, reachable, selected, onToggleSelect }: {
   server: Server
   checking: boolean
   onCheck: () => void
@@ -1083,7 +1088,7 @@ function ServerRow({ server: s, checking, onCheck, reachable, selected, onToggle
     >
       {onToggleSelect && (
         <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
-          className="w-3.5 h-3.5 accent-green shrink-0" title="Select" />
+          aria-label={`Select ${s.name}`} className="w-3.5 h-3.5 accent-green shrink-0" title="Select" />
       )}
       <StatusDot status={status} />
       {reachable === false && <span title="SSH unreachable" className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0 -ml-1.5" />}
@@ -1102,6 +1107,7 @@ function ServerRow({ server: s, checking, onCheck, reachable, selected, onToggle
       </div>
       <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
         <button onClick={onCheck} disabled={checking} className="btn-secondary text-xs py-0.5 px-2 disabled:opacity-50">{checking ? '…' : 'Check'}</button>
+        <button onClick={onToggleEnabled} className="btn-secondary text-xs py-0.5 px-2" title={s.is_enabled ? 'Disable server' : 'Enable server'}>{s.is_enabled ? 'Disable' : 'Enable'}</button>
       </div>
     </div>
   )
@@ -1134,7 +1140,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
     >
       {onToggleSelect && (
         <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
-          className="absolute top-2 right-2 w-3.5 h-3.5 accent-green z-10" title="Select" />
+          aria-label={`Select ${s.name}`} className="absolute top-2 right-2 w-3.5 h-3.5 accent-green z-10" title="Select" />
       )}
       {s.is_enabled && s.is_reachable === false && (
         <div className="flex items-center gap-1.5 text-red text-[10px] font-mono bg-red/10 border border-red/20 rounded px-2 py-0.5 -mx-1 -mt-1">
@@ -1282,7 +1288,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           (() => {
             // Config drift badge (issue #62): unmerged conffiles left by upgrades
             if (!s.drift_count || s.drift_count <= 0) return null
-            return <span key="drift" className="text-amber" title={`${s.drift_count} unmerged conffile(s) (.dpkg-dist/.ucf-dist) — review with dpkg-conf`}>⚠ drift {s.drift_count}</span>
+            return <span key="drift" className="text-amber" title={`${s.drift_count} unmerged conffile(s) (.dpkg-dist/.ucf-dist/.dpkg-new) — review and reconcile`}>⚠ drift {s.drift_count}</span>
           })(),
         ].filter(Boolean)
 

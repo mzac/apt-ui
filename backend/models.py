@@ -452,7 +452,7 @@ class FleetSnapshot(Base):
     __tablename__ = "fleet_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
     total_servers: Mapped[int] = mapped_column(Integer, default=0)
     up_to_date: Mapped[int] = mapped_column(Integer, default=0)
     updates_available: Mapped[int] = mapped_column(Integer, default=0)
