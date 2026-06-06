@@ -60,6 +60,80 @@ EOL_DATES: dict[str, dict[str, str]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Self-updating overrides (issue #62) — refreshed daily from endoflife.date,
+# cached to disk, and taking precedence over the bundled EOL_DATES fallback.
+# ---------------------------------------------------------------------------
+import json as _json
+import logging as _logging
+import os as _os
+
+_eol_logger = _logging.getLogger(__name__)
+_EOL_OVERRIDES: dict[str, dict[str, str]] = {}
+
+# endoflife.date product id per our os_id (others fall back to the bundled table).
+_EOL_PRODUCTS = {"ubuntu": "ubuntu", "debian": "debian", "proxmox-ve": "proxmox-ve"}
+
+
+def _override_cache_path() -> str:
+    try:
+        from backend.config import DATABASE_PATH
+        return _os.path.join(_os.path.dirname(DATABASE_PATH) or ".", "eol_overrides.json")
+    except Exception:
+        return "eol_overrides.json"
+
+
+def _load_eol_overrides() -> None:
+    try:
+        with open(_override_cache_path()) as fh:
+            data = _json.load(fh)
+        if isinstance(data, dict):
+            _EOL_OVERRIDES.clear()
+            _EOL_OVERRIDES.update({k: v for k, v in data.items() if isinstance(v, dict)})
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        _eol_logger.debug("EOL overrides load failed: %s", exc)
+
+
+async def refresh_eol_data() -> dict[str, int]:
+    """Fetch fresh EOL dates from endoflife.date and cache them. Best-effort;
+    the bundled EOL_DATES remains the fallback for anything not covered."""
+    import httpx
+    new: dict[str, dict[str, str]] = {}
+    async with httpx.AsyncClient(timeout=15) as client:
+        for os_id, product in _EOL_PRODUCTS.items():
+            try:
+                resp = await client.get(f"https://endoflife.date/api/{product}.json")
+                if not resp.is_success:
+                    continue
+                cycles = resp.json()
+                table: dict[str, str] = {}
+                for c in cycles:
+                    cycle = str(c.get("cycle", "")).strip()
+                    eol = c.get("eol")
+                    if cycle and isinstance(eol, str) and len(eol) == 10:  # YYYY-MM-DD
+                        table[cycle] = eol
+                if table:
+                    new[os_id] = table
+            except Exception as exc:
+                _eol_logger.warning("EOL refresh for %s failed: %s", product, exc)
+    if new:
+        _EOL_OVERRIDES.clear()
+        _EOL_OVERRIDES.update(new)
+        try:
+            with open(_override_cache_path(), "w") as fh:
+                _json.dump(new, fh)
+        except Exception as exc:
+            _eol_logger.debug("EOL overrides write failed: %s", exc)
+    counts = {k: len(v) for k, v in new.items()}
+    _eol_logger.info("EOL data refreshed: %s", counts)
+    return counts
+
+
+_load_eol_overrides()
+
+
 # Distros that have an extended-security-maintenance program available
 # (paid Ubuntu Pro for Ubuntu, community LTS for Debian — we only flag Ubuntu
 # here since Debian LTS is out of scope).
@@ -138,10 +212,14 @@ def get_eol_date(os_id: str | None, version_id: str | None) -> date | None:
     """Look up the EOL date for the given OS / version. Returns None if unknown."""
     if not os_id or not version_id:
         return None
-    table = EOL_DATES.get(os_id.lower())
-    if not table:
-        return None
-    iso = table.get(version_id)
+    key = os_id.lower()
+    # Prefer the self-updating overrides (endoflife.date), fall back to the bundled table.
+    iso = (_EOL_OVERRIDES.get(key) or {}).get(version_id)
+    if not iso:
+        table = EOL_DATES.get(key)
+        if not table:
+            return None
+        iso = table.get(version_id)
     if not iso:
         return None
     try:

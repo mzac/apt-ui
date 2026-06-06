@@ -512,6 +512,15 @@ async def configure_jobs():
         replace_existing=True,
     )
 
+    # Daily EOL data refresh from endoflife.date (issue #62)
+    from backend.eol_data import refresh_eol_data
+    _scheduler.add_job(
+        refresh_eol_data,
+        CronTrigger(hour=4, minute=30, timezone=TZ),
+        id="eol_refresh",
+        replace_existing=True,
+    )
+
 
 def _remove_jobs():
     for job_id in ("check_all", "auto_upgrade", "weekly_digest"):
@@ -564,6 +573,17 @@ async def start_scheduler():
     if not _scheduler.running:
         _scheduler.start()
     logger.info("Scheduler started")
+    # Kick a one-time EOL data refresh shortly after boot (best-effort, non-blocking).
+    import asyncio as _asyncio
+
+    async def _initial_eol_refresh():
+        try:
+            from backend.eol_data import refresh_eol_data
+            await refresh_eol_data()
+        except Exception as exc:
+            logger.debug("initial EOL refresh failed: %s", exc)
+
+    _asyncio.create_task(_initial_eol_refresh())
 
 
 def stop_scheduler():
