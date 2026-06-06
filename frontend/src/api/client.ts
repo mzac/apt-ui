@@ -461,6 +461,7 @@ export interface UpgradeHook {
   name: string
   phase: 'pre' | 'post'
   command: string
+  hook_type: 'shell' | 'http'
   sort_order: number
   enabled: boolean
   created_at: string

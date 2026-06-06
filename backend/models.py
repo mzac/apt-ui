@@ -76,7 +76,8 @@ class UpgradeHook(Base):
     server_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("servers.id"), nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     phase: Mapped[str] = mapped_column(Text, nullable=False)  # 'pre' | 'post'
-    command: Mapped[str] = mapped_column(Text, nullable=False)
+    command: Mapped[str] = mapped_column(Text, nullable=False)  # shell command, OR URL when hook_type='http'
+    hook_type: Mapped[str] = mapped_column(Text, default="shell")  # 'shell' | 'http' (issue #62)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
