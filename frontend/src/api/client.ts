@@ -304,9 +304,16 @@ export const stats = {
 // Scheduler
 // ---------------------------------------------------------------------------
 
+export interface SchedulerHealth {
+  running: boolean
+  healthy: boolean
+  issues: { job: string; label: string; reason: string }[]
+}
+
 export const scheduler = {
   status: () => get<ScheduleConfig>('/api/scheduler/status'),
   update: (data: Partial<ScheduleConfig>) => put<ScheduleConfig>('/api/scheduler/config', data),
+  health: () => get<SchedulerHealth>('/api/scheduler/health'),
 }
 
 export interface MaintenanceWindow {

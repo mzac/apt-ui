@@ -83,6 +83,13 @@ async def get_status(
     return _to_out(cfg)
 
 
+@router.get("/health")
+async def get_scheduler_health(_: User = Depends(get_current_user)):
+    """Report whether config-enabled jobs are actually registered (self-heal banner)."""
+    from backend.scheduler import scheduler_health
+    return await scheduler_health()
+
+
 @router.put("/config", response_model=ScheduleConfigOut)
 async def update_config(
     body: ScheduleConfigUpdate,

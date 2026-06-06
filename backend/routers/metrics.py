@@ -60,6 +60,8 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
     g_kernel_age = Gauge("apt_ui_kernel_age_days", "Days since running kernel was installed", ["server"], registry=registry)
     g_disk = Gauge("apt_ui_disk_usage_percent", "Disk usage percentage", ["server", "mount"], registry=registry)
     g_held = Gauge("apt_ui_held_packages", "Number of held packages", ["server"], registry=registry)
+    g_sched_running = Gauge("apt_ui_scheduler_running", "Scheduler running (1=yes, 0=no)", registry=registry)
+    g_sched_unhealthy = Gauge("apt_ui_scheduler_unhealthy_jobs", "Enabled jobs not currently scheduled", registry=registry)
 
     async with AsyncSessionLocal() as db:
         servers_res = await db.execute(select(Server))
@@ -105,6 +107,14 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
                 if stats.kernel_install_date:
                     age_days = (datetime.utcnow() - stats.kernel_install_date).days
                     g_kernel_age.labels(server=label).set(max(0, age_days))
+
+    try:
+        from backend.scheduler import scheduler_health
+        health = await scheduler_health()
+        g_sched_running.set(1 if health.get("running") else 0)
+        g_sched_unhealthy.set(len(health.get("issues", [])))
+    except Exception:
+        pass
 
     output = generate_latest(registry)
     return Response(content=output, media_type=CONTENT_TYPE_LATEST)
