@@ -63,9 +63,13 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
     g_sched_running = Gauge("apt_ui_scheduler_running", "Scheduler running (1=yes, 0=no)", registry=registry)
     g_sched_unhealthy = Gauge("apt_ui_scheduler_unhealthy_jobs", "Enabled jobs not currently scheduled", registry=registry)
 
+    from backend.query_helpers import latest_checks_by_server, latest_stats_by_server
+
     async with AsyncSessionLocal() as db:
         servers_res = await db.execute(select(Server))
         servers = servers_res.scalars().all()
+        checks = await latest_checks_by_server(db)   # one query each instead of one per server
+        stats_map = await latest_stats_by_server(db)
 
         enabled = sum(1 for s in servers if s.is_enabled)
         g_servers_total.labels(enabled="true").set(enabled)
@@ -75,13 +79,7 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
             label = s.name
             g_reachable.labels(server=label).set(1 if s.is_reachable else 0)
 
-            chk_res = await db.execute(
-                select(UpdateCheck)
-                .where(UpdateCheck.server_id == s.id)
-                .order_by(UpdateCheck.checked_at.desc())
-                .limit(1)
-            )
-            chk = chk_res.scalar_one_or_none()
+            chk = checks.get(s.id)
             if chk:
                 g_pending.labels(server=label, security="true").set(chk.security_packages or 0)
                 g_pending.labels(server=label, security="false").set(chk.regular_packages or 0)
@@ -91,13 +89,7 @@ async def prometheus_metrics(authorization: str | None = Header(default=None)):
                     age = max(0, int(time.time() - chk.checked_at.timestamp()))
                     g_last_check.labels(server=label).set(age)
 
-            stats_res = await db.execute(
-                select(ServerStats)
-                .where(ServerStats.server_id == s.id)
-                .order_by(ServerStats.recorded_at.desc())
-                .limit(1)
-            )
-            stats = stats_res.scalar_one_or_none()
+            stats = stats_map.get(s.id)
             if stats:
                 if stats.disk_usage_percent is not None:
                     g_disk.labels(server=label, mount="/").set(stats.disk_usage_percent)

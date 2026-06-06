@@ -17,8 +17,11 @@ async def fleet_overview(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    from backend.query_helpers import latest_checks_by_server
+
     result = await db.execute(select(Server))
     servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)   # one query instead of one per server
 
     total = len(servers)
     up_to_date = 0
@@ -31,13 +34,7 @@ async def fleet_overview(
     last_check_time: datetime | None = None
 
     for server in servers:
-        check_result = await db.execute(
-            select(UpdateCheck)
-            .where(UpdateCheck.server_id == server.id)
-            .order_by(UpdateCheck.checked_at.desc())
-            .limit(1)
-        )
-        check = check_result.scalar_one_or_none()
+        check = checks.get(server.id)
         if check is None:
             continue
         if last_check_time is None or check.checked_at > last_check_time:
@@ -87,19 +84,15 @@ async def pending_updates(
     per-server /packages loop. New-dependency packages are excluded so the list count
     matches packages_available."""
     import json as _json
+    from backend.query_helpers import latest_checks_by_server
 
     result = await db.execute(select(Server).where(Server.is_enabled == True))
     servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)
 
     out: list[dict] = []
     for server in servers:
-        check_result = await db.execute(
-            select(UpdateCheck)
-            .where(UpdateCheck.server_id == server.id)
-            .order_by(UpdateCheck.checked_at.desc())
-            .limit(1)
-        )
-        check = check_result.scalar_one_or_none()
+        check = checks.get(server.id)
         if check is None or check.status == "error" or (check.packages_available or 0) <= 0:
             continue
         packages: list[dict] = []
