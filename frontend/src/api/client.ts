@@ -290,8 +290,19 @@ export const templates = {
 // Stats
 // ---------------------------------------------------------------------------
 
+export interface PendingUpdatePkg {
+  name: string
+  current_version: string
+  available_version: string
+  is_security: boolean
+  is_phased: boolean
+  is_kernel?: boolean
+}
+
 export const stats = {
   overview: () => get<FleetOverview>('/api/stats/overview'),
+  pendingUpdates: () =>
+    get<{ servers: { id: number; packages: PendingUpdatePkg[] }[] }>('/api/stats/pending-updates'),
   globalHistory: (page = 1, serverId?: number, status?: string) => {
     const params = new URLSearchParams({ page: String(page) })
     if (serverId !== undefined) params.set('server_id', String(serverId))

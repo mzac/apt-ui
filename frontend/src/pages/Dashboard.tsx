@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
-import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi } from '@/api/client'
+import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi, type PendingUpdatePkg } from '@/api/client'
 import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow, PackageInfo } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -711,27 +711,61 @@ function UpdatesSummaryModal({ servers, onClose }: { servers: Server[]; onClose:
   const totalPkgs = servers.reduce((sum, s) => sum + (s.latest_check?.packages_available ?? 0), 0)
   const totalSec = servers.reduce((sum, s) => sum + (s.latest_check?.security_packages ?? 0), 0)
 
-  // Fetch packages for each server as the modal opens
-  const [pkgMap, setPkgMap] = useState<Record<number, PackageInfo[] | null>>({})
+  // One aggregate call (cached UpdateCheck data) instead of a sequential per-server loop.
+  const [pkgMap, setPkgMap] = useState<Record<number, PendingUpdatePkg[]> | null>(null)
+  const [loadError, setLoadError] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    async function fetchAll() {
-      for (const s of sorted) {
-        try {
-          const res = await serversApi.packages(s.id)
-          if (!cancelled) {
-            setPkgMap(prev => ({ ...prev, [s.id]: res.packages }))
-          }
-        } catch {
-          if (!cancelled) setPkgMap(prev => ({ ...prev, [s.id]: null }))
-        }
+    statsApi.pendingUpdates()
+      .then(res => {
+        if (cancelled) return
+        const map: Record<number, PendingUpdatePkg[]> = {}
+        for (const row of res.servers) map[row.id] = row.packages
+        setPkgMap(map)
+      })
+      .catch(() => { if (!cancelled) setLoadError(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  const q = filter.trim().toLowerCase()
+  const matchPkg = (p: PendingUpdatePkg) => !q || p.name.toLowerCase().includes(q)
+
+  // Flatten to rows for export (respecting the active filter).
+  function exportRows(): { server: string; hostname: string; pkg: string; from: string; to: string; security: boolean }[] {
+    if (!pkgMap) return []
+    const rows: { server: string; hostname: string; pkg: string; from: string; to: string; security: boolean }[] = []
+    for (const s of sorted) {
+      for (const p of (pkgMap[s.id] ?? []).filter(matchPkg)) {
+        rows.push({ server: s.name, hostname: s.hostname, pkg: p.name, from: p.current_version, to: p.available_version, security: p.is_security })
       }
     }
-    fetchAll()
-    return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    return rows
+  }
+
+  function downloadCsv() {
+    const rows = exportRows()
+    const esc = (v: string) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const csv = ['server,hostname,package,current_version,available_version,security',
+      ...rows.map(r => [r.server, r.hostname, r.pkg, r.from, r.to, r.security ? 'yes' : 'no'].map(esc).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'pending-updates.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function copyList() {
+    const rows = exportRows()
+    const text = rows.map(r => `${r.server}\t${r.pkg}\t${r.from} -> ${r.to}${r.security ? '\t[security]' : ''}`).join('\n')
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {})
+    }
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -759,14 +793,36 @@ function UpdatesSummaryModal({ servers, onClose }: { servers: Server[]; onClose:
           <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors text-lg leading-none">×</button>
         </div>
 
+        {/* Toolbar: filter + export */}
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
+          <input
+            type="text"
+            placeholder="Filter packages…"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            className="input text-xs px-2 py-1 w-48"
+          />
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={copyList} disabled={!pkgMap} className="btn-secondary text-xs py-1 disabled:opacity-50">
+              {copied ? 'Copied ✓' : 'Copy'}
+            </button>
+            <button onClick={downloadCsv} disabled={!pkgMap} className="btn-secondary text-xs py-1 disabled:opacity-50">Export CSV</button>
+          </div>
+        </div>
+
         {/* Scrollable body */}
         <div className="overflow-y-auto flex-1 divide-y divide-border/40">
+          {loadError && (
+            <div className="px-4 py-6 text-center text-xs text-red font-mono">Failed to load package lists.</div>
+          )}
           {sorted.map(s => {
             const c = s.latest_check!
-            const pkgs = pkgMap[s.id]
-            const loading = !(s.id in pkgMap)
-            const secPkgs = pkgs?.filter(p => p.is_security).sort((a, b) => a.name.localeCompare(b.name)) ?? []
-            const regPkgs = pkgs?.filter(p => !p.is_security).sort((a, b) => a.name.localeCompare(b.name)) ?? []
+            const pkgs = pkgMap?.[s.id]
+            const loading = pkgMap === null && !loadError
+            const secPkgs = (pkgs ?? []).filter(p => p.is_security && matchPkg(p)).sort((a, b) => a.name.localeCompare(b.name))
+            const regPkgs = (pkgs ?? []).filter(p => !p.is_security && matchPkg(p)).sort((a, b) => a.name.localeCompare(b.name))
+            // When filtering, hide servers with no matching packages.
+            if (q && !loading && secPkgs.length === 0 && regPkgs.length === 0) return null
 
             return (
               <div key={s.id} className="px-4 py-3 space-y-2">
@@ -807,13 +863,10 @@ function UpdatesSummaryModal({ servers, onClose }: { servers: Server[]; onClose:
                 {loading && (
                   <div className="text-xs text-text-muted font-mono animate-pulse">Loading packages…</div>
                 )}
-                {pkgs === null && (
-                  <div className="text-xs text-red font-mono">Failed to load package list</div>
-                )}
-                {pkgs && pkgs.length === 0 && (
+                {!loading && pkgs && pkgs.length === 0 && (
                   <div className="text-xs text-text-muted font-mono">No package details available</div>
                 )}
-                {pkgs && pkgs.length > 0 && (
+                {!loading && (secPkgs.length > 0 || regPkgs.length > 0) && (
                   <div className="space-y-0.5">
                     {secPkgs.map(p => (
                       <div key={p.name} className="flex items-baseline gap-2 text-xs font-mono py-0.5 px-2 rounded bg-red/5">
