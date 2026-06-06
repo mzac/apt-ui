@@ -655,6 +655,29 @@ async def reboot_server(
     return {"success": False, "detail": result.stderr or "Reboot command failed"}
 
 
+@router.post("/{server_id}/rollback")
+async def rollback_snapshot_endpoint(
+    server_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Restore a pre-upgrade timeshift snapshot (issue #62). Dangerous — typically
+    reboots the server into the restore flow."""
+    set_actor(user.username)
+    server = await _get_server_or_404(server_id, db)
+    snap = (body.get("snapshot") or "").strip()
+    if not snap:
+        raise HTTPException(status_code=400, detail="snapshot name required")
+    from backend.upgrade_manager import restore_snapshot
+    try:
+        result = await restore_snapshot(server, snap)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ok = result.exit_code in (0, 255)  # 255 = SSH dropped on reboot, expected
+    return {"success": ok, "detail": (result.stdout or result.stderr or "")[-2000:] or "Restore initiated"}
+
+
 @router.get("/reachability")
 async def get_reachability(
     db: AsyncSession = Depends(get_db),

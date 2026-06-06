@@ -1804,6 +1804,17 @@ function HistoryTab({ serverId }: { serverId: number }) {
     })
   }, [serverId, page])
 
+  async function rollback(snapshot: string) {
+    if (!await confirmDialog({
+      message: `Roll ${'this server'} back to snapshot "${snapshot}"?\n\nThis restores the filesystem via timeshift and typically reboots the server. Only do this if the upgrade caused a problem.`,
+      confirmLabel: 'Roll back', danger: true,
+    })) return
+    try {
+      const r = await serversApi.rollback(serverId, snapshot)
+      r.success ? toast.success('Rollback initiated — the server may reboot.') : toast.error(r.detail || 'Rollback failed')
+    } catch (e) { toast.error((e as Error).message) }
+  }
+
   if (items.length === 0) return <p className="text-text-muted text-sm py-8 text-center">No upgrade history.</p>
 
   return (
@@ -1825,12 +1836,22 @@ function HistoryTab({ serverId }: { serverId: number }) {
               {h.packages_upgraded && <span>{h.packages_upgraded.length} pkgs</span>}
               {h.initiated_by && <span className="font-mono">{h.initiated_by}</span>}
               {h.phased_updates && <span className="badge bg-blue/10 text-blue border border-blue/30">phased</span>}
+              {h.snapshot_name && <span className="badge bg-cyan/10 text-cyan border border-cyan/30" title={h.snapshot_name}>snapshot</span>}
               <span>{expanded === h.id ? '▲' : '▼'}</span>
             </div>
           </button>
-          {expanded === h.id && h.log_output && (
-            <div className="border-t border-border bg-bg px-3 py-2 font-mono text-xs text-text-primary overflow-x-auto max-h-64 overflow-y-auto">
-              <pre className="whitespace-pre-wrap">{h.log_output}</pre>
+          {expanded === h.id && (h.log_output || h.snapshot_name) && (
+            <div className="border-t border-border bg-bg px-3 py-2 space-y-2">
+              {h.snapshot_name && (
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <span className="text-text-muted">pre-upgrade snapshot:</span>
+                  <span className="text-cyan">{h.snapshot_name}</span>
+                  <button onClick={() => rollback(h.snapshot_name!)} className="btn-danger text-xs py-0.5 ml-1">Roll back to this</button>
+                </div>
+              )}
+              {h.log_output && (
+                <pre className="whitespace-pre-wrap font-mono text-xs text-text-primary overflow-x-auto max-h-64 overflow-y-auto">{h.log_output}</pre>
+              )}
             </div>
           )}
         </div>

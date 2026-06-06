@@ -219,6 +219,9 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN totp_last_counter INTEGER",
             # Scoped API tokens (issue #62)
             "ALTER TABLE api_tokens ADD COLUMN scopes TEXT",
+            # Snapshot-and-rollback (issue #62)
+            "ALTER TABLE update_history ADD COLUMN snapshot_name TEXT",
+            "ALTER TABLE schedule_config ADD COLUMN snapshot_before_upgrade BOOLEAN DEFAULT 0",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

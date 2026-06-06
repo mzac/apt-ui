@@ -162,6 +162,7 @@ export interface UpdateHistory {
   packages_upgraded: Array<{ name: string; from_version: string; to_version: string; is_security?: boolean; is_kernel?: boolean; is_new?: boolean }> | null
   log_output: string | null
   initiated_by: string
+  snapshot_name?: string | null
 }
 
 export interface FleetOverview {
@@ -192,6 +193,7 @@ export interface ScheduleConfig {
   auto_tag_os: boolean
   auto_tag_virt: boolean
   run_apt_update_before_upgrade: boolean
+  snapshot_before_upgrade: boolean
   conffile_action: string
   reachability_ttl_minutes: number
   staged_rollout_enabled: boolean        // issue #41
