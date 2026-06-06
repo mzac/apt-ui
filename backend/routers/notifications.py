@@ -187,3 +187,73 @@ async def detect_chat_id(
         return {"chats": chats}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Extra notification destinations (issue #62) — on-call / chat adapters
+# ---------------------------------------------------------------------------
+
+_DEST_TYPES = {"discord", "mattermost", "ntfy", "webhook", "pagerduty", "opsgenie"}
+
+
+def _dest_dict(d) -> dict:
+    return {"id": d.id, "name": d.name, "type": d.type, "url": d.url,
+            "events": d.events, "enabled": d.enabled, "created_at": d.created_at}
+
+
+@router.get("/destinations")
+async def list_destinations(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from backend.models import NotificationDestination
+    res = await db.execute(select(NotificationDestination).order_by(NotificationDestination.name))
+    return [_dest_dict(d) for d in res.scalars().all()]
+
+
+@router.post("/destinations", status_code=201)
+async def create_destination(body: dict, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from backend.models import NotificationDestination
+    name = (body.get("name") or "").strip()
+    dtype = (body.get("type") or "").strip().lower()
+    url = (body.get("url") or "").strip()
+    if not name or dtype not in _DEST_TYPES or not url:
+        raise HTTPException(status_code=400, detail="name, valid type, and url are required")
+    d = NotificationDestination(name=name, type=dtype, url=url,
+                                events=(body.get("events") or "").strip() or None,
+                                enabled=bool(body.get("enabled", True)))
+    db.add(d)
+    await db.commit()
+    await db.refresh(d)
+    return _dest_dict(d)
+
+
+@router.put("/destinations/{dest_id}")
+async def update_destination(dest_id: int, body: dict, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from backend.models import NotificationDestination
+    d = (await db.execute(select(NotificationDestination).where(NotificationDestination.id == dest_id))).scalar_one_or_none()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Destination not found")
+    for f in ("name", "type", "url", "events", "enabled"):
+        if f in body:
+            setattr(d, f, body[f])
+    await db.commit()
+    await db.refresh(d)
+    return _dest_dict(d)
+
+
+@router.delete("/destinations/{dest_id}", status_code=204)
+async def delete_destination(dest_id: int, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from backend.models import NotificationDestination
+    d = (await db.execute(select(NotificationDestination).where(NotificationDestination.id == dest_id))).scalar_one_or_none()
+    if d is not None:
+        await db.delete(d)
+        await db.commit()
+
+
+@router.post("/destinations/{dest_id}/test")
+async def test_destination(dest_id: int, _: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    from backend.models import NotificationDestination
+    from backend.notifier import _send_destination
+    d = (await db.execute(select(NotificationDestination).where(NotificationDestination.id == dest_id))).scalar_one_or_none()
+    if d is None:
+        raise HTTPException(status_code=404, detail="Destination not found")
+    await _send_destination(d, "apt-ui test notification", "This is a test from apt-ui.")
+    return {"detail": "Test sent"}

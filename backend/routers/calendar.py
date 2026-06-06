@@ -143,6 +143,11 @@ async def _resolve_user_from_token(raw_token: str) -> User:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
         if tok.expires_at and tok.expires_at < datetime.utcnow():
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        # If the token is scoped, it must include 'calendar' (a scoped token can no
+        # longer act as a full-admin credential just because it's in the feed URL).
+        scopes = {s.strip() for s in (getattr(tok, "scopes", None) or "").split(",") if s.strip()}
+        if scopes and "calendar" not in scopes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token lacks the 'calendar' scope")
         user_res = await session.execute(select(User).where(User.id == tok.user_id))
         user = user_res.scalar_one_or_none()
         if user is None:

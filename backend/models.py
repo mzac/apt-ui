@@ -98,6 +98,8 @@ class ApiToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # CSV of scopes (read/check/upgrade/calendar). NULL/empty = full access (issue #62).
+    scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ServerGroup(Base):
@@ -407,6 +409,21 @@ class TemplatePackage(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     template: Mapped["Template"] = relationship("Template", back_populates="packages")
+
+
+class NotificationDestination(Base):
+    """Extra on-call / chat notification targets beyond the built-in email/telegram/
+    slack/webhook (issue #62). Each has a type-specific adapter; `events` is an
+    optional CSV of event types to route (empty = all events)."""
+    __tablename__ = "notification_destinations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(Text, nullable=False)  # discord/mattermost/ntfy/webhook/pagerduty/opsgenie
+    url: Mapped[str] = mapped_column(Text, nullable=False)    # webhook URL / ntfy topic URL / integration key holder
+    events: Mapped[str | None] = mapped_column(Text, nullable=True)  # CSV of event types, empty = all
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
 class AuthEventLog(Base):

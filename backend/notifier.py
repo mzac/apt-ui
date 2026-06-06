@@ -224,6 +224,58 @@ async def _send_webhook(cfg: NotificationConfig, event: str, payload: dict):
 
 
 # ---------------------------------------------------------------------------
+# Extra notification destinations (issue #62) — on-call / chat adapters
+# ---------------------------------------------------------------------------
+
+async def _send_destination(dest, title: str, body: str | None) -> None:
+    """Send to one NotificationDestination, dispatching by adapter type."""
+    t = (dest.type or "").lower()
+    text = f"{title}\n\n{body}" if body else title
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            if t == "discord":
+                await client.post(dest.url, json={"content": text[:1900]})
+            elif t == "mattermost":
+                await client.post(dest.url, json={"text": text})
+            elif t == "ntfy":
+                await client.post(dest.url, data=(body or title).encode("utf-8"),
+                                  headers={"Title": title[:250], "Markdown": "yes"})
+            elif t == "pagerduty":
+                await client.post("https://events.pagerduty.com/v2/enqueue", json={
+                    "routing_key": dest.url, "event_action": "trigger",
+                    "payload": {"summary": title[:1024], "source": "apt-ui", "severity": "warning",
+                                "custom_details": {"body": body or ""}},
+                })
+            elif t == "opsgenie":
+                await client.post("https://api.opsgenie.com/v2/alerts",
+                                  headers={"Authorization": f"GenieKey {dest.url}"},
+                                  json={"message": title[:130], "description": body or ""})
+            else:  # generic webhook
+                await client.post(dest.url, json={"title": title, "body": body, "source": "apt-ui"})
+    except Exception as exc:
+        logger.warning("notification destination %s (%s) failed: %s", getattr(dest, "name", "?"), t, exc)
+
+
+async def notify_destinations(event_type: str, title: str, body: str | None = None) -> None:
+    """Fan an event out to all enabled NotificationDestinations matching event_type."""
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.models import NotificationDestination
+        from sqlalchemy import select as _select
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                _select(NotificationDestination).where(NotificationDestination.enabled == True)
+            )).scalars().all()
+        for d in rows:
+            evs = [e.strip() for e in (d.events or "").split(",") if e.strip()]
+            if evs and event_type not in evs:
+                continue
+            await _send_destination(d, title, body)
+    except Exception as exc:
+        logger.debug("notify_destinations failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Daily summary
 # ---------------------------------------------------------------------------
 
@@ -941,6 +993,7 @@ async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSessio
                 for sd in sec_servers
             ],
         })
+    await notify_destinations("security", slack_header, slack_body)
 
 
 async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
@@ -1006,6 +1059,7 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
                 for sd in reboot_servers
             ],
         })
+    await notify_destinations("reboot_required", slack_header, slack_body)
 
 
 # ---------------------------------------------------------------------------
@@ -1589,6 +1643,9 @@ async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
         except Exception as exc:
             logger.error("Weekly digest slack failed: %s", exc)
             results["slack"] = f"error: {exc}"
+
+    await notify_destinations("weekly_digest", payload["headline"],
+                              payload.get("text_body"))
 
     return results
 

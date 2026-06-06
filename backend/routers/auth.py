@@ -103,6 +103,7 @@ async def _alert_lockout(username: str, ip: str) -> None:
                 await notifier._send_slack(cfg, "Account lockout", body=msg, event_type="lockout")
             if getattr(cfg, "webhook_enabled", False):
                 await notifier._send_webhook(cfg, "lockout", {"username": username, "ip": ip, "attempts": _MAX_ATTEMPTS})
+        await notifier.notify_destinations("lockout", "🔒 apt-ui account lockout", msg)
     except Exception as exc:
         logger.debug("lockout alert failed: %s", exc)
 
@@ -254,6 +255,7 @@ async def list_tokens(
             "created_at": t.created_at,
             "last_used_at": t.last_used_at,
             "expires_at": t.expires_at,
+            "scopes": t.scopes,
         }
         for t in res.scalars().all()
     ]
@@ -265,16 +267,31 @@ async def create_token(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mint a new API token. The raw token is returned ONCE — store it now."""
+    """Mint a new API token. The raw token is returned ONCE — store it now.
+
+    Optional body: scopes (list of read/check/upgrade/calendar; empty = full access),
+    expires_days (int)."""
+    from datetime import timedelta
+    from backend.auth import ALL_SCOPES
     name = (body.get("name") or "").strip()
     if not name or len(name) > 100:
         raise HTTPException(status_code=400, detail="Token name required (1-100 chars)")
+    raw_scopes = body.get("scopes") or []
+    if isinstance(raw_scopes, str):
+        raw_scopes = [s.strip() for s in raw_scopes.split(",") if s.strip()]
+    scopes = [s for s in raw_scopes if s in ALL_SCOPES]
+    expires_at = None
+    days = body.get("expires_days")
+    if isinstance(days, (int, float)) and days > 0:
+        expires_at = datetime.utcnow() + timedelta(days=int(days))
     raw, hashed, prefix = generate_api_token()
     tok = ApiToken(
         user_id=current_user.id,
         name=name,
         token_hash=hashed,
         token_prefix=prefix,
+        scopes=",".join(scopes) or None,
+        expires_at=expires_at,
     )
     db.add(tok)
     await db.commit()
@@ -285,6 +302,8 @@ async def create_token(
         "prefix": tok.token_prefix,
         "token": raw,  # shown ONCE
         "created_at": tok.created_at,
+        "scopes": tok.scopes,
+        "expires_at": tok.expires_at,
     }
     await record_auth_event(db, "token_created", username=current_user.username,
                             actor=current_user.username, detail=name)
