@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.actor import set_actor
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.eol_data import get_eol_status_from_os_info
@@ -634,10 +635,16 @@ async def clear_server_ssh_key(
 @router.post("/{server_id}/reboot")
 async def reboot_server(
     server_id: int,
+    override_window: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    user: User = Depends(require_admin),
 ):
+    set_actor(user.username)
     server = await _get_server_or_404(server_id, db)
+    from backend.routers.maintenance import window_block_reason
+    block = await window_block_reason(db, server_id, override=override_window)
+    if block:
+        return {"success": False, "detail": f"Reboot {block}. Pass ?override_window=true to override."}
     sudo = "" if server.username == "root" else "sudo "
     result = await run_command(server, f"{sudo}reboot", timeout=15)
     # SSH will drop mid-command on reboot — exit code 255 is normal here
@@ -1048,13 +1055,14 @@ async def hold_package(
     server_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    user: User = Depends(require_admin),
 ):
     """Hold or unhold a package via apt-mark (issue #26).
 
     Body: {"package": "nginx", "hold": true | false}
     """
     import re as _re
+    set_actor(user.username)
     server = await _get_server_or_404(server_id, db)
     pkg = (body.get("package") or "").strip()
     hold = bool(body.get("hold", True))
@@ -1077,10 +1085,11 @@ async def restart_service(
     server_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """Restart a systemd service (issue #42)."""
     import re as _re
+    set_actor(user.username)
     server = await _get_server_or_404(server_id, db)
     unit = (body.get("unit") or "").strip()
     if not unit or not _re.match(r'^[a-zA-Z0-9@.\-_:]+\.(service|socket|timer|target|path|mount)$', unit):

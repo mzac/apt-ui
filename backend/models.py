@@ -18,6 +18,8 @@ class User(Base):
     # TOTP 2FA (issue #18) — secret stored Fernet-encrypted via backend.crypto
     totp_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Last TOTP step counter accepted at login — blocks code replay (issue #62).
+    totp_last_counter: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class MaintenanceWindow(Base):
@@ -405,6 +407,21 @@ class TemplatePackage(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     template: Mapped["Template"] = relationship("Template", back_populates="packages")
+
+
+class AuthEventLog(Base):
+    """Security/auth audit trail: logins, failures, logout, token + user + 2FA changes,
+    lockouts. Surfaced as a History sub-tab."""
+    __tablename__ = "auth_event_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)  # login / login_failed / logout / ...
+    username: Mapped[str | None] = mapped_column(Text, nullable=True)   # subject of the event
+    actor: Mapped[str | None] = mapped_column(Text, nullable=True)      # who performed it (admin actions)
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class FleetSnapshot(Base):

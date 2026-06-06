@@ -165,6 +165,7 @@ async def _audit_log(server_id: int, command: str, result: "CommandResult", dura
     try:
         from backend.database import AsyncSessionLocal
         from backend.models import SshAuditLog
+        from backend.actor import get_actor
         excerpt = ((result.stdout or "") + (result.stderr or ""))[:4096]
         async with AsyncSessionLocal() as db:
             db.add(SshAuditLog(
@@ -173,7 +174,7 @@ async def _audit_log(server_id: int, command: str, result: "CommandResult", dura
                 exit_code=result.exit_code,
                 output_excerpt=excerpt or None,
                 duration_ms=duration_ms,
-                initiated_by="system",
+                initiated_by=get_actor(),
             ))
             await db.commit()
     except Exception as exc:

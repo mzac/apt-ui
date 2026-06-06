@@ -20,6 +20,7 @@ from sqlalchemy import select
 from backend.models import Server, UpdateCheck, UpdateHistory
 from backend.ssh_manager import run_command, run_command_stream
 from backend.update_checker import check_server
+from backend.actor import get_actor
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ async def upgrade_server(
     action: str = "upgrade",
     allow_phased: bool = False,
     conffile_action: str = "confdef_confold",
-    initiated_by: str = "manual",
+    initiated_by: str | None = None,
     send_fn=None,
     skip_notify: bool = False,
     run_apt_update: bool = False,
@@ -127,7 +128,7 @@ async def upgrade_server(
             action=action,
             phased_updates=allow_phased,
             log_output=msg,
-            initiated_by=initiated_by,
+            initiated_by=(initiated_by or get_actor()),
         )
         db.add(history)
         await db.commit()
@@ -143,7 +144,7 @@ async def upgrade_server(
                 status="running",
                 action=action,
                 phased_updates=allow_phased,
-                initiated_by=initiated_by,
+                initiated_by=(initiated_by or get_actor()),
             )
             db.add(history)
             await db.commit()
@@ -316,7 +317,7 @@ async def upgrade_packages_selective(
     db: AsyncSession,
     packages: list[str],
     allow_phased: bool = False,
-    initiated_by: str = "manual",
+    initiated_by: str | None = None,
     send_fn=None,
     run_apt_update: bool = False,
 ) -> UpdateHistory:
@@ -342,7 +343,7 @@ async def upgrade_packages_selective(
             action="selective",
             phased_updates=allow_phased,
             log_output=msg,
-            initiated_by=initiated_by,
+            initiated_by=(initiated_by or get_actor()),
         )
         db.add(history)
         await db.commit()
@@ -358,7 +359,7 @@ async def upgrade_packages_selective(
                 status="running",
                 action="selective",
                 phased_updates=allow_phased,
-                initiated_by=initiated_by,
+                initiated_by=(initiated_by or get_actor()),
             )
             db.add(history)
             await db.commit()
@@ -450,7 +451,7 @@ async def run_autoremove(
     server: Server,
     db: AsyncSession,
     packages: list[str] | None = None,
-    initiated_by: str = "manual",
+    initiated_by: str | None = None,
     send_fn=None,
 ) -> UpdateHistory:
     """
@@ -475,7 +476,7 @@ async def run_autoremove(
             action="autoremove",
             phased_updates=False,
             log_output=msg,
-            initiated_by=initiated_by,
+            initiated_by=(initiated_by or get_actor()),
         )
         db.add(history)
         await db.commit()
@@ -491,7 +492,7 @@ async def run_autoremove(
                 status="running",
                 action="autoremove",
                 phased_updates=False,
-                initiated_by=initiated_by,
+                initiated_by=(initiated_by or get_actor()),
             )
             db.add(history)
             await db.commit()

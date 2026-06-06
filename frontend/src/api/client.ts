@@ -117,6 +117,21 @@ export const auth = {
   updateUser: (id: number, data: { is_admin?: boolean; password?: string }) =>
     put<UserSummary>(`/api/auth/users/${id}`, data),
   deleteUser: (id: number) => del(`/api/auth/users/${id}`),
+  events: (page = 1, limit = 50) =>
+    get<{ total: number; page: number; limit: number; items: AuthEvent[] }>(
+      `/api/auth/events?page=${page}&limit=${limit}`
+    ),
+}
+
+export interface AuthEvent {
+  id: number
+  created_at: string
+  event_type: string
+  username: string | null
+  actor: string | null
+  ip_address: string | null
+  detail: string | null
+  success: boolean
 }
 
 // ---------------------------------------------------------------------------

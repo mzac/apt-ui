@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { stats as statsApi, servers as serversApi, notifications as notifApi, sshAudit as sshAuditApi } from '@/api/client'
+import { stats as statsApi, servers as serversApi, notifications as notifApi, sshAudit as sshAuditApi, auth as authApi } from '@/api/client'
 import type { UpdateHistory, Server, NotificationLog } from '@/types'
+import { useAuthStore } from '@/hooks/useAuth'
 
 type HistoryItem = UpdateHistory & { server_name: string }
 
@@ -291,10 +292,12 @@ function NotificationHistory() {
   )
 }
 
-const TABS = ['Upgrade History', 'Notification History', 'SSH Audit Log'] as const
-type Tab = typeof TABS[number]
+const ALL_TABS = ['Upgrade History', 'Notification History', 'SSH Audit Log', 'Auth Events'] as const
+type Tab = typeof ALL_TABS[number]
 
 export default function History() {
+  const { user } = useAuthStore()
+  const tabs = ALL_TABS.filter(t => t !== 'Auth Events' || user?.is_admin)  // auth log is admin-only
   const [tab, setTab] = useState<Tab>('Upgrade History')
 
   return (
@@ -302,7 +305,7 @@ export default function History() {
       <h1 className="text-lg font-mono text-text-primary">History</h1>
 
       <div className="flex gap-1 border-b border-border">
-        {TABS.map(t => (
+        {tabs.map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -320,6 +323,7 @@ export default function History() {
       {tab === 'Upgrade History' && <UpdateHistory />}
       {tab === 'Notification History' && <NotificationHistory />}
       {tab === 'SSH Audit Log' && <SshAuditHistory />}
+      {tab === 'Auth Events' && <AuthEventsHistory />}
     </div>
   )
 }
@@ -425,6 +429,90 @@ function SshAuditHistory() {
                       </tr>
                     )}
                   </>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2">
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
+              <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Auth event log (issue #62) — admin-only
+// ---------------------------------------------------------------------------
+
+const AUTH_EVENT_STYLE: Record<string, string> = {
+  login: 'text-green',
+  logout: 'text-text-muted',
+  login_failed: 'text-amber',
+  login_blocked: 'text-red',
+  lockout: 'text-red',
+  token_created: 'text-cyan',
+  token_revoked: 'text-amber',
+  '2fa_enabled': 'text-green',
+  '2fa_disabled': 'text-amber',
+  user_created: 'text-cyan',
+  user_updated: 'text-cyan',
+  user_deleted: 'text-red',
+}
+
+function AuthEventsHistory() {
+  const [items, setItems] = useState<import('@/api/client').AuthEvent[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const limit = 100
+
+  useEffect(() => {
+    setLoading(true)
+    authApi.events(page, limit)
+      .then(r => { setItems(r.items); setTotal(r.total) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [page])
+
+  const totalPages = Math.ceil(total / limit)
+
+  return (
+    <div className="space-y-4">
+      <span className="text-sm text-text-muted font-mono">{total} events</span>
+      {loading ? (
+        <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-12 text-text-muted text-sm">No auth events recorded yet.</div>
+      ) : (
+        <>
+          <div className="card overflow-hidden">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="border-b border-border text-text-muted">
+                  <th className="text-left px-3 py-2 font-normal">When</th>
+                  <th className="text-left px-3 py-2 font-normal">Event</th>
+                  <th className="text-left px-3 py-2 font-normal">User</th>
+                  <th className="text-left px-3 py-2 font-normal">Actor</th>
+                  <th className="text-left px-3 py-2 font-normal">IP</th>
+                  <th className="text-left px-3 py-2 font-normal">Detail</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30">
+                {items.map(e => (
+                  <tr key={e.id} className="hover:bg-surface/50">
+                    <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={e.created_at}>{relativeTime(e.created_at)}</td>
+                    <td className={`px-3 py-1.5 ${AUTH_EVENT_STYLE[e.event_type] ?? 'text-text-primary'}`}>{e.event_type}</td>
+                    <td className="px-3 py-1.5 text-text-primary">{e.username ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-text-muted">{e.actor ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-text-muted">{e.ip_address ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-text-muted truncate max-w-xs">{e.detail ?? ''}</td>
+                  </tr>
                 ))}
               </tbody>
             </table>
