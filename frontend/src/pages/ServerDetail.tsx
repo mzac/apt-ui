@@ -1383,6 +1383,8 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [dryRunLines, setDryRunLines] = useState<string[]>([])
   const [dryRunning, setDryRunning] = useState(false)
   const [showDryRun, setShowDryRun] = useState(false)
+  const [impact, setImpact] = useState<Awaited<ReturnType<typeof serversApi.impact>> | null>(null)
+  const [impactLoading, setImpactLoading] = useState(false)
   const [runtimePkgs, setRuntimePkgs] = useState<string[]>([])
   const [pveUpgrading, setPveUpgrading] = useState(false)
   const dryWsRef = useRef<WebSocket | null>(null)
@@ -1607,6 +1609,19 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               {dryRunning ? 'Previewing…' : 'Preview'}
             </button>
             <button
+              onClick={async () => {
+                setImpactLoading(true)
+                try { setImpact(await serversApi.impact(serverId)) }
+                catch (e) { toast.error((e as Error).message) }
+                finally { setImpactLoading(false) }
+              }}
+              disabled={impactLoading}
+              className="btn-secondary"
+              title="Which services restart, and whether a reboot is truly required (needrestart)"
+            >
+              {impactLoading ? 'Checking…' : 'Impact'}
+            </button>
+            <button
               onClick={startUpgrade}
               disabled={!hasUpdates || (server.is_docker_host && runtimePkgs.length > 0)}
               className="btn-amber"
@@ -1615,6 +1630,36 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               Run Upgrade
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Impact preview (needrestart) */}
+      {impact && (
+        <div className="card p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-text-muted uppercase tracking-wide">Impact preview</span>
+            <button onClick={() => setImpact(null)} className="text-text-muted hover:text-text-primary text-xs">✕ close</button>
+          </div>
+          {!impact.available ? (
+            <p className="text-xs text-text-muted">{impact.detail || 'needrestart not available'}</p>
+          ) : (
+            <div className="space-y-1 text-xs font-mono">
+              <p className={impact.reboot_required ? 'text-red' : 'text-green'}>
+                {impact.reboot_required ? '↻ Reboot required (kernel)' : '✓ No reboot required'}
+                {impact.kernel_current && impact.kernel_expected && impact.kernel_current !== impact.kernel_expected && (
+                  <span className="text-text-muted"> — running {impact.kernel_current}, expected {impact.kernel_expected}</span>
+                )}
+              </p>
+              {impact.services && impact.services.length > 0 ? (
+                <div>
+                  <span className="text-text-muted">{impact.services.length} service(s) would restart:</span>
+                  <div className="text-text-primary mt-0.5">{impact.services.join(', ')}</div>
+                </div>
+              ) : (
+                <p className="text-text-muted">No services flagged for restart.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

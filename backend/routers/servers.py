@@ -979,6 +979,42 @@ async def get_server_health(
     }
 
 
+@router.get("/{server_id}/impact")
+async def upgrade_impact(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Upgrade impact preview (issue #62): use needrestart to show which services
+    would restart and whether a reboot is truly required (vs the frontend's regex)."""
+    server = await _get_server_or_404(server_id, db)
+    sudo = "" if server.username == "root" else "sudo "
+    chk = await run_command(server, "command -v needrestart", timeout=15)
+    if chk.exit_code != 0:
+        return {"available": False, "detail": "needrestart is not installed on this server"}
+    res = await run_command(server, f"{sudo}needrestart -b 2>/dev/null", timeout=60)
+    ksta = kcur = kexp = None
+    services: list[str] = []
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("NEEDRESTART-KSTA:"):
+            ksta = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-KCUR:"):
+            kcur = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-KEXP:"):
+            kexp = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-SVC:"):
+            services.append(line.split(":", 1)[1].strip())
+    return {
+        "available": True,
+        # KSTA: 1=kernel current, 2=ABI-compatible upgrade pending, 3=reboot required
+        "reboot_required": ksta == "3",
+        "kernel_status": ksta,
+        "kernel_current": kcur,
+        "kernel_expected": kexp,
+        "services": sorted(set(services)),
+    }
+
+
 @router.post("/bulk-hold")
 async def bulk_hold(
     body: dict,

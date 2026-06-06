@@ -171,6 +171,7 @@ export const servers = {
   remove: (id: number) => del(`/api/servers/${id}`),
   reboot: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/reboot`),
   rollback: (id: number, snapshot: string) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/rollback`, { snapshot }),
+  impact: (id: number) => get<{ available: boolean; detail?: string; reboot_required?: boolean; kernel_current?: string | null; kernel_expected?: string | null; services?: string[] }>(`/api/servers/${id}/impact`),
   test: (id: number) => post<{ success: boolean; detail: string }>(`/api/servers/${id}/test`),
   reachability: () => get<Record<string, boolean>>('/api/servers/reachability'),
   check: (id: number) => post<{ status: string; packages_available: number }>(`/api/servers/${id}/check`),
