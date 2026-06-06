@@ -1279,6 +1279,11 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
             if (s.boot_free_mb >= 100 && pct >= 10) return null
             return <span key="boot-low" className="text-red" title={`/boot has only ${s.boot_free_mb} MB free (${pct.toFixed(0)}% of ${s.boot_total_mb} MB) — run autoremove to clear old kernels`}>💾 /boot {s.boot_free_mb}M</span>
           })(),
+          (() => {
+            // Config drift badge (issue #62): unmerged conffiles left by upgrades
+            if (!s.drift_count || s.drift_count <= 0) return null
+            return <span key="drift" className="text-amber" title={`${s.drift_count} unmerged conffile(s) (.dpkg-dist/.ucf-dist) — review with dpkg-conf`}>⚠ drift {s.drift_count}</span>
+          })(),
         ].filter(Boolean)
 
         if (!shownLabels.length && !overflow && !statusItems.length) return null

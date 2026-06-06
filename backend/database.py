@@ -225,6 +225,8 @@ async def init_db():
             "ALTER TABLE schedule_config ADD COLUMN canary_health_check BOOLEAN DEFAULT 0",
             # HTTP hook type (issue #62)
             "ALTER TABLE upgrade_hooks ADD COLUMN hook_type TEXT DEFAULT 'shell'",
+            # Config drift detection (issue #62)
+            "ALTER TABLE server_stats ADD COLUMN drift_count INTEGER",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]
