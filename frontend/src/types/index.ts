@@ -194,6 +194,7 @@ export interface ScheduleConfig {
   auto_tag_virt: boolean
   run_apt_update_before_upgrade: boolean
   snapshot_before_upgrade: boolean
+  canary_health_check: boolean
   conffile_action: string
   reachability_ttl_minutes: number
   staged_rollout_enabled: boolean        // issue #41

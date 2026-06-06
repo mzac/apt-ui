@@ -306,6 +306,7 @@ class ScheduleConfigOut(BaseModel):
     auto_tag_virt: bool = False
     run_apt_update_before_upgrade: bool = False
     snapshot_before_upgrade: bool = False
+    canary_health_check: bool = False
     conffile_action: str = "confdef_confold"
     reachability_ttl_minutes: int = 5
     staged_rollout_enabled: bool = False
@@ -335,6 +336,7 @@ class ScheduleConfigUpdate(BaseModel):
     auto_tag_virt: Optional[bool] = None
     run_apt_update_before_upgrade: Optional[bool] = None
     snapshot_before_upgrade: Optional[bool] = None
+    canary_health_check: Optional[bool] = None
     conffile_action: Optional[str] = None
     reachability_ttl_minutes: Optional[int] = None
     staged_rollout_enabled: Optional[bool] = None
