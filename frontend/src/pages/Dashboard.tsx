@@ -9,6 +9,8 @@ import { useJobStore } from '@/hooks/useJobStore'
 import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
 import FleetTrendCard from '@/components/FleetTrendCard'
+import { toast } from '@/hooks/useToast'
+import { confirmDialog } from '@/hooks/useConfirm'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import AutoremoveAllModal from '@/components/AutoremoveAllModal'
 import RollingRebootModal from '@/components/RollingRebootModal'
@@ -104,6 +106,10 @@ export default function Dashboard() {
   )
   const [statusFilter, setStatusFilter] = useState<string | null>(_initialUrl.get('status') || null)
   const [checking, setChecking] = useState<Set<number>>(new Set())
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  // When a bulk action targets a specific subset, the Upgrade/Reboot modals render
+  // these instead of the fleet-wide lists. Reset to null on modal close.
+  const [bulkServers, setBulkServers] = useState<Server[] | null>(null)
   const { addJob, updateJob } = useJobStore()
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
@@ -258,6 +264,53 @@ export default function Dashboard() {
       await serversApi.update(s.id, { is_enabled: true })
       await load()
     } catch {}
+  }
+
+  // ----- bulk selection (issue #62) --------------------------------------
+  function toggleSelect(id: number) {
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  const selectedServers = serverList.filter(s => selectedIds.has(s.id))
+
+  async function _runCapped(ids: number[], cap: number, fn: (id: number) => Promise<void>) {
+    let i = 0
+    const worker = async () => { while (i < ids.length) { await fn(ids[i++]) } }
+    await Promise.all(Array.from({ length: Math.min(cap, ids.length) }, worker))
+  }
+
+  async function bulkCheck() {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    toast.info(`Checking ${ids.length} server${ids.length === 1 ? '' : 's'}…`)
+    setChecking(c => { const n = new Set(c); ids.forEach(id => n.add(id)); return n })
+    await _runCapped(ids, 4, async (id) => {
+      try { await serversApi.check(id) } catch {}
+      setChecking(c => { const n = new Set(c); n.delete(id); return n })
+    })
+    await load()
+    toast.success(`Checked ${ids.length} server${ids.length === 1 ? '' : 's'}`)
+  }
+
+  function bulkUpgrade() {
+    const targets = selectedServers.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
+    if (!targets.length) { toast.info('No selected servers have pending updates'); return }
+    setBulkServers(targets)
+    setShowUpgradeAll(true)
+  }
+
+  function bulkReboot() {
+    if (!selectedServers.length) return
+    setBulkServers(selectedServers)
+    setShowRollingReboot(true)
+  }
+
+  async function bulkSetEnabled(enable: boolean) {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    if (!enable && !await confirmDialog({ message: `Disable ${ids.length} server${ids.length === 1 ? '' : 's'}? They'll be skipped by checks and upgrades.`, confirmLabel: 'Disable', danger: true })) return
+    await _runCapped(ids, 4, async (id) => { try { await serversApi.update(id, { is_enabled: enable }) } catch {} })
+    await load()
+    toast.success(`${enable ? 'Enabled' : 'Disabled'} ${ids.length} server${ids.length === 1 ? '' : 's'}`)
   }
 
   async function confirmDoDisable() {
@@ -634,6 +687,8 @@ export default function Dashboard() {
                         onCheck={() => handleCheck(s.id)}
                         onToggleEnabled={(e) => handleToggleEnabled(s, e)}
                         reachable={reachability[s.id]}
+                        selected={selectedIds.has(s.id)}
+                        onToggleSelect={() => toggleSelect(s.id)}
                       />
                     )
                   })}
@@ -655,6 +710,8 @@ export default function Dashboard() {
                 onCheck={() => handleCheck(s.id)}
                 onToggleEnabled={(e) => handleToggleEnabled(s, e)}
                 reachable={reachability[s.id]}
+                selected={selectedIds.has(s.id)}
+                onToggleSelect={() => toggleSelect(s.id)}
               />
             )
           })}
@@ -671,11 +728,26 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Bulk action bar — appears when servers are selected (issue #62) */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-surface border border-border rounded-lg shadow-2xl px-3 py-2">
+          <span className="text-sm font-mono text-text-primary">{selectedIds.size} selected</span>
+          <span className="w-px h-5 bg-border mx-1" />
+          <button onClick={bulkCheck} className="btn-secondary text-xs">Check</button>
+          <button onClick={bulkUpgrade} className="btn-amber text-xs">Upgrade</button>
+          <button onClick={bulkReboot} className="btn-secondary text-xs">Reboot</button>
+          <button onClick={() => bulkSetEnabled(true)} className="btn-secondary text-xs">Enable</button>
+          <button onClick={() => bulkSetEnabled(false)} className="btn-secondary text-xs">Disable</button>
+          <span className="w-px h-5 bg-border mx-1" />
+          <button onClick={() => setSelectedIds(new Set())} className="text-text-muted hover:text-text-primary text-xs" title="Clear selection">✕ Clear</button>
+        </div>
+      )}
+
       {showUpgradeAll && (
         <div style={{ display: upgradeMinimized ? 'none' : undefined }}>
           <UpgradeAllModal
-            servers={serversWithUpdates}
-            onClose={() => { setShowUpgradeAll(false); setUpgradeMinimized(false); load() }}
+            servers={bulkServers ?? serversWithUpdates}
+            onClose={() => { setShowUpgradeAll(false); setUpgradeMinimized(false); setBulkServers(null); load() }}
             onMinimize={() => setUpgradeMinimized(true)}
           />
         </div>
@@ -690,8 +762,8 @@ export default function Dashboard() {
 
       {showRollingReboot && (
         <RollingRebootModal
-          servers={serversNeedingReboot}
-          onClose={() => { setShowRollingReboot(false); load() }}
+          servers={bulkServers ?? serversNeedingReboot}
+          onClose={() => { setShowRollingReboot(false); setBulkServers(null); load() }}
         />
       )}
 
@@ -990,12 +1062,14 @@ function RebootButton({ serverId, serverName, className = '' }: {
 // Server card
 // ---------------------------------------------------------------------------
 // Compact single-row representation used by the dashboard "List" density mode.
-function ServerRow({ server: s, checking, onCheck, reachable }: {
+function ServerRow({ server: s, checking, onCheck, reachable, selected, onToggleSelect }: {
   server: Server
   checking: boolean
   onCheck: () => void
   onToggleEnabled: (e: React.MouseEvent) => void
   reachable?: boolean | null
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const navigate = useNavigate()
   const status = checking ? 'checking' : serverStatus(s)
@@ -1007,6 +1081,10 @@ function ServerRow({ server: s, checking, onCheck, reachable }: {
       style={primaryGroupColor ? { borderLeft: `3px solid ${s.is_reachable === false ? '#ef4444' : primaryGroupColor}66` } : (s.is_reachable === false ? { borderLeft: '3px solid #ef444466' } : undefined)}
       onClick={() => navigate(`/servers/${s.id}`)}
     >
+      {onToggleSelect && (
+        <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
+          className="w-3.5 h-3.5 accent-green shrink-0" title="Select" />
+      )}
       <StatusDot status={status} />
       {reachable === false && <span title="SSH unreachable" className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0 -ml-1.5" />}
       <div className="min-w-0 flex-1 flex items-center gap-2">
@@ -1029,12 +1107,14 @@ function ServerRow({ server: s, checking, onCheck, reachable }: {
   )
 }
 
-function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }: {
+function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, selected, onToggleSelect }: {
   server: Server
   checking: boolean
   onCheck: () => void
   onToggleEnabled: (e: React.MouseEvent) => void
   reachable?: boolean | null
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const navigate = useNavigate()
   const status = checking ? 'checking' : serverStatus(s)
@@ -1048,10 +1128,14 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }
 
   return (
     <div
-      className={`card p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''}`}
+      className={`card relative p-3 flex flex-col gap-2 transition-colors cursor-pointer ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''} ${selected ? 'ring-1 ring-green/60' : ''}`}
       style={primaryGroupColor ? { borderLeft: `3px solid ${s.is_reachable === false ? '#ef4444' : primaryGroupColor}66` } : (s.is_reachable === false ? { borderLeft: '3px solid #ef444466' } : undefined)}
       onClick={() => navigate(`/servers/${s.id}`)}
     >
+      {onToggleSelect && (
+        <input type="checkbox" checked={!!selected} onClick={e => e.stopPropagation()} onChange={onToggleSelect}
+          className="absolute top-2 right-2 w-3.5 h-3.5 accent-green z-10" title="Select" />
+      )}
       {s.is_enabled && s.is_reachable === false && (
         <div className="flex items-center gap-1.5 text-red text-[10px] font-mono bg-red/10 border border-red/20 rounded px-2 py-0.5 -mx-1 -mt-1">
           <span className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0" />
