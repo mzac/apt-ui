@@ -103,6 +103,7 @@ async def _alert_lockout(username: str, ip: str) -> None:
                 await notifier._send_slack(cfg, "Account lockout", body=msg, event_type="lockout")
             if getattr(cfg, "webhook_enabled", False):
                 await notifier._send_webhook(cfg, "lockout", {"username": username, "ip": ip, "attempts": _MAX_ATTEMPTS})
+        await notifier.notify_destinations("lockout", "🔒 apt-ui account lockout", msg)
     except Exception as exc:
         logger.debug("lockout alert failed: %s", exc)
 

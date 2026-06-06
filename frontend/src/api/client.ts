@@ -397,6 +397,23 @@ export const notifications = {
     get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(
       `/api/notifications/history?page=${page}&limit=${limit}`
     ),
+  listDestinations: () => get<NotificationDestination[]>('/api/notifications/destinations'),
+  createDestination: (data: Partial<NotificationDestination>) =>
+    post<NotificationDestination>('/api/notifications/destinations', data),
+  updateDestination: (id: number, data: Partial<NotificationDestination>) =>
+    put<NotificationDestination>(`/api/notifications/destinations/${id}`, data),
+  deleteDestination: (id: number) => del(`/api/notifications/destinations/${id}`),
+  testDestination: (id: number) => post(`/api/notifications/destinations/${id}/test`),
+}
+
+export interface NotificationDestination {
+  id: number
+  name: string
+  type: 'discord' | 'mattermost' | 'ntfy' | 'webhook' | 'pagerduty' | 'opsgenie'
+  url: string
+  events: string | null
+  enabled: boolean
+  created_at: string
 }
 
 // ---------------------------------------------------------------------------

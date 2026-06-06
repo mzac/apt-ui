@@ -7,6 +7,7 @@ import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptC
 import { useAuthStore } from '@/hooks/useAuth'
 import { confirmDialog } from '@/hooks/useConfirm'
 import { toast } from '@/hooks/useToast'
+import NotificationDestinations from '@/components/NotificationDestinations'
 
 const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Users', 'Account', 'Backup'] as const
 type Tab = typeof TABS[number]
@@ -2223,7 +2224,8 @@ function NotificationsTab() {
   if (!cfg) return <p className="text-text-muted text-sm">Loading…</p>
 
   return (
-    <form onSubmit={handleSave} className="space-y-6 max-w-xl">
+    <div className="space-y-6 max-w-xl">
+    <form onSubmit={handleSave} className="space-y-6">
       {/* Email */}
       <section className="card p-4 space-y-4">
         <div className="flex items-center justify-between">
@@ -2573,6 +2575,8 @@ function NotificationsTab() {
         {error && <span className="text-xs text-red">{error}</span>}
       </div>
     </form>
+    <NotificationDestinations />
+    </div>
   )
 }
 
