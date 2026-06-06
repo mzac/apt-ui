@@ -635,11 +635,16 @@ async def clear_server_ssh_key(
 @router.post("/{server_id}/reboot")
 async def reboot_server(
     server_id: int,
+    override_window: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_admin),
 ):
     set_actor(user.username)
     server = await _get_server_or_404(server_id, db)
+    from backend.routers.maintenance import window_block_reason
+    block = await window_block_reason(db, server_id, override=override_window)
+    if block:
+        return {"success": False, "detail": f"Reboot {block}. Pass ?override_window=true to override."}
     sudo = "" if server.username == "root" else "sudo "
     result = await run_command(server, f"{sudo}reboot", timeout=15)
     # SSH will drop mid-command on reboot — exit code 255 is normal here

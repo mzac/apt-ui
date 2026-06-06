@@ -56,6 +56,18 @@ async def get_active_window_for_server(db: AsyncSession, server_id: int) -> Main
     return None
 
 
+async def window_block_reason(db: AsyncSession, server_id: int, override: bool = False) -> str | None:
+    """Return a human-readable reason if a mutating action on *server_id* is currently
+    blocked by an active maintenance (deny) window, or None if allowed. `override=True`
+    (admin) bypasses the gate."""
+    if override:
+        return None
+    w = await get_active_window_for_server(db, server_id)
+    if w is not None:
+        return f"blocked by maintenance window '{w.name}'"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------

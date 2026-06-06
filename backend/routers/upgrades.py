@@ -712,6 +712,15 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
         reboot_if_required = params.get("reboot_if_required", False)
+        override_window = bool(params.get("override_window", False))
+
+        # Maintenance-window gate (admins may override)
+        from backend.routers.maintenance import window_block_reason
+        block = await window_block_reason(db, server_id, override=override_window and user.is_admin)
+        if block:
+            await websocket.send_json({"type": "error", "data": f"Upgrade {block}. An admin can override."})
+            await websocket.close()
+            return
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -843,6 +852,7 @@ async def ws_upgrade_all(websocket: WebSocket):
         # Optional explicit target set (e.g. the dashboard's active filter). When omitted
         # we fall back to every enabled server, preserving the original behaviour.
         explicit_ids = params.get("server_ids") or None
+        override_window = bool(params.get("override_window", False)) and user.is_admin
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -855,6 +865,7 @@ async def ws_upgrade_all(websocket: WebSocket):
         srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
 
+        from backend.routers.maintenance import window_block_reason
         to_upgrade = []
         for s in servers:
             chk_res = await db.execute(
@@ -864,8 +875,17 @@ async def ws_upgrade_all(websocket: WebSocket):
                 .limit(1)
             )
             chk = chk_res.scalar_one_or_none()
-            if chk and chk.status == "success" and chk.packages_available > 0:
-                to_upgrade.append(s)
+            if not (chk and chk.status == "success" and chk.packages_available > 0):
+                continue
+            block = await window_block_reason(db, s.id, override=override_window)
+            if block:
+                try:
+                    await websocket.send_json({"type": "error", "server_id": s.id, "server_name": s.name,
+                                               "data": f"Skipped — {block}."})
+                except Exception:
+                    pass
+                continue
+            to_upgrade.append(s)
 
     semaphore = asyncio.Semaphore(concurrency)
     histories: list = []
