@@ -276,6 +276,11 @@ async def _build_server_out(
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
         snapshot_capability=stats_row.snapshot_capability if stats_row else None,
         drift_count=stats_row.drift_count if stats_row else None,
+        drift_files=(
+            json.loads(stats_row.drift_files)
+            if stats_row and stats_row.drift_files
+            else None
+        ),
         os_eol_date=eol["date"],
         os_eol_days_remaining=eol["days_remaining"],
         os_eol_severity=eol["severity"],

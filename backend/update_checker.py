@@ -183,7 +183,7 @@ async def _gather_stats(server: Server) -> dict:
         # post-patch breakage cause and are cheap to count.
         "drift": (
             "find /etc \\( -name '*.dpkg-dist' -o -name '*.ucf-dist' -o -name '*.dpkg-new' \\) "
-            "2>/dev/null | wc -l"
+            "2>/dev/null | sort | head -n 200"
         ),
         # /boot disk usage (separate partition on most distros — kernel buildup fills it)
         "boot_disk": "df -P -BM /boot 2>/dev/null | awk 'NR==2{gsub(\"M\",\"\",$2); gsub(\"M\",\"\",$4); print $2\" \"$4}' || echo ''",
@@ -360,9 +360,11 @@ async def _gather_stats(server: Server) -> dict:
         snapshot_capability = None
 
     drift_raw = results.get("drift")
+    drift_files: list[str] = []
     drift_count = None
-    if drift_raw and drift_raw.stdout.strip().isdigit():
-        drift_count = int(drift_raw.stdout.strip())
+    if drift_raw and drift_raw.stdout:
+        drift_files = [ln.strip() for ln in drift_raw.stdout.splitlines() if ln.strip()]
+        drift_count = len(drift_files)
 
     return {
         "uptime_seconds": uptime_seconds,
@@ -385,6 +387,7 @@ async def _gather_stats(server: Server) -> dict:
         "boot_free_mb": boot_free_mb,
         "snapshot_capability": snapshot_capability,
         "drift_count": drift_count,
+        "drift_files": json.dumps(drift_files) if drift_files else None,
     }
 
 
@@ -574,6 +577,7 @@ async def check_server(
         boot_free_mb=stats.get("boot_free_mb"),
         snapshot_capability=stats.get("snapshot_capability"),
         drift_count=stats.get("drift_count"),
+        drift_files=stats.get("drift_files"),
     )
     db.add(stat_row)
 

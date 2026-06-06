@@ -260,6 +260,7 @@ class ServerStats(Base):
     boot_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)       # total MB on /boot
     snapshot_capability: Mapped[str | None] = mapped_column(Text, nullable=True)    # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
     drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)         # unmerged conffiles (.dpkg-dist/.ucf-dist) (issue #62)
+    drift_files: Mapped[str | None] = mapped_column(Text, nullable=True)            # JSON list of the actual drifted conffile paths (capped) (issue #62)
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 
