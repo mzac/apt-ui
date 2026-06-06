@@ -405,3 +405,20 @@ class TemplatePackage(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     template: Mapped["Template"] = relationship("Template", back_populates="packages")
+
+
+class FleetSnapshot(Base):
+    """Point-in-time fleet aggregate, written after each scheduled check-all so the
+    dashboard can plot trends (the donut is point-in-time and raw rows get purged)."""
+    __tablename__ = "fleet_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    total_servers: Mapped[int] = mapped_column(Integer, default=0)
+    up_to_date: Mapped[int] = mapped_column(Integer, default=0)
+    updates_available: Mapped[int] = mapped_column(Integer, default=0)
+    security_servers: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)
+    reboot_required: Mapped[int] = mapped_column(Integer, default=0)
+    pending_packages_total: Mapped[int] = mapped_column(Integer, default=0)
+    security_packages_total: Mapped[int] = mapped_column(Integer, default=0)

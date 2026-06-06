@@ -31,9 +31,12 @@ async def status_json():
     if not PUBLIC:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
+    from backend.query_helpers import latest_checks_by_server
+
     async with AsyncSessionLocal() as db:
         srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
         servers = srv_res.scalars().all()
+        checks = await latest_checks_by_server(db)   # one query for an unauthenticated public hit
 
         total = len(servers)
         reachable = sum(1 for s in servers if s.is_reachable)
@@ -46,13 +49,7 @@ async def status_json():
 
         items = []
         for s in servers:
-            chk_res = await db.execute(
-                select(UpdateCheck)
-                .where(UpdateCheck.server_id == s.id)
-                .order_by(UpdateCheck.checked_at.desc())
-                .limit(1)
-            )
-            chk = chk_res.scalar_one_or_none()
+            chk = checks.get(s.id)
             if not chk:
                 continue
             if chk.status == "error":

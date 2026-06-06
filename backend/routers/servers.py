@@ -370,12 +370,15 @@ async def list_servers(
         q = q.join(ServerGroupMembership, ServerGroupMembership.server_id == Server.id).where(
             ServerGroupMembership.group_id == group_id
         )
+    from backend.query_helpers import latest_checks_by_server
+
     result = await db.execute(q.order_by(Server.name))
     servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)   # one query instead of one per server
 
     out = []
     for s in servers:
-        check = await _latest_check(s.id, db)
+        check = checks.get(s.id)
         group = None
         if s.group_id:
             g_result = await db.execute(select(ServerGroup).where(ServerGroup.id == s.group_id))

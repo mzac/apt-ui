@@ -17,8 +17,11 @@ async def fleet_overview(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    from backend.query_helpers import latest_checks_by_server
+
     result = await db.execute(select(Server))
     servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)   # one query instead of one per server
 
     total = len(servers)
     up_to_date = 0
@@ -31,13 +34,7 @@ async def fleet_overview(
     last_check_time: datetime | None = None
 
     for server in servers:
-        check_result = await db.execute(
-            select(UpdateCheck)
-            .where(UpdateCheck.server_id == server.id)
-            .order_by(UpdateCheck.checked_at.desc())
-            .limit(1)
-        )
-        check = check_result.scalar_one_or_none()
+        check = checks.get(server.id)
         if check is None:
             continue
         if last_check_time is None or check.checked_at > last_check_time:
@@ -77,6 +74,42 @@ async def fleet_overview(
     )
 
 
+@router.get("/stats/trend")
+async def fleet_trend(
+    days: int = Query(default=30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Time series of fleet snapshots over the last *days* (for dashboard trend charts)."""
+    from datetime import timedelta
+    from backend.models import FleetSnapshot
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    res = await db.execute(
+        select(FleetSnapshot)
+        .where(FleetSnapshot.recorded_at >= cutoff)
+        .order_by(FleetSnapshot.recorded_at.asc())
+    )
+    rows = res.scalars().all()
+    return {
+        "points": [
+            {
+                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+                "total_servers": r.total_servers,
+                "up_to_date": r.up_to_date,
+                "updates_available": r.updates_available,
+                "security_servers": r.security_servers,
+                "errors": r.errors,
+                "reboot_required": r.reboot_required,
+                "pending_packages_total": r.pending_packages_total,
+                "security_packages_total": r.security_packages_total,
+                "pct_up_to_date": round(100.0 * r.up_to_date / r.total_servers, 1) if r.total_servers else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/stats/pending-updates")
 async def pending_updates(
     db: AsyncSession = Depends(get_db),
@@ -87,19 +120,15 @@ async def pending_updates(
     per-server /packages loop. New-dependency packages are excluded so the list count
     matches packages_available."""
     import json as _json
+    from backend.query_helpers import latest_checks_by_server
 
     result = await db.execute(select(Server).where(Server.is_enabled == True))
     servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)
 
     out: list[dict] = []
     for server in servers:
-        check_result = await db.execute(
-            select(UpdateCheck)
-            .where(UpdateCheck.server_id == server.id)
-            .order_by(UpdateCheck.checked_at.desc())
-            .limit(1)
-        )
-        check = check_result.scalar_one_or_none()
+        check = checks.get(server.id)
         if check is None or check.status == "error" or (check.packages_available or 0) <= 0:
             continue
         packages: list[dict] = []

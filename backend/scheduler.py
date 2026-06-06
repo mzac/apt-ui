@@ -54,6 +54,13 @@ async def _job_check_all():
             srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
             servers = srv_res.scalars().all()
             await check_all_servers(list(servers), db, concurrency)
+
+            # Record a fleet snapshot for trend charts (cheap; once per scheduled run).
+            try:
+                from backend.query_helpers import record_fleet_snapshot
+                await record_fleet_snapshot(db)
+            except Exception as exc:
+                logger.warning("Fleet snapshot failed: %s", exc)
     except Exception as exc:
         logger.error("Scheduled check-all failed: %s", exc)
 

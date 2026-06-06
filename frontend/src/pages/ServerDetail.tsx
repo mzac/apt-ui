@@ -4,6 +4,8 @@ import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as 
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
 import type { Server, PackageInfo, UpdateHistory, ServerGroup, Tag } from '@/types'
 import { useJobStore } from '@/hooks/useJobStore'
+import { confirmDialog } from '@/hooks/useConfirm'
+import { toast } from '@/hooks/useToast'
 import { createUpgradeWebSocket, createSelectiveUpgradeWebSocket, createAutoremoveWebSocket, createAptUpdateWebSocket, createAutoSecurityUpdatesWebSocket, createAptProxyWebSocket, createEepromUpdateWebSocket, createDryRunWebSocket, createAptReposTestWebSocket, createPveUpgradeWebSocket } from '@/api/client'
 import DebInstallModal from '@/components/DebInstallModal'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -961,14 +963,15 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                   <button
                                     onClick={async (e) => {
                                       e.stopPropagation()
-                                      if (!confirm(`Hold ${p.name} at version ${p.current_version}? It will be excluded from future upgrades.`)) return
+                                      if (!await confirmDialog({ message: `Hold ${p.name} at version ${p.current_version}? It will be excluded from future upgrades.`, confirmLabel: 'Hold' })) return
                                       try {
                                         const r = await serversApi.holdPackage(serverId, p.name, true)
-                                        if (!r.success) alert(`Hold failed: ${r.stderr || r.stdout}`)
+                                        if (!r.success) toast.error(`Hold failed: ${r.stderr || r.stdout}`)
+                                        else toast.success(`Held ${p.name}`)
                                         onRefresh()
                                         loadPackages()
                                       } catch (err: unknown) {
-                                        alert((err as Error).message)
+                                        toast.error((err as Error).message)
                                       }
                                     }}
                                     className="text-blue/80 hover:text-blue text-[11px] font-mono"
@@ -1045,14 +1048,15 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                 {h}
                 <button
                   onClick={async () => {
-                    if (!confirm(`Unhold ${h}? It will be eligible for upgrades again.`)) return
+                    if (!await confirmDialog({ message: `Unhold ${h}? It will be eligible for upgrades again.`, confirmLabel: 'Unhold' })) return
                     try {
                       const r = await serversApi.holdPackage(serverId, h, false)
-                      if (!r.success) alert(`Unhold failed: ${r.stderr || r.stdout}`)
+                      if (!r.success) toast.error(`Unhold failed: ${r.stderr || r.stdout}`)
+                      else toast.success(`Unheld ${h}`)
                       onRefresh()
                       loadPackages()
                     } catch (e: unknown) {
-                      alert((e as Error).message)
+                      toast.error((e as Error).message)
                     }
                   }}
                   className="hover:text-red text-blue/70"
@@ -2131,7 +2135,7 @@ function AptReposTab({ serverId }: { serverId: number }) {
 
   async function deleteFile() {
     if (!selectedPath || !currentFile?.deletable) return
-    if (!window.confirm(`Delete ${selectedPath}?\n\nThis cannot be undone.`)) return
+    if (!await confirmDialog({ message: `Delete ${selectedPath}?\n\nThis cannot be undone.`, confirmLabel: 'Delete', danger: true })) return
     setDeleting(true)
     setSaveError(null)
     try {
@@ -2410,14 +2414,15 @@ function HealthTab({ serverId }: { serverId: number }) {
   useEffect(() => { load() }, [load])
 
   async function restart(unit: string) {
-    if (!confirm(`Restart ${unit}?`)) return
+    if (!await confirmDialog({ message: `Restart ${unit}?`, confirmLabel: 'Restart' })) return
     setRestarting(unit)
     try {
       const r = await serversApi.restartService(serverId, unit)
-      if (!r.success) alert(`Restart failed: ${r.stderr || r.stdout || 'unknown error'}`)
+      if (!r.success) toast.error(`Restart failed: ${r.stderr || r.stdout || 'unknown error'}`)
+      else toast.success(`Restarted ${unit}`)
       await load()
     } catch (e: unknown) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
     } finally {
       setRestarting(null)
     }

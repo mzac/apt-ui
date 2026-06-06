@@ -8,6 +8,7 @@ import { useAuthStore } from '@/hooks/useAuth'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
+import FleetTrendCard from '@/components/FleetTrendCard'
 import UpgradeAllModal from '@/components/UpgradeAllModal'
 import AutoremoveAllModal from '@/components/AutoremoveAllModal'
 import RollingRebootModal from '@/components/RollingRebootModal'
@@ -436,6 +437,9 @@ export default function Dashboard() {
           {overview.next_check_time && ` · Next: ${new Date(overview.next_check_time).toLocaleTimeString()}`}
         </p>
       )}
+
+      {/* Fleet trend (hidden until 2+ snapshots exist) */}
+      <FleetTrendCard />
 
       {/* Combined groups + tags filter row */}
       {(groupsWithServers.length > 0 || allTags.length > 0) && (

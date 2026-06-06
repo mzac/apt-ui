@@ -299,8 +299,22 @@ export interface PendingUpdatePkg {
   is_kernel?: boolean
 }
 
+export interface FleetTrendPoint {
+  recorded_at: string
+  total_servers: number
+  up_to_date: number
+  updates_available: number
+  security_servers: number
+  errors: number
+  reboot_required: number
+  pending_packages_total: number
+  security_packages_total: number
+  pct_up_to_date: number | null
+}
+
 export const stats = {
   overview: () => get<FleetOverview>('/api/stats/overview'),
+  trend: (days = 30) => get<{ points: FleetTrendPoint[] }>(`/api/stats/trend?days=${days}`),
   pendingUpdates: () =>
     get<{ servers: { id: number; packages: PendingUpdatePkg[] }[] }>('/api/stats/pending-updates'),
   globalHistory: (page = 1, serverId?: number, status?: string) => {
