@@ -121,21 +121,32 @@ async def _job_auto_upgrade():
         if skipped_for_maintenance:
             logger.info("Auto-upgrade: skipped %d server(s) inside maintenance windows", skipped_for_maintenance)
 
-        # Group by ring tag for staged rollout (issue #41)
+        # Group by ring tag for staged rollout (issue #41), and within each ring sort
+        # by an optional order:N tag (lower first) so dependency-ordered hosts — e.g. a
+        # DB replica before its primary, or HA members one at a time — patch in a safe
+        # sequence (issue #62). Servers without order:N default to 100.
         rings: dict[str, list[Server]] = {}
         if staged:
             from backend.models import Tag, ServerTag
             from sqlalchemy import select as _sel
+            order_of: dict[int, int] = {}
             for s in to_upgrade:
                 tag_res = await db.execute(
                     _sel(Tag.name)
                     .join(ServerTag, ServerTag.tag_id == Tag.id)
-                    .where(ServerTag.server_id == s.id, Tag.name.like("ring:%"))
+                    .where(ServerTag.server_id == s.id, Tag.name.like("ring:%") | Tag.name.like("order:%"))
                 )
-                ring_tags = [r for (r,) in tag_res.all()]
-                # Use the first matching ring tag, or "default" if none
+                names = [r for (r,) in tag_res.all()]
+                ring_tags = [n for n in names if n.startswith("ring:")]
+                order_tags = [n for n in names if n.startswith("order:")]
                 ring = ring_tags[0] if ring_tags else "ring:default"
+                try:
+                    order_of[s.id] = int(order_tags[0].split(":", 1)[1]) if order_tags else 100
+                except (ValueError, IndexError):
+                    order_of[s.id] = 100
                 rings.setdefault(ring, []).append(s)
+            for ring_name in rings:
+                rings[ring_name].sort(key=lambda srv: (order_of.get(srv.id, 100), srv.name))
         else:
             rings = {"all": to_upgrade}
 
