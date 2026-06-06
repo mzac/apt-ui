@@ -74,6 +74,42 @@ async def fleet_overview(
     )
 
 
+@router.get("/stats/trend")
+async def fleet_trend(
+    days: int = Query(default=30, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Time series of fleet snapshots over the last *days* (for dashboard trend charts)."""
+    from datetime import timedelta
+    from backend.models import FleetSnapshot
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    res = await db.execute(
+        select(FleetSnapshot)
+        .where(FleetSnapshot.recorded_at >= cutoff)
+        .order_by(FleetSnapshot.recorded_at.asc())
+    )
+    rows = res.scalars().all()
+    return {
+        "points": [
+            {
+                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+                "total_servers": r.total_servers,
+                "up_to_date": r.up_to_date,
+                "updates_available": r.updates_available,
+                "security_servers": r.security_servers,
+                "errors": r.errors,
+                "reboot_required": r.reboot_required,
+                "pending_packages_total": r.pending_packages_total,
+                "security_packages_total": r.security_packages_total,
+                "pct_up_to_date": round(100.0 * r.up_to_date / r.total_servers, 1) if r.total_servers else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/stats/pending-updates")
 async def pending_updates(
     db: AsyncSession = Depends(get_db),
