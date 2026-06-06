@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { servers as serversApi } from '@/api/client'
 import { useAuthStore } from '@/hooks/useAuth'
+import { confirmDialog } from '@/hooks/useConfirm'
+import { toast } from '@/hooks/useToast'
 
 type Mode = 'exact' | 'contains' | 'starts-with' | 'ends-with' | 'regex'
 
@@ -228,19 +230,18 @@ function BulkHoldButtons({
     const verb = hold ? 'Hold' : 'Unhold'
     const names = serverIds.map(id => serverNames[id]).slice(0, 5).join(', ')
     const more = serverIds.length > 5 ? ` and ${serverIds.length - 5} more` : ''
-    if (!confirm(`${verb} ${packageName} across ${serverIds.length} server(s): ${names}${more}?`)) return
+    if (!await confirmDialog({ message: `${verb} ${packageName} across ${serverIds.length} server(s): ${names}${more}?`, confirmLabel: verb })) return
     setBusy(hold ? 'hold' : 'unhold')
     try {
       const r = await serversApi.bulkHold(serverIds, packageName, hold)
       const failed = Object.entries(r.results).filter(([_, v]) => !v.success)
       if (failed.length > 0) {
-        const lines = failed.map(([sid, v]) => `${serverNames[parseInt(sid)] ?? sid}: ${v.stderr || v.stdout}`)
-        alert(`${verb} failed on ${failed.length} server(s):\n\n${lines.join('\n')}`)
+        toast.error(`${verb} failed on ${failed.length} of ${serverIds.length} server(s)`)
       } else {
-        alert(`${verb} succeeded on all ${serverIds.length} server(s).`)
+        toast.success(`${verb} succeeded on all ${serverIds.length} server(s).`)
       }
     } catch (e: unknown) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
     } finally {
       setBusy(null)
     }

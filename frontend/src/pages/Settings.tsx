@@ -5,6 +5,8 @@ import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler 
 import type { MaintenanceWindow, UpgradeHook } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
+import { confirmDialog } from '@/hooks/useConfirm'
+import { toast } from '@/hooks/useToast'
 
 const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Users', 'Account', 'Backup'] as const
 type Tab = typeof TABS[number]
@@ -299,7 +301,7 @@ function ServersTab() {
   }
 
   async function handleDeleteServer(id: number) {
-    if (!confirm('Delete this server and all its history?')) return
+    if (!await confirmDialog({ message: 'Delete this server and all its history?', confirmLabel: 'Delete', danger: true })) return
     await serversApi.remove(id)
     setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n })
     load()
@@ -307,7 +309,7 @@ function ServersTab() {
 
   async function handleBulkDelete() {
     const count = selectedIds.size
-    if (!confirm(`Delete ${count} server${count === 1 ? '' : 's'} and all their history? This cannot be undone.`)) return
+    if (!await confirmDialog({ message: `Delete ${count} server${count === 1 ? '' : 's'} and all their history? This cannot be undone.`, confirmLabel: 'Delete', danger: true })) return
     setBulkDeleting(true)
     try {
       await Promise.all([...selectedIds].map(id => serversApi.remove(id)))
@@ -335,7 +337,7 @@ function ServersTab() {
   }
 
   async function handleDeleteGroup(id: number) {
-    if (!confirm('Delete this group? Servers will be unassigned.')) return
+    if (!await confirmDialog({ message: 'Delete this group? Servers will be unassigned.', confirmLabel: 'Delete', danger: true })) return
     await groupsApi.remove(id)
     load()
   }
@@ -364,7 +366,7 @@ function ServersTab() {
   }
 
   async function handleDeleteTag(id: number) {
-    if (!confirm('Delete this tag? It will be removed from all servers.')) return
+    if (!await confirmDialog({ message: 'Delete this tag? It will be removed from all servers.', confirmLabel: 'Delete', danger: true })) return
     await tagsApi.remove(id)
     load()
   }
@@ -552,10 +554,10 @@ function ServersTab() {
                 if (!file) return
                 try {
                   const result = await configApi.importCsv(file)
-                  alert(`Imported: ${result.added} added, ${result.skipped} skipped`)
+                  toast.success(`Imported: ${result.added} added, ${result.skipped} skipped`)
                   load()
                 } catch (err: unknown) {
-                  alert('Import failed: ' + (err instanceof Error ? err.message : String(err)))
+                  toast.error('Import failed: ' + (err instanceof Error ? err.message : String(err)))
                 }
                 e.target.value = ''
               }}
@@ -1321,7 +1323,7 @@ function MaintenanceWindowsSection() {
   }
 
   async function remove(id: number) {
-    if (!confirm('Delete this maintenance window?')) return
+    if (!await confirmDialog({ message: 'Delete this maintenance window?', confirmLabel: 'Delete', danger: true })) return
     await maintenanceApi.remove(id)
     await reload()
   }
@@ -1699,7 +1701,7 @@ function UpgradeHooksSection() {
   }
 
   async function remove(id: number) {
-    if (!confirm('Delete this hook?')) return
+    if (!await confirmDialog({ message: 'Delete this hook?', confirmLabel: 'Delete', danger: true })) return
     await hooksApi.remove(id)
     await reload()
   }
@@ -2641,17 +2643,17 @@ function UsersTab() {
       await auth.updateUser(u.id, { is_admin: !u.is_admin })
       await reload()
     } catch (e: unknown) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
     }
   }
 
   async function remove(u: import('@/api/client').UserSummary) {
-    if (!confirm(`Delete user "${u.username}"? This also revokes all their API tokens.`)) return
+    if (!await confirmDialog({ message: `Delete user "${u.username}"? This also revokes all their API tokens.`, confirmLabel: 'Delete', danger: true })) return
     try {
       await auth.deleteUser(u.id)
       await reload()
     } catch (e: unknown) {
-      alert((e as Error).message)
+      toast.error((e as Error).message)
     }
   }
 
@@ -3091,7 +3093,7 @@ function ApiTokensSection() {
   }
 
   async function revoke(id: number) {
-    if (!confirm('Revoke this token? Any scripts using it will stop working.')) return
+    if (!await confirmDialog({ message: 'Revoke this token? Any scripts using it will stop working.', confirmLabel: 'Revoke', danger: true })) return
     await auth.revokeToken(id)
     await reload()
   }
@@ -3184,7 +3186,7 @@ function BackupTab() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (e: unknown) {
-      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)))
+      toast.error('Export failed: ' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setExporting(false)
     }

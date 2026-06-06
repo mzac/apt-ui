@@ -8,6 +8,8 @@ import type { CveSummary } from '@/types'
 import type { ReleaseCheckResult } from '@/api/client'
 import type { Job } from '@/hooks/useJobStore'
 import CommandPalette from './CommandPalette'
+import ToastHost from './ToastHost'
+import ConfirmHost from './ConfirmHost'
 
 function isMac(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -335,6 +337,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Global command palette — opens via Ctrl/Cmd+K or the nav hint button */}
       <CommandPalette />
+
+      {/* App-wide toast + confirm dialog hosts */}
+      <ToastHost />
+      <ConfirmHost />
 
       <footer className="border-t border-border/40 px-4 py-2 text-center">
         <span className="text-xs text-text-muted font-mono">

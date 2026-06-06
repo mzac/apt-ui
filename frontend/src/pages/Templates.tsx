@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { servers as serversApi, templates as templatesApi, createTemplateApplyWebSocket } from '@/api/client'
+import { confirmDialog } from '@/hooks/useConfirm'
+import { toast } from '@/hooks/useToast'
 import type { Template, TemplatePackage, Server } from '@/types'
 import Convert from 'ansi-to-html'
 
@@ -34,10 +36,12 @@ export default function Templates() {
   useEffect(() => { load() }, [load])
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this template?')) return
-    await templatesApi.remove(id)
-    if (selected?.id === id) setSelected(null)
-    load()
+    if (!await confirmDialog({ message: 'Delete this template?', confirmLabel: 'Delete', danger: true })) return
+    try {
+      await templatesApi.remove(id)
+      if (selected?.id === id) setSelected(null)
+      load()
+    } catch (e) { toast.error((e as Error).message) }
   }
 
   return (
