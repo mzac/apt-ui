@@ -162,6 +162,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       badgeColor: 'bg-red/20 text-red border-red/40',
     },
     { to: '/reports', label: 'Reports' },
+    { to: '/run', label: 'Run' },
   ]
 
   return (

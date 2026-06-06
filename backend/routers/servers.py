@@ -1015,6 +1015,63 @@ async def upgrade_impact(
     }
 
 
+_FLEET_CMD_ALLOWLIST = {
+    "uptime", "uname -a", "hostnamectl", "df -h", "free -h", "who", "last -n 5",
+    "cat /etc/os-release", "systemctl --failed", "dpkg --audit",
+    "ls -1 /var/run/reboot-required.pkgs", "lsb_release -a",
+}
+
+
+@router.post("/run-command")
+async def fleet_run_command(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Run a command across selected servers and group identical outputs (issue #62).
+
+    Only allowlisted read-only commands are permitted unless ENABLE_TERMINAL is set
+    (raw mode — admin only). Every execution is recorded in the SSH audit log."""
+    import asyncio as _asyncio
+    from backend.config import ENABLE_TERMINAL
+    set_actor(user.username)
+    server_ids = body.get("server_ids") or []
+    command = (body.get("command") or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command required")
+    if command not in _FLEET_CMD_ALLOWLIST and not ENABLE_TERMINAL:
+        raise HTTPException(status_code=400,
+                            detail="Command not allowlisted (set ENABLE_TERMINAL=true to allow raw commands)")
+    if not server_ids:
+        raise HTTPException(status_code=400, detail="server_ids required")
+
+    res = await db.execute(select(Server).where(Server.id.in_(server_ids), Server.is_enabled == True))
+    servers = res.scalars().all()
+
+    sem = _asyncio.Semaphore(5)
+
+    async def _run_one(s: Server):
+        async with sem:
+            try:
+                r = await run_command(s, command, timeout=30)
+                out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
+                return s.name, out.strip(), r.exit_code
+            except Exception as exc:
+                return s.name, f"error: {exc}", 255
+
+    pairs = await _asyncio.gather(*[_run_one(s) for s in servers])
+
+    # Group servers by identical output ("47 said X, 3 said Y").
+    groups: dict[str, list[str]] = {}
+    for name, out, _ec in pairs:
+        groups.setdefault(out, []).append(name)
+    grouped = [
+        {"output": out, "servers": sorted(names), "count": len(names)}
+        for out, names in sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    ]
+    return {"command": command, "grouped": grouped}
+
+
 @router.post("/bulk-hold")
 async def bulk_hold(
     body: dict,
