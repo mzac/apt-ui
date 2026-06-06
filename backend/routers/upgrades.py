@@ -880,7 +880,7 @@ async def ws_upgrade_all(websocket: WebSocket):
             block = await window_block_reason(db, s.id, override=override_window)
             if block:
                 try:
-                    await websocket.send_json({"type": "error", "server_id": s.id, "server_name": s.name,
+                    await websocket.send_json({"type": "skipped", "server_id": s.id, "server_name": s.name,
                                                "data": f"Skipped — {block}."})
                 except Exception:
                     pass
@@ -914,7 +914,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                 histories.append((server, h))
 
     try:
-        await asyncio.gather(*[_do_tracked(s) for s in to_upgrade])
+        await asyncio.gather(*[_do_tracked(s) for s in to_upgrade], return_exceptions=True)
     except WebSocketDisconnect:
         pass
     finally:
@@ -1121,7 +1121,19 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
             async with AsyncSessionLocal() as wdb:
                 window = await get_active_window_for_server(wdb, server.id)
             if window is not None:
-                await send_fn({"type": "error", "data": f"Skipped — in maintenance window '{window.name}'"})
+                await send_fn({"type": "skipped", "data": f"Skipped — in maintenance window '{window.name}'"})
+                # Record the skip in history so it's visible/auditable.
+                try:
+                    async with AsyncSessionLocal() as sdb:
+                        sdb.add(UpdateHistory(
+                            server_id=server.id, status="skipped",
+                            action=f"template:{template_name}", initiated_by=actor,
+                            completed_at=datetime.utcnow(),
+                            log_output=f"Skipped — in maintenance window '{window.name}'",
+                        ))
+                        await sdb.commit()
+                except Exception:
+                    pass
                 return
 
             sudo = "" if server.username == "root" else "sudo "
@@ -1165,7 +1177,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
                         pass
 
     try:
-        await asyncio.gather(*[_apply_to_server(s) for s in servers])
+        await asyncio.gather(*[_apply_to_server(s) for s in servers], return_exceptions=True)
     except WebSocketDisconnect:
         pass
     finally:

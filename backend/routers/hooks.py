@@ -28,6 +28,7 @@ def _serialize(h: UpgradeHook) -> dict:
         "name": h.name,
         "phase": h.phase,
         "command": h.command,
+        "hook_type": getattr(h, "hook_type", "shell"),
         "sort_order": h.sort_order,
         "enabled": h.enabled,
         "created_at": h.created_at,
@@ -61,11 +62,15 @@ async def create_hook(
         if srv is None:
             raise HTTPException(status_code=404, detail="Server not found")
 
+    hook_type = (body.get("hook_type") or "shell").strip()
+    if hook_type not in ("shell", "http"):
+        hook_type = "shell"
     h = UpgradeHook(
         server_id=sid,
         name=name,
         phase=phase,
         command=command,
+        hook_type=hook_type,
         sort_order=int(body.get("sort_order", 0)),
         enabled=bool(body.get("enabled", True)),
     )
@@ -92,6 +97,8 @@ async def update_hook(
         h.phase = body["phase"]
     if "command" in body and body["command"]:
         h.command = body["command"]
+    if "hook_type" in body and body["hook_type"] in ("shell", "http"):
+        h.hook_type = body["hook_type"]
     if "sort_order" in body:
         h.sort_order = int(body["sort_order"])
     if "enabled" in body:

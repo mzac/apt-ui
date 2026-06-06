@@ -14,7 +14,7 @@ interface Props {
 }
 
 interface ServerProgress {
-  status: 'pending' | 'running' | 'done' | 'error'
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   lines: string[]
   packagesUpgraded?: number
 }
@@ -96,6 +96,16 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
         if (pendingRef.current <= 0) {
           updateJob('upgrade-all', { status: 'complete', completedAt: Date.now(), action: undefined })
         }
+      } else if (msg.type === 'skipped') {
+        // Maintenance-window skip — terminal, but NOT a failure.
+        setProgress(p => ({
+          ...p,
+          [sid]: { ...p[sid], status: 'skipped', lines: [...(p[sid]?.lines || []), msg.data as string] },
+        }))
+        pendingRef.current -= 1
+        if (pendingRef.current <= 0) {
+          updateJob('upgrade-all', { status: 'complete', completedAt: Date.now(), action: undefined })
+        }
       } else if (msg.type === 'error') {
         setProgress(p => ({
           ...p,
@@ -137,7 +147,7 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   }
 
   const statusIcon = (s: ServerProgress['status']) =>
-    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗' }[s])
+    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗', skipped: '⏭️' }[s])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">

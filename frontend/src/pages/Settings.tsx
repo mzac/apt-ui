@@ -1680,6 +1680,7 @@ function UpgradeHooksSection() {
       name: '',
       phase,
       command: '',
+      hook_type: 'shell',
       sort_order: 0,
       enabled: true,
     })
@@ -1797,6 +1798,18 @@ function UpgradeHooksSection() {
             </div>
 
             <div>
+              <label className="label">Type</label>
+              <select
+                value={editing.hook_type ?? 'shell'}
+                onChange={e => setEditing({ ...editing, hook_type: e.target.value as 'shell' | 'http' })}
+                className="input text-sm"
+              >
+                <option value="shell">Shell command (over SSH)</option>
+                <option value="http">HTTP POST (call out from apt-ui)</option>
+              </select>
+            </div>
+
+            <div>
               <label className="label">Applies to</label>
               <select
                 value={editing.server_id ?? ''}
@@ -1809,15 +1822,19 @@ function UpgradeHooksSection() {
             </div>
 
             <div>
-              <label className="label">Command</label>
+              <label className="label">{editing.hook_type === 'http' ? 'URL' : 'Command'}</label>
               <textarea
                 value={editing.command ?? ''}
                 onChange={e => setEditing({ ...editing, command: e.target.value })}
                 className="input text-sm font-mono"
                 rows={3}
-                placeholder="systemctl stop nginx"
+                placeholder={editing.hook_type === 'http' ? 'https://haproxy.lan/drain?node=web1' : 'systemctl stop nginx'}
               />
-              <p className="text-[10px] text-text-muted mt-1">Runs as the SSH user on the managed server. Use sudo if needed.</p>
+              <p className="text-[10px] text-text-muted mt-1">
+                {editing.hook_type === 'http'
+                  ? 'apt-ui POSTs a small JSON payload to this URL (sent from apt-ui, not the managed server).'
+                  : 'Runs as the SSH user on the managed server. Use sudo if needed.'}
+              </p>
             </div>
 
             <div>
@@ -2667,7 +2684,7 @@ function UsersTab() {
       await auth.updateUser(u.id, { is_admin: !u.is_admin })
       await reload()
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -2677,7 +2694,7 @@ function UsersTab() {
       await auth.deleteUser(u.id)
       await reload()
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 

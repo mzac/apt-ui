@@ -59,6 +59,44 @@ async def _load_hooks(server_id: int, phase: str, db: AsyncSession):
     return list(res.scalars().all())
 
 
+async def _run_hook(server: Server, hook, send_fn) -> int:
+    """Execute a pre/post hook. Returns an exit code (0 = success).
+
+    'shell' hooks run over SSH (default). 'http' hooks POST a small JSON payload to
+    the URL in hook.command — useful for draining a load balancer or silencing alerts
+    from apt-ui itself (the box being patched is about to reboot). issue #62.
+    """
+    if getattr(hook, "hook_type", "shell") == "http":
+        import httpx
+        from urllib.parse import urlparse
+        url = (hook.command or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            if send_fn:
+                await send_fn({"type": "output", "data": f"  http hook '{hook.name}': invalid URL\n"})
+            return 1
+        host_norm = parsed.hostname.rstrip(".").lower()
+        if host_norm in ("169.254.169.254", "metadata.google.internal"):
+            if send_fn:
+                await send_fn({"type": "output", "data": f"  http hook '{hook.name}': blocked metadata endpoint\n"})
+            return 1
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, json={
+                    "hook": hook.name, "phase": hook.phase,
+                    "server": server.name, "hostname": server.hostname,
+                })
+            if send_fn:
+                await send_fn({"type": "output", "data": f"  http hook '{hook.name}' → {resp.status_code}\n"})
+            return 0 if resp.is_success else 1
+        except Exception as exc:
+            if send_fn:
+                await send_fn({"type": "output", "data": f"  http hook '{hook.name}' failed: {exc}\n"})
+            return 1
+    hr = await run_command_stream(server, hook.command, send_fn, timeout=600)
+    return hr.exit_code
+
+
 def _validate_package_names(packages: list[str]) -> list[str]:
     """Return *packages* unchanged if all names are valid; raise ValueError otherwise.
 
@@ -165,9 +203,9 @@ async def upgrade_server(
                     for hook in pre_hooks:
                         if send_fn:
                             await send_fn({"type": "output", "data": f"\n→ pre-hook: {hook.name}\n"})
-                        hr = await run_command_stream(server, hook.command, _send, timeout=600)
-                        if hr.exit_code != 0:
-                            raise RuntimeError(f"Pre-hook '{hook.name}' failed (exit {hr.exit_code}); aborting upgrade")
+                        rc = await _run_hook(server, hook, _send)
+                        if rc != 0:
+                            raise RuntimeError(f"Pre-hook '{hook.name}' failed (exit {rc}); aborting upgrade")
 
                 # Step 0.5: pre-upgrade snapshot (issue #62) — timeshift restore point
                 _cfg = (await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))).scalar_one_or_none()
@@ -248,7 +286,7 @@ async def upgrade_server(
                         if send_fn:
                             await send_fn({"type": "output", "data": f"\n→ post-hook: {hook.name}\n"})
                         try:
-                            await run_command_stream(server, hook.command, _send, timeout=600)
+                            await _run_hook(server, hook, _send)
                         except Exception as hexc:
                             logger.warning("Post-hook '%s' on %s raised: %s", hook.name, server.name, hexc)
                             if send_fn:

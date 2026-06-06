@@ -32,22 +32,22 @@ export default function NotificationDestinations() {
       setForm({ name: '', type: 'discord', url: '', events: '' })
       load()
       toast.success('Destination added')
-    } catch (err) { toast.error((err as Error).message) }
+    } catch (err) { toast.error(err instanceof Error ? err.message : String(err)) }
     finally { setSaving(false) }
   }
 
   async function remove(d: NotificationDestination) {
     if (!await confirmDialog({ message: `Delete destination "${d.name}"?`, confirmLabel: 'Delete', danger: true })) return
-    try { await notifApi.deleteDestination(d.id); load() } catch (err) { toast.error((err as Error).message) }
+    try { await notifApi.deleteDestination(d.id); load() } catch (err) { toast.error(err instanceof Error ? err.message : String(err)) }
   }
 
   async function toggle(d: NotificationDestination) {
-    try { await notifApi.updateDestination(d.id, { enabled: !d.enabled }); load() } catch (err) { toast.error((err as Error).message) }
+    try { await notifApi.updateDestination(d.id, { enabled: !d.enabled }); load() } catch (err) { toast.error(err instanceof Error ? err.message : String(err)) }
   }
 
   async function test(d: NotificationDestination) {
     try { await notifApi.testDestination(d.id); toast.success(`Test sent to ${d.name}`) }
-    catch (err) { toast.error((err as Error).message) }
+    catch (err) { toast.error(err instanceof Error ? err.message : String(err)) }
   }
 
   return (
@@ -67,8 +67,8 @@ export default function NotificationDestinations() {
               <span className="badge bg-surface-2 text-text-muted border border-border">{d.type}</span>
               <span className="text-text-primary">{d.name}</span>
               <span className="text-text-muted truncate flex-1">{d.events || 'all events'}</span>
-              <button onClick={() => test(d)} className="btn-secondary text-xs py-0.5">Test</button>
-              <button onClick={() => remove(d)} className="text-text-muted hover:text-red">✕</button>
+              <button type="button" onClick={() => test(d)} className="btn-secondary text-xs py-0.5">Test</button>
+              <button type="button" onClick={() => remove(d)} aria-label={`Delete destination ${d.name}`} title="Delete" className="text-text-muted hover:text-red">✕</button>
             </div>
           ))}
         </div>

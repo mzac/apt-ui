@@ -178,6 +178,13 @@ async def _gather_stats(server: Server) -> dict:
             "elif [ -f /.dockerenv ] || systemd-detect-virt 2>/dev/null | grep -qE '^(lxc|docker)$'; then echo container; "
             "else echo none; fi"
         ),
+        # Config drift (issue #62) — count unmerged conffiles left by past upgrades.
+        # These (.dpkg-dist/.ucf-dist/.dpkg-new under /etc) are the most common
+        # post-patch breakage cause and are cheap to count.
+        "drift": (
+            "find /etc \\( -name '*.dpkg-dist' -o -name '*.ucf-dist' -o -name '*.dpkg-new' \\) "
+            "2>/dev/null | wc -l"
+        ),
         # /boot disk usage (separate partition on most distros — kernel buildup fills it)
         "boot_disk": "df -P -BM /boot 2>/dev/null | awk 'NR==2{gsub(\"M\",\"\",$2); gsub(\"M\",\"\",$4); print $2\" \"$4}' || echo ''",
         # Detect apt HTTP proxy (apt-cacher-ng or similar).
@@ -352,6 +359,11 @@ async def _gather_stats(server: Server) -> dict:
     if snapshot_capability not in ("btrfs", "zfs", "container", "none"):
         snapshot_capability = None
 
+    drift_raw = results.get("drift")
+    drift_count = None
+    if drift_raw and drift_raw.stdout.strip().isdigit():
+        drift_count = int(drift_raw.stdout.strip())
+
     return {
         "uptime_seconds": uptime_seconds,
         "kernel_version": kernel_version,
@@ -372,6 +384,7 @@ async def _gather_stats(server: Server) -> dict:
         "boot_total_mb": boot_total_mb,
         "boot_free_mb": boot_free_mb,
         "snapshot_capability": snapshot_capability,
+        "drift_count": drift_count,
     }
 
 
@@ -560,6 +573,7 @@ async def check_server(
         boot_total_mb=stats.get("boot_total_mb"),
         boot_free_mb=stats.get("boot_free_mb"),
         snapshot_capability=stats.get("snapshot_capability"),
+        drift_count=stats.get("drift_count"),
     )
     db.add(stat_row)
 

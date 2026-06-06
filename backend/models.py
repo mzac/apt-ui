@@ -76,7 +76,8 @@ class UpgradeHook(Base):
     server_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("servers.id"), nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     phase: Mapped[str] = mapped_column(Text, nullable=False)  # 'pre' | 'post'
-    command: Mapped[str] = mapped_column(Text, nullable=False)
+    command: Mapped[str] = mapped_column(Text, nullable=False)  # shell command, OR URL when hook_type='http'
+    hook_type: Mapped[str] = mapped_column(Text, default="shell")  # 'shell' | 'http' (issue #62)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
@@ -258,6 +259,7 @@ class ServerStats(Base):
     boot_free_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)        # free MB on /boot (issue #43)
     boot_total_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)       # total MB on /boot
     snapshot_capability: Mapped[str | None] = mapped_column(Text, nullable=True)    # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
+    drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)         # unmerged conffiles (.dpkg-dist/.ucf-dist) (issue #62)
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 
@@ -450,7 +452,7 @@ class FleetSnapshot(Base):
     __tablename__ = "fleet_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
     total_servers: Mapped[int] = mapped_column(Integer, default=0)
     up_to_date: Mapped[int] = mapped_column(Integer, default=0)
     updates_available: Mapped[int] = mapped_column(Integer, default=0)

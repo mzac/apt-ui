@@ -234,24 +234,28 @@ async def _send_destination(dest, title: str, body: str | None) -> None:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             if t == "discord":
-                await client.post(dest.url, json={"content": text[:1900]})
+                resp = await client.post(dest.url, json={"content": text[:1900]})
             elif t == "mattermost":
-                await client.post(dest.url, json={"text": text})
+                resp = await client.post(dest.url, json={"text": text})
             elif t == "ntfy":
-                await client.post(dest.url, data=(body or title).encode("utf-8"),
-                                  headers={"Title": title[:250], "Markdown": "yes"})
+                resp = await client.post(dest.url, data=(body or title).encode("utf-8"),
+                                         headers={"Title": title[:250], "Markdown": "yes"})
             elif t == "pagerduty":
-                await client.post("https://events.pagerduty.com/v2/enqueue", json={
+                resp = await client.post("https://events.pagerduty.com/v2/enqueue", json={
                     "routing_key": dest.url, "event_action": "trigger",
                     "payload": {"summary": title[:1024], "source": "apt-ui", "severity": "warning",
                                 "custom_details": {"body": body or ""}},
                 })
             elif t == "opsgenie":
-                await client.post("https://api.opsgenie.com/v2/alerts",
-                                  headers={"Authorization": f"GenieKey {dest.url}"},
-                                  json={"message": title[:130], "description": body or ""})
+                resp = await client.post("https://api.opsgenie.com/v2/alerts",
+                                         headers={"Authorization": f"GenieKey {dest.url}"},
+                                         json={"message": title[:130], "description": body or ""})
             else:  # generic webhook
-                await client.post(dest.url, json={"title": title, "body": body, "source": "apt-ui"})
+                resp = await client.post(dest.url, json={"title": title, "body": body, "source": "apt-ui"})
+        # httpx doesn't raise on 4xx/5xx — many integrations fail this way; log it.
+        if not resp.is_success:
+            logger.warning("notification destination %s (%s) returned HTTP %s: %s",
+                           getattr(dest, "name", "?"), t, resp.status_code, resp.text[:200])
     except Exception as exc:
         logger.warning("notification destination %s (%s) failed: %s", getattr(dest, "name", "?"), t, exc)
 

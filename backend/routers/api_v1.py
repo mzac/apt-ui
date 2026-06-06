@@ -89,6 +89,8 @@ async def v1_upgrade(server_id: int, body: dict | None = None,
         raise HTTPException(status_code=409, detail=f"Upgrade {block}")
 
     action = body.get("action", "upgrade")
+    if action not in ("upgrade", "dist-upgrade"):
+        raise HTTPException(status_code=400, detail="action must be 'upgrade' or 'dist-upgrade'")
     allow_phased = bool(body.get("allow_phased", False))
     actor = user.username
 

@@ -275,6 +275,7 @@ async def _build_server_out(
         boot_free_mb=stats_row.boot_free_mb if stats_row else None,
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
         snapshot_capability=stats_row.snapshot_capability if stats_row else None,
+        drift_count=stats_row.drift_count if stats_row else None,
         os_eol_date=eol["date"],
         os_eol_days_remaining=eol["days_remaining"],
         os_eol_severity=eol["severity"],
@@ -669,6 +670,17 @@ async def rollback_snapshot_endpoint(
     snap = (body.get("snapshot") or "").strip()
     if not snap:
         raise HTTPException(status_code=400, detail="snapshot name required")
+    # Only allow restoring a snapshot apt-ui actually recorded for THIS server, so a
+    # typo / arbitrary name can't roll the box back to an unrelated restore point.
+    from backend.models import UpdateHistory
+    known = (await db.execute(
+        select(UpdateHistory.id).where(
+            UpdateHistory.server_id == server_id,
+            UpdateHistory.snapshot_name == snap,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if known is None:
+        raise HTTPException(status_code=400, detail="Unknown snapshot for this server")
     from backend.upgrade_manager import restore_snapshot
     try:
         result = await restore_snapshot(server, snap)
@@ -976,6 +988,104 @@ async def get_server_health(
         "reboots": reboots,
         "collected_at": datetime.utcnow().isoformat(),
     }
+
+
+@router.get("/{server_id}/impact")
+async def upgrade_impact(
+    server_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Upgrade impact preview (issue #62): use needrestart to show which services
+    would restart and whether a reboot is truly required (vs the frontend's regex)."""
+    server = await _get_server_or_404(server_id, db)
+    sudo = "" if server.username == "root" else "sudo "
+    chk = await run_command(server, "command -v needrestart", timeout=15)
+    if chk.exit_code != 0:
+        return {"available": False, "detail": "needrestart is not installed on this server"}
+    res = await run_command(server, f"{sudo}needrestart -b", timeout=60)
+    if res.exit_code != 0 or "NEEDRESTART-" not in (res.stdout or ""):
+        detail = (res.stderr or res.stdout or "needrestart produced no output").strip()
+        return {"available": False, "detail": detail[:300]}
+    ksta = kcur = kexp = None
+    services: list[str] = []
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("NEEDRESTART-KSTA:"):
+            ksta = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-KCUR:"):
+            kcur = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-KEXP:"):
+            kexp = line.split(":", 1)[1].strip()
+        elif line.startswith("NEEDRESTART-SVC:"):
+            services.append(line.split(":", 1)[1].strip())
+    return {
+        "available": True,
+        # KSTA: 1=kernel current, 2=ABI-compatible upgrade pending, 3=reboot required
+        "reboot_required": ksta == "3",
+        "kernel_status": ksta,
+        "kernel_current": kcur,
+        "kernel_expected": kexp,
+        "services": sorted(set(services)),
+    }
+
+
+_FLEET_CMD_ALLOWLIST = {
+    "uptime", "uname -a", "hostnamectl", "df -h", "free -h", "who", "last -n 5",
+    "cat /etc/os-release", "systemctl --failed", "dpkg --audit",
+    "ls -1 /var/run/reboot-required.pkgs", "lsb_release -a",
+}
+
+
+@router.post("/run-command")
+async def fleet_run_command(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_admin),
+):
+    """Run a command across selected servers and group identical outputs (issue #62).
+
+    Only allowlisted read-only commands are permitted unless ENABLE_TERMINAL is set
+    (raw mode — admin only). Every execution is recorded in the SSH audit log."""
+    import asyncio as _asyncio
+    from backend.config import ENABLE_TERMINAL
+    set_actor(user.username)
+    server_ids = body.get("server_ids") or []
+    command = (body.get("command") or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command required")
+    if command not in _FLEET_CMD_ALLOWLIST and not ENABLE_TERMINAL:
+        raise HTTPException(status_code=400,
+                            detail="Command not allowlisted (set ENABLE_TERMINAL=true to allow raw commands)")
+    if not server_ids:
+        raise HTTPException(status_code=400, detail="server_ids required")
+
+    res = await db.execute(select(Server).where(Server.id.in_(server_ids), Server.is_enabled == True))
+    servers = res.scalars().all()
+
+    from backend.models import ScheduleConfig
+    cfg = (await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))).scalar_one_or_none()
+    sem = _asyncio.Semaphore(max(1, cfg.upgrade_concurrency if cfg else 5))
+
+    async def _run_one(s: Server):
+        async with sem:
+            try:
+                r = await run_command(s, command, timeout=30)
+                out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
+                return s.name, out.strip(), r.exit_code
+            except Exception as exc:
+                return s.name, f"error: {exc}", 255
+
+    pairs = await _asyncio.gather(*[_run_one(s) for s in servers])
+
+    # Group servers by identical output ("47 said X, 3 said Y").
+    groups: dict[str, list[str]] = {}
+    for name, out, _ec in pairs:
+        groups.setdefault(out, []).append(name)
+    grouped = [
+        {"output": out, "servers": sorted(names), "count": len(names)}
+        for out, names in sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    ]
+    return {"command": command, "grouped": grouped}
 
 
 @router.post("/bulk-hold")

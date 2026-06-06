@@ -202,7 +202,8 @@ def _dest_dict(d) -> dict:
 
 
 @router.get("/destinations")
-async def list_destinations(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def list_destinations(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    # Admin-only: the rows contain webhook URLs / routing keys / API keys.
     from backend.models import NotificationDestination
     res = await db.execute(select(NotificationDestination).order_by(NotificationDestination.name))
     return [_dest_dict(d) for d in res.scalars().all()]
@@ -231,9 +232,25 @@ async def update_destination(dest_id: int, body: dict, _: User = Depends(require
     d = (await db.execute(select(NotificationDestination).where(NotificationDestination.id == dest_id))).scalar_one_or_none()
     if d is None:
         raise HTTPException(status_code=404, detail="Destination not found")
-    for f in ("name", "type", "url", "events", "enabled"):
-        if f in body:
-            setattr(d, f, body[f])
+    if "type" in body:
+        t = (body.get("type") or "").strip().lower()
+        if t not in _DEST_TYPES:
+            raise HTTPException(status_code=400, detail="Invalid destination type")
+        d.type = t
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        d.name = name
+    if "url" in body:
+        url = (body.get("url") or "").strip()
+        if not url:
+            raise HTTPException(status_code=400, detail="url cannot be empty")
+        d.url = url
+    if "events" in body:
+        d.events = (body.get("events") or "").strip() or None
+    if "enabled" in body:
+        d.enabled = bool(body["enabled"])
     await db.commit()
     await db.refresh(d)
     return _dest_dict(d)

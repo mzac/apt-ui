@@ -162,6 +162,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       badgeColor: 'bg-red/20 text-red border-red/40',
     },
     { to: '/reports', label: 'Reports' },
+    // Run page calls an admin-only endpoint — only surface it to admins.
+    ...(user?.is_admin ? [{ to: '/run', label: 'Run' }] : []),
   ]
 
   return (

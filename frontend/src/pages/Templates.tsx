@@ -8,7 +8,7 @@ import Convert from 'ansi-to-html'
 const ansiConvert = new Convert({ escapeXML: true })
 
 interface ServerProgress {
-  status: 'pending' | 'running' | 'done' | 'error'
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   lines: string[]
 }
 
@@ -41,7 +41,7 @@ export default function Templates() {
       await templatesApi.remove(id)
       if (selected?.id === id) setSelected(null)
       load()
-    } catch (e) { toast.error((e as Error).message) }
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e)) }
   }
 
   return (
@@ -344,6 +344,8 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
       } else if (msg.type === 'complete') {
         const d = msg.data as { success: boolean }
         setProgress(p => ({ ...p, [sid]: { ...p[sid], status: d.success ? 'done' : 'error' } }))
+      } else if (msg.type === 'skipped') {
+        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'skipped', lines: [...(p[sid]?.lines || []), msg.data as string] } }))
       } else if (msg.type === 'error') {
         setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'error', lines: [...(p[sid]?.lines || []), msg.data as string] } }))
       }
@@ -351,7 +353,7 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
   }
 
   const selectedServerObjs = serverList.filter(s => selectedServers.has(s.id))
-  const statusIcon = (s: ServerProgress['status']) => ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗' }[s])
+  const statusIcon = (s: ServerProgress['status']) => ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗', skipped: '⏭️' }[s])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">

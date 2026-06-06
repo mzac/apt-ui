@@ -94,7 +94,7 @@ async def fleet_trend(
     return {
         "points": [
             {
-                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+                "recorded_at": (r.recorded_at or datetime.utcnow()).isoformat(),
                 "total_servers": r.total_servers,
                 "up_to_date": r.up_to_date,
                 "updates_available": r.updates_available,

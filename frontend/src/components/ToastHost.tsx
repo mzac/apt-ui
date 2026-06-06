@@ -15,11 +15,17 @@ export default function ToastHost() {
       {toasts.map(t => (
         <div
           key={t.id}
-          onClick={() => dismiss(t.id)}
-          className={`rounded border px-3 py-2 text-sm font-mono shadow-lg cursor-pointer ${styles[t.type] ?? styles.info}`}
+          className={`rounded border px-3 py-2 text-sm font-mono shadow-lg flex items-start gap-2 ${styles[t.type] ?? styles.info}`}
           role="status"
         >
-          {t.message}
+          <span className="flex-1">{t.message}</span>
+          <button
+            onClick={() => dismiss(t.id)}
+            aria-label="Dismiss notification"
+            className="shrink-0 opacity-70 hover:opacity-100"
+          >
+            ✕
+          </button>
         </div>
       ))}
     </div>,

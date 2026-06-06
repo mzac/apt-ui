@@ -241,7 +241,7 @@ function BulkHoldButtons({
         toast.success(`${verb} succeeded on all ${serverIds.length} server(s).`)
       }
     } catch (e: unknown) {
-      toast.error((e as Error).message)
+      toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
     }

@@ -13,6 +13,7 @@ import Compare from '@/pages/Compare'
 import Search from '@/pages/Search'
 import Reports from '@/pages/Reports'
 import Security from '@/pages/Security'
+import Run from '@/pages/Run'
 
 // Keyed by :id so navigating between servers (e.g. via the command palette) fully
 // remounts ServerDetail and all its tab children. Without this, react-router reuses
@@ -121,6 +122,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Security />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/run"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Run />
               </Layout>
             </RequireAuth>
           }

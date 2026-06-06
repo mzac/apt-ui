@@ -40,9 +40,13 @@ _locked_until: dict[tuple[str, str], float] = {}
 def _client_ip(request: Request | None) -> str:
     if request is None:
         return "unknown"
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # Trust X-Forwarded-For only when explicitly configured behind a proxy, else a
+    # client can spoof it to dodge lockout / pollute the audit trail.
+    from backend.config import TRUST_PROXY_HEADERS
+    if TRUST_PROXY_HEADERS:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -168,11 +172,18 @@ async def login(
                     await _alert_lockout(body.username, ip)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA code")
             # Replay protection: reject a code from a TOTP step already used to log in.
-            counter = int(time.time()) // 30
-            if user.totp_last_counter is not None and counter <= user.totp_last_counter:
+            # Use the step that actually matched (within valid_window=1) so accepting a
+            # previous-step code doesn't wrongly reject the next current-step code.
+            now = int(time.time())
+            matched = now // 30
+            for delta in (0, -1, 1):
+                if totp.at(now + delta * 30) == code:
+                    matched = (now // 30) + delta
+                    break
+            if user.totp_last_counter is not None and matched <= user.totp_last_counter:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                     detail="2FA code already used; wait for the next code")
-            user.totp_last_counter = counter
+            user.totp_last_counter = matched
         except HTTPException:
             raise
         except Exception:
@@ -280,6 +291,10 @@ async def create_token(
     if isinstance(raw_scopes, str):
         raw_scopes = [s.strip() for s in raw_scopes.split(",") if s.strip()]
     scopes = [s for s in raw_scopes if s in ALL_SCOPES]
+    # If the caller asked for scopes but none were valid, fail loudly rather than
+    # silently minting a full-access (unscoped) token.
+    if raw_scopes and not scopes:
+        raise HTTPException(status_code=400, detail=f"No valid scopes. Allowed: {', '.join(ALL_SCOPES)}")
     expires_at = None
     days = body.get("expires_days")
     if isinstance(days, (int, float)) and days > 0:
