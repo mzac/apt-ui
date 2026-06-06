@@ -1061,12 +1061,21 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
         )
         servers = servers_result.scalars().all()
 
+        cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = cfg_res.scalar_one_or_none()
+        concurrency = cfg.upgrade_concurrency if cfg else 5
+        actor = user.username
+        template_name = template.name
+
     pkg_str = " ".join(pkg_names)
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    from datetime import datetime
+    from backend.routers.maintenance import get_active_window_for_server
+    from backend.upgrade_manager import _get_lock
+    from backend.models import UpdateHistory
 
     async def _apply_to_server(server: Server):
-        sudo = "" if server.username == "root" else "sudo "
-        cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -y {pkg_str}"
-
         async def send_fn(msg: dict):
             msg["server_id"] = server.id
             msg["server_name"] = server.name
@@ -1075,14 +1084,53 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
             except Exception:
                 pass
 
-        try:
-            from backend.ssh_manager import run_command_stream as _stream
-            await send_fn({"type": "status", "data": "connecting"})
-            result = await _stream(server, cmd, send_fn)
-            success = result.exit_code == 0
-            await send_fn({"type": "complete", "data": {"success": success, "packages": pkg_names}})
-        except Exception as exc:
-            await send_fn({"type": "error", "data": str(exc)})
+        async with semaphore:
+            # Respect maintenance windows — don't push a template install into a freeze.
+            async with AsyncSessionLocal() as wdb:
+                window = await get_active_window_for_server(wdb, server.id)
+            if window is not None:
+                await send_fn({"type": "error", "data": f"Skipped — in maintenance window '{window.name}'"})
+                return
+
+            sudo = "" if server.username == "root" else "sudo "
+            cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -y {pkg_str}"
+
+            # Serialize with upgrades/other template applies on the same server.
+            async with _get_lock(server.id):
+                async with AsyncSessionLocal() as hdb:
+                    history = UpdateHistory(
+                        server_id=server.id, status="running",
+                        action=f"template:{template_name}", initiated_by=actor,
+                    )
+                    hdb.add(history)
+                    await hdb.commit()
+                    await hdb.refresh(history)
+                    history_id = history.id
+
+                success = False
+                log_output = ""
+                try:
+                    from backend.ssh_manager import run_command_stream as _stream
+                    await send_fn({"type": "status", "data": "connecting"})
+                    result = await _stream(server, cmd, send_fn)
+                    success = result.exit_code == 0
+                    log_output = getattr(result, "output", "") or ""
+                    await send_fn({"type": "complete", "data": {"success": success, "packages": pkg_names}})
+                except Exception as exc:
+                    await send_fn({"type": "error", "data": str(exc)})
+                    log_output = str(exc)
+                finally:
+                    try:
+                        async with AsyncSessionLocal() as hdb:
+                            h = await hdb.get(UpdateHistory, history_id)
+                            if h is not None:
+                                h.status = "success" if success else "error"
+                                h.completed_at = datetime.utcnow()
+                                h.packages_upgraded = json.dumps([{"name": n} for n in pkg_names]) if success else None
+                                h.log_output = log_output[:1_000_000] if log_output else None
+                                await hdb.commit()
+                    except Exception:
+                        pass
 
     try:
         await asyncio.gather(*[_apply_to_server(s) for s in servers])

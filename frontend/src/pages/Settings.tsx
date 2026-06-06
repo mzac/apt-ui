@@ -1105,9 +1105,13 @@ function ScheduleTab() {
   const [saved, setSaved] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [health, setHealth] = useState<import('@/api/client').SchedulerHealth | null>(null)
+
+  const refreshHealth = () => { schedulerApi.health().then(setHealth).catch(() => {}) }
 
   useEffect(() => {
     schedulerApi.status().then(c => { setCfg(c); setForm(c) })
+    refreshHealth()
   }, [])
 
   const cronInvalid = !!form.check_cron && !isValidCron(form.check_cron)
@@ -1122,6 +1126,7 @@ function ScheduleTab() {
       setCfg(updated)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+      refreshHealth()   // reconcile the banner after the scheduler reconfigures
     } catch (err: unknown) {
       setError((err as Error).message || 'Save failed')
     } finally {
@@ -1133,6 +1138,18 @@ function ScheduleTab() {
 
   return (
     <form onSubmit={handleSave} className="space-y-6 max-w-xl">
+      {health && !health.healthy && (
+        <div className="rounded border border-red/40 bg-red/5 px-3 py-2 text-xs space-y-1">
+          <p className="font-medium text-red">
+            ⚠ {!health.running ? 'The scheduler is not running.' : 'Some enabled jobs are not scheduled.'}
+          </p>
+          {health.issues.map(i => (
+            <p key={i.job} className="text-text-muted">
+              <span className="font-mono text-text-primary">{i.label}</span> — {i.reason}
+            </p>
+          ))}
+        </div>
+      )}
       <section className="card p-4 space-y-4">
         <h2 className="text-sm font-medium text-text-primary">Update Check Schedule</h2>
         <div className="flex items-center gap-3">
@@ -2380,9 +2397,12 @@ function NotificationsTab() {
                     onChange={e => setForm(f => ({ ...f, notify_weekly_digest_telegram: e.target.checked }))}
                     className="w-4 h-4 accent-green" />
                 </td>
-                {/* No weekly-digest Slack toggle — empty placeholder keeps the 6-column
-                    layout aligned so Webhook lands under the Webhook header, not Slack. */}
-                <td className="py-2 px-3 text-center text-text-muted text-xs">—</td>
+                <td className="py-2 px-3 text-center">
+                  <input type="checkbox" checked={form.notify_weekly_digest_slack ?? true}
+                    disabled={!form.slack_enabled}
+                    onChange={e => setForm(f => ({ ...f, notify_weekly_digest_slack: e.target.checked }))}
+                    className="w-4 h-4 accent-green disabled:opacity-30" />
+                </td>
                 <td className="py-2 px-3 text-center">
                   <input type="checkbox" checked={form.notify_weekly_digest_webhook ?? true}
                     disabled={!form.webhook_enabled}

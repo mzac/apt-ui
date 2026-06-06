@@ -398,39 +398,50 @@ async def configure_jobs():
 
     _remove_jobs()
 
+    # Each conditional job is registered independently: a bad cron on one must not
+    # prevent the others (or the unconditional jobs below) from being scheduled.
     if cfg and cfg.check_enabled:
-        _scheduler.add_job(
-            _job_check_all,
-            CronTrigger.from_crontab(cfg.check_cron, timezone=TZ),
-            id="check_all",
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
-        logger.info("Scheduled check_all: %s (%s)", cfg.check_cron, TZ)
+        try:
+            _scheduler.add_job(
+                _job_check_all,
+                CronTrigger.from_crontab(cfg.check_cron, timezone=TZ),
+                id="check_all",
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info("Scheduled check_all: %s (%s)", cfg.check_cron, TZ)
+        except Exception as exc:
+            logger.error("Failed to schedule check_all (cron=%r): %s", cfg.check_cron, exc)
 
     if cfg and cfg.auto_upgrade_enabled and cfg.auto_upgrade_cron:
-        _scheduler.add_job(
-            _job_auto_upgrade,
-            CronTrigger.from_crontab(cfg.auto_upgrade_cron, timezone=TZ),
-            id="auto_upgrade",
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
-        logger.info("Scheduled auto_upgrade: %s (%s)", cfg.auto_upgrade_cron, TZ)
+        try:
+            _scheduler.add_job(
+                _job_auto_upgrade,
+                CronTrigger.from_crontab(cfg.auto_upgrade_cron, timezone=TZ),
+                id="auto_upgrade",
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info("Scheduled auto_upgrade: %s (%s)", cfg.auto_upgrade_cron, TZ)
+        except Exception as exc:
+            logger.error("Failed to schedule auto_upgrade (cron=%r): %s", cfg.auto_upgrade_cron, exc)
 
     # Weekly digest (issue #58) — separate cron from daily_summary
     if cfg and cfg.weekly_digest_enabled:
-        dow = max(0, min(6, int(cfg.weekly_digest_day_of_week or 0)))
-        hour = max(0, min(23, int(cfg.weekly_digest_hour or 9)))
-        minute = max(0, min(59, int(cfg.weekly_digest_minute or 0)))
-        _scheduler.add_job(
-            _job_weekly_digest,
-            CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=TZ),
-            id="weekly_digest",
-            replace_existing=True,
-            misfire_grace_time=600,
-        )
-        logger.info("Scheduled weekly_digest: dow=%d %02d:%02d (%s)", dow, hour, minute, TZ)
+        try:
+            dow = max(0, min(6, int(cfg.weekly_digest_day_of_week or 0)))
+            hour = max(0, min(23, int(cfg.weekly_digest_hour or 9)))
+            minute = max(0, min(59, int(cfg.weekly_digest_minute or 0)))
+            _scheduler.add_job(
+                _job_weekly_digest,
+                CronTrigger(day_of_week=dow, hour=hour, minute=minute, timezone=TZ),
+                id="weekly_digest",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+            logger.info("Scheduled weekly_digest: dow=%d %02d:%02d (%s)", dow, hour, minute, TZ)
+        except Exception as exc:
+            logger.error("Failed to schedule weekly_digest: %s", exc)
 
     # Log purge always runs daily at 03:00
     _scheduler.add_job(
@@ -463,6 +474,45 @@ def _remove_jobs():
         job = _scheduler.get_job(job_id)
         if job:
             job.remove()
+
+
+async def scheduler_health() -> dict:
+    """Compare config-enabled jobs against what's actually registered in APScheduler.
+
+    Surfaces drift where a job is enabled in settings but isn't scheduled (e.g. a cron
+    that APScheduler rejected), so the UI can warn instead of silently doing nothing.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.models import ScheduleConfig
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
+        cfg = result.scalar_one_or_none()
+
+    expected: list[tuple[str, str]] = []
+    if cfg and cfg.check_enabled:
+        expected.append(("check_all", "Scheduled update check"))
+    if cfg and cfg.auto_upgrade_enabled and cfg.auto_upgrade_cron:
+        expected.append(("auto_upgrade", "Auto-upgrade"))
+    if cfg and cfg.weekly_digest_enabled:
+        expected.append(("weekly_digest", "Weekly digest"))
+
+    issues: list[dict] = []
+    for job_id, label in expected:
+        job = _scheduler.get_job(job_id)
+        if job is None or job.next_run_time is None:
+            issues.append({
+                "job": job_id,
+                "label": label,
+                "reason": "enabled in settings but not scheduled — check the cron expression",
+            })
+
+    return {
+        "running": _scheduler.running,
+        "healthy": _scheduler.running and not issues,
+        "issues": issues,
+    }
 
 
 async def start_scheduler():

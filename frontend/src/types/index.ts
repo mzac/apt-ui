@@ -159,7 +159,7 @@ export interface UpdateHistory {
   status: string
   action: string
   phased_updates: boolean
-  packages_upgraded: Array<{ name: string; from_version: string; to_version: string }> | null
+  packages_upgraded: Array<{ name: string; from_version: string; to_version: string; is_security?: boolean; is_kernel?: boolean; is_new?: boolean }> | null
   log_output: string | null
   initiated_by: string
 }
@@ -256,6 +256,7 @@ export interface NotificationConfig {
   notify_weekly_digest_email: boolean
   notify_weekly_digest_telegram: boolean
   notify_weekly_digest_webhook: boolean
+  notify_weekly_digest_slack: boolean
 }
 
 export interface TemplatePackage {

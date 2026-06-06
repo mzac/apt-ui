@@ -290,8 +290,19 @@ export const templates = {
 // Stats
 // ---------------------------------------------------------------------------
 
+export interface PendingUpdatePkg {
+  name: string
+  current_version: string
+  available_version: string
+  is_security: boolean
+  is_phased: boolean
+  is_kernel?: boolean
+}
+
 export const stats = {
   overview: () => get<FleetOverview>('/api/stats/overview'),
+  pendingUpdates: () =>
+    get<{ servers: { id: number; packages: PendingUpdatePkg[] }[] }>('/api/stats/pending-updates'),
   globalHistory: (page = 1, serverId?: number, status?: string) => {
     const params = new URLSearchParams({ page: String(page) })
     if (serverId !== undefined) params.set('server_id', String(serverId))
@@ -304,9 +315,16 @@ export const stats = {
 // Scheduler
 // ---------------------------------------------------------------------------
 
+export interface SchedulerHealth {
+  running: boolean
+  healthy: boolean
+  issues: { job: string; label: string; reason: string }[]
+}
+
 export const scheduler = {
   status: () => get<ScheduleConfig>('/api/scheduler/status'),
   update: (data: Partial<ScheduleConfig>) => put<ScheduleConfig>('/api/scheduler/config', data),
+  health: () => get<SchedulerHealth>('/api/scheduler/health'),
 }
 
 export interface MaintenanceWindow {

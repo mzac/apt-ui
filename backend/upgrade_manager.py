@@ -590,6 +590,11 @@ async def _enrich_packages_with_versions(
                 version_map[p["name"]] = {
                     "from_version": p.get("current_version", ""),
                     "to_version": p.get("available_version", ""),
+                    # Carry the classification flags so the digest and Stats series can
+                    # use ground truth instead of re-deriving from package names.
+                    "is_security": bool(p.get("is_security")),
+                    "is_kernel": bool(p.get("is_kernel")),
+                    "is_new": bool(p.get("is_new")),
                 }
     except Exception:
         pass
@@ -600,5 +605,8 @@ async def _enrich_packages_with_versions(
         if name in version_map:
             entry["from_version"] = version_map[name]["from_version"]
             entry["to_version"] = version_map[name]["to_version"]
+            entry["is_security"] = version_map[name]["is_security"]
+            entry["is_kernel"] = version_map[name]["is_kernel"]
+            entry["is_new"] = version_map[name]["is_new"]
         enriched.append(entry)
     return enriched

@@ -1046,9 +1046,14 @@ async def compose_weekly_digest(db: AsyncSession) -> dict:
         except Exception:
             pkgs = []
         n = len(pkgs)
-        # We don't have per-package security flags in update_history, so we use
-        # an approximate name-based heuristic for the security counter.
+        # Prefer the persisted per-package is_security flag (recorded since the
+        # upgrade-history enrichment carries classification flags). Fall back to the
+        # old name-based heuristic only for legacy rows written before that change.
         for p in pkgs:
+            if isinstance(p, dict) and "is_security" in p:
+                if p.get("is_security"):
+                    security_pkgs_upgraded += 1
+                continue
             name = p.get("name") if isinstance(p, dict) else str(p)
             if isinstance(name, str) and any(tok in name for tok in ("-security", "linux-image", "openssl", "openssh")):
                 security_pkgs_upgraded += 1
@@ -1532,7 +1537,7 @@ async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
     payload = await compose_weekly_digest(db)
     subject = payload["subject"]
 
-    results: dict[str, str] = {"email": "skipped", "telegram": "skipped", "webhook": "skipped"}
+    results: dict[str, str] = {"email": "skipped", "telegram": "skipped", "webhook": "skipped", "slack": "skipped"}
 
     if cfg.email_enabled and getattr(cfg, "notify_weekly_digest_email", True):
         try:
@@ -1571,6 +1576,19 @@ async def send_weekly_digest(cfg: NotificationConfig, db: AsyncSession) -> dict:
         except Exception as exc:
             logger.error("Weekly digest webhook failed: %s", exc)
             results["webhook"] = f"error: {exc}"
+
+    if cfg.slack_enabled and getattr(cfg, "notify_weekly_digest_slack", True):
+        try:
+            await _send_slack(
+                cfg,
+                payload["headline"],
+                body=payload.get("telegram_body") or payload.get("text_body"),
+                event_type="weekly_digest",
+            )
+            results["slack"] = "sent"
+        except Exception as exc:
+            logger.error("Weekly digest slack failed: %s", exc)
+            results["slack"] = f"error: {exc}"
 
     return results
 

@@ -77,6 +77,51 @@ async def fleet_overview(
     )
 
 
+@router.get("/stats/pending-updates")
+async def pending_updates(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Aggregate every server's pending package list in one response, read from the
+    latest stored UpdateCheck (no live SSH). Replaces the dashboard modal's sequential
+    per-server /packages loop. New-dependency packages are excluded so the list count
+    matches packages_available."""
+    import json as _json
+
+    result = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers = result.scalars().all()
+
+    out: list[dict] = []
+    for server in servers:
+        check_result = await db.execute(
+            select(UpdateCheck)
+            .where(UpdateCheck.server_id == server.id)
+            .order_by(UpdateCheck.checked_at.desc())
+            .limit(1)
+        )
+        check = check_result.scalar_one_or_none()
+        if check is None or check.status == "error" or (check.packages_available or 0) <= 0:
+            continue
+        packages: list[dict] = []
+        if check.packages_json:
+            try:
+                for p in _json.loads(check.packages_json):
+                    if p.get("is_new"):
+                        continue
+                    packages.append({
+                        "name": p.get("name"),
+                        "current_version": p.get("current_version", ""),
+                        "available_version": p.get("available_version", ""),
+                        "is_security": bool(p.get("is_security")),
+                        "is_phased": bool(p.get("is_phased")),
+                        "is_kernel": bool(p.get("is_kernel")),
+                    })
+            except Exception:
+                pass
+        out.append({"id": server.id, "packages": packages})
+    return {"servers": out}
+
+
 @router.get("/history")
 async def global_history(
     page: int = Query(default=1, ge=1),
