@@ -98,6 +98,9 @@ export default function Dashboard() {
     () => (_initialUrl.get('sort') as any) || (localStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
   )
   const [groupView, setGroupView] = useState(_initialUrl.get('view') === 'group')
+  const [density, setDensity] = useState<'comfortable' | 'compact'>(
+    () => (localStorage.getItem('dashboard:density') as 'comfortable' | 'compact') || 'comfortable'
+  )
   const [statusFilter, setStatusFilter] = useState<string | null>(_initialUrl.get('status') || null)
   const [checking, setChecking] = useState<Set<number>>(new Set())
   const { addJob, updateJob } = useJobStore()
@@ -515,6 +518,13 @@ export default function Dashboard() {
         >
           ⊞ Group
         </button>
+        <button
+          onClick={() => setDensity(d => { const n = d === 'compact' ? 'comfortable' : 'compact'; localStorage.setItem('dashboard:density', n); return n })}
+          className={`btn-secondary text-xs ${density === 'compact' ? 'bg-surface-2' : ''}`}
+          title="Toggle compact list view"
+        >
+          {density === 'compact' ? '▭ Cards' : '≣ List'}
+        </button>
         <div className="relative group/check">
           <button onClick={handleRefreshAll} disabled={checkingAll} className="btn-secondary text-xs">
             {checkingAll && checkingMode === 'refresh'
@@ -609,17 +619,20 @@ export default function Dashboard() {
                   <span className="text-sm font-mono text-text-muted">{groupName ?? 'Ungrouped'}</span>
                   <span className="text-xs text-text-muted">({groupServers.length})</span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {groupServers.map(s => (
-                    <ServerCard
-                      key={s.id}
-                      server={s}
-                      checking={checking.has(s.id)}
-                      onCheck={() => handleCheck(s.id)}
-                      onToggleEnabled={(e) => handleToggleEnabled(s, e)}
-                      reachable={reachability[s.id]}
-                    />
-                  ))}
+                <div className={density === 'compact' ? 'flex flex-col gap-1.5' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3'}>
+                  {groupServers.map(s => {
+                    const Item = density === 'compact' ? ServerRow : ServerCard
+                    return (
+                      <Item
+                        key={s.id}
+                        server={s}
+                        checking={checking.has(s.id)}
+                        onCheck={() => handleCheck(s.id)}
+                        onToggleEnabled={(e) => handleToggleEnabled(s, e)}
+                        reachable={reachability[s.id]}
+                      />
+                    )
+                  })}
                 </div>
               </div>
             )
@@ -627,17 +640,20 @@ export default function Dashboard() {
           })()}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {filtered.map(s => (
-            <ServerCard
-              key={s.id}
-              server={s}
-              checking={checking.has(s.id)}
-              onCheck={() => handleCheck(s.id)}
-              onToggleEnabled={(e) => handleToggleEnabled(s, e)}
-              reachable={reachability[s.id]}
-            />
-          ))}
+        <div className={density === 'compact' ? 'flex flex-col gap-1.5' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3'}>
+          {filtered.map(s => {
+            const Item = density === 'compact' ? ServerRow : ServerCard
+            return (
+              <Item
+                key={s.id}
+                server={s}
+                checking={checking.has(s.id)}
+                onCheck={() => handleCheck(s.id)}
+                onToggleEnabled={(e) => handleToggleEnabled(s, e)}
+                reachable={reachability[s.id]}
+              />
+            )
+          })}
           {!initialLoaded && (
             <div className="col-span-full py-12 text-center text-text-muted text-sm">Loading…</div>
           )}
@@ -969,6 +985,46 @@ function RebootButton({ serverId, serverName, className = '' }: {
 // ---------------------------------------------------------------------------
 // Server card
 // ---------------------------------------------------------------------------
+// Compact single-row representation used by the dashboard "List" density mode.
+function ServerRow({ server: s, checking, onCheck, reachable }: {
+  server: Server
+  checking: boolean
+  onCheck: () => void
+  onToggleEnabled: (e: React.MouseEvent) => void
+  reachable?: boolean | null
+}) {
+  const navigate = useNavigate()
+  const status = checking ? 'checking' : serverStatus(s)
+  const c = s.latest_check
+  const primaryGroupColor = (s.groups ?? [])[0]?.color || s.group_color || null
+  return (
+    <div
+      className={`card px-3 py-1.5 flex items-center gap-3 cursor-pointer hover:border-text-muted transition-colors ${!s.is_enabled ? 'opacity-50' : s.is_reachable === false ? 'opacity-60' : ''}`}
+      style={primaryGroupColor ? { borderLeft: `3px solid ${s.is_reachable === false ? '#ef4444' : primaryGroupColor}66` } : (s.is_reachable === false ? { borderLeft: '3px solid #ef444466' } : undefined)}
+      onClick={() => navigate(`/servers/${s.id}`)}
+    >
+      <StatusDot status={status} />
+      {reachable === false && <span title="SSH unreachable" className="w-1.5 h-1.5 rounded-full bg-red inline-block shrink-0 -ml-1.5" />}
+      <div className="min-w-0 flex-1 flex items-center gap-2">
+        <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
+        <span className="text-xs text-text-muted font-mono truncate hidden sm:inline">{s.hostname}</span>
+      </div>
+      <div className="flex items-center gap-2 text-xs font-mono shrink-0">
+        {c?.status === 'error' && <span className="text-red">error</span>}
+        {c && c.status !== 'error' && c.packages_available > 0 && (
+          <span className="text-amber">{c.packages_available}↑{c.security_packages > 0 && <span className="text-red"> · {c.security_packages} sec</span>}</span>
+        )}
+        {c && c.status !== 'error' && c.packages_available === 0 && <span className="text-green">up to date</span>}
+        {!c && <span className="text-text-muted">unknown</span>}
+        {c?.reboot_required && <span title="reboot required" className="text-amber">↻</span>}
+      </div>
+      <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+        <button onClick={onCheck} disabled={checking} className="btn-secondary text-xs py-0.5 px-2 disabled:opacity-50">{checking ? '…' : 'Check'}</button>
+      </div>
+    </div>
+  )
+}
+
 function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable }: {
   server: Server
   checking: boolean
