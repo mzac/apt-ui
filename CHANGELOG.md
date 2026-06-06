@@ -4,6 +4,72 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.06.06-01] — 2026-06-06
+
+The largest release to date: the full enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)) — 24 features across UX, security, automation, integrations, and observability — plus a frontend correctness sweep of 40 verified bugs ([#61](https://github.com/mzac/apt-ui/issues/61)). Both were produced by multi-agent reviews and landed across PRs [#63](https://github.com/mzac/apt-ui/pull/63)–[#71](https://github.com/mzac/apt-ui/pull/71).
+
+### Added
+
+#### Fleet UX
+
+- **Dashboard bulk selection + sticky action bar** ([#62](https://github.com/mzac/apt-ui/issues/62)) — select any subset of servers (a themed checkbox on each card/row) and run Check / Upgrade / Reboot / Enable-Disable / Tag across them via parallel per-server calls that honour `upgrade_concurrency`. A sticky bar shows the selection count and the available actions.
+- **Density / compact-list view toggle** — switch the dashboard between the card grid and a compact list; persisted to `localStorage` like the sort order.
+- **App-wide toast + styled confirm system** — a Zustand toast store with `<ToastHost>` and a promise-based `confirmDialog()`, replacing ~27 native `alert()` / `confirm()` calls with themeable, non-blocking dialogs (opt-in undo for reversible actions).
+- **Aggregate pending-updates modal** — the dashboard "updates available" modal reads one backend aggregate endpoint instead of a sequential per-server `/packages` loop, with in-modal filtering and CSV/copy export.
+
+#### Security & audit
+
+- **Actor attribution + auth-event log** ([#62](https://github.com/mzac/apt-ui/issues/62)) — the authenticated username is threaded through `run_command` / upgrade / WebSocket handlers (no more `initiated_by='system'` everywhere) via a `ContextVar` in `backend/actor.py`. A new `AuthEventLog` table records logins, failures, token use, and role changes, surfaced as a 4th **History** sub-tab.
+- **Login brute-force lockout + TOTP replay protection** — per-(username, IP) backoff and lockout on repeated failures with a real-time alert on lockout, plus TOTP replay protection via a stored `totp_last_counter`.
+- **Inbound automation API (`/api/v1`) + scoped, expiring tokens** — REST wrappers over the previously WebSocket-only operations returning a pollable `job_id` (`backend/routers/api_v1.py`); API tokens gain `scopes` (read / check / upgrade / calendar) and an optional `expires_at`.
+- **Maintenance windows enforced as change-control gates** — window checks moved into the shared upgrade / reboot / template entry points with an audited admin `override_window`, plus an "allow-only" window mode. Freezes are no longer advisory.
+
+#### Safer upgrades
+
+- **Snapshot-and-rollback safety net** — btrfs/zfs hosts are auto-snapshotted before apt (capability was already detected but unused); the snapshot name is recorded on `UpdateHistory`, with an admin-gated "rollback to pre-upgrade snapshot" action.
+- **Canary-first auto-upgrade with health verification** — after apt, the health probe (failed units / boot errors) runs and is compared against a pre-upgrade baseline; the ring's first server must pass before the rollout promotes. Success is no longer just the apt exit code.
+- **Upgrade impact preview** — a pre-flight panel parses the dry-run plan and runs `needrestart -b` to show which services will restart and whether a reboot is *actually* required (replacing the hardcoded frontend regex with ground truth).
+- **Dependency / anti-affinity-aware upgrade ordering** — optional ordering so HA pairs and DB primary/replica patch in a safe sequence within a ring.
+
+#### Observability & reporting
+
+- **Fleet snapshot history + trend charts** — a new `FleetSnapshot` table written by `_job_check_all` (excluded from log-purge), `GET /api/stats/trend`, and dashboard trend lines for pending packages, security debt, and % up-to-date over time.
+- **Configuration drift detection** — each check counts and lists abandoned `.dpkg-dist` / `.ucf-dist` / `.dpkg-new` conffiles under `/etc`; the dashboard shows a `⚠ drift N` badge that opens a detail modal listing the files and the `diff` / `rm` commands to reconcile them.
+- **Maintenance change-record / patch report** — the new **Reports** page brackets each maintenance window into an auditable change record (planned vs actual, packages, reboots, failures), exportable to Markdown/CSV.
+- **Safe fleet command runner** — the new **Run** page executes an admin-allowlisted (raw mode admin-gated + audited) command across selected servers and groups identical outputs ("47 said X, 3 said Y").
+
+#### Integrations & notifications
+
+- **Multi-target notification destinations** — a `NotificationDestination` table with per-event routing and Discord / Mattermost / ntfy / PagerDuty / Opsgenie adapters, plus notification dedup to avoid alert storms.
+- **HTTP/webhook hook type** — pre/post-upgrade hooks can now call *out* from apt-ui (drain a load balancer, open an Alertmanager silence, file a ticket) with the same SSRF guards as the `.deb` URL validator — not only run shell on the target.
+- **Slack as a first-class weekly-digest channel** — Slack gains its own per-channel weekly-digest toggle (previously it only inherited the master enable).
+- **Self-updating EOL data** — a daily sync from endoflife.date (ubuntu / debian / proxmox-ve …) with the bundled `backend/eol_data.py` table as offline fallback; picks up Debian 13, PVE 9 / PBS 4 / PMG 9, etc. without a code change.
+
+#### Plumbing that unblocked the above
+
+- **Per-package `is_security` / `is_kernel` / `is_new` flags persisted into upgrade history** — kills the substring heuristic in the digest and the dead `security:0` Stats series.
+- **Template apply hardening** — `ws_template_apply` caps concurrency (`upgrade_concurrency`), respects maintenance windows and per-server locks, and records to upgrade history.
+- **Scheduler self-heal** — jobs are reconciled against settings on startup/save, with a banner when an "enabled" job isn't actually scheduled and a scheduler-health surface.
+
+### Changed
+
+- **Performance: eliminated the per-server latest-row N+1** — `/stats/overview`, `/status.json`, `reports/*`, `/metrics`, and the server list now fetch the latest `UpdateCheck` + `ServerStats` per server in one query each (`backend/query_helpers.py`) instead of one query per server.
+- **Bulk-select checkbox restyle** ([#71](https://github.com/mzac/apt-ui/pull/71)) — the selection control is now a themed checkbox that stands in for the status dot on hover / when selected, instead of a white native box overlapping the card's status badge.
+
+### Fixed
+
+- **40 verified frontend bugs** ([#61](https://github.com/mzac/apt-ui/issues/61), PR [#63](https://github.com/mzac/apt-ui/pull/63)) — a multi-agent audit (88 raw findings → 40 adversarially-verified: 1 critical, 7 high, 9 medium, 23 low). Highlights: the 2FA login submit path, WebSocket close-code handling and observer/listener leaks in ServerDetail, keying ServerDetail by route id so navigating between servers refreshes, "Upgrade All" honouring the active dashboard filter instead of the whole fleet, the apt-cacher-ng panel crash, NaN settings saves, deep-link tab restoration, cron validation + save-error surfacing, and command-palette focus/highlight correctness.
+- **Config-drift count accuracy + hardened JSON parse** ([#71](https://github.com/mzac/apt-ui/pull/71)) — `drift_count` reports the true (uncapped) total while the stored path list stays bounded at 200; the `drift_files` JSON parse is guarded so malformed data can't 500 the server endpoint.
+- **Roadmap review hardening** (PRs [#64](https://github.com/mzac/apt-ui/pull/64)–[#70](https://github.com/mzac/apt-ui/pull/70), commit `88f57a5`) — `X-Forwarded-For` is only trusted when the new `TRUST_PROXY_HEADERS` is set; admin-gating on the destinations list, rollback, and the Run page/nav; canary aborts only on *new* failed units; `/api/v1` upgrade actions allowlisted to `upgrade` / `dist-upgrade`; consistent `e instanceof Error` toast handling.
+
+### Security
+
+- **Brute-force lockout, TOTP replay protection, and auth-event logging** (see Added) close the previously-unbounded credential-stuffing surface on the login + 2FA flow.
+- **Scoped, expiring API tokens** (see Added) — a leaked calendar-feed URL is no longer equivalent to a full-admin credential.
+- **`TRUST_PROXY_HEADERS`** — `X-Forwarded-For` / `X-Real-IP` are ignored for client-IP attribution unless this flag is explicitly set, preventing spoofing of the audit log and lockout counters on non-proxied deployments.
+
+---
+
 ## [2026.05.02-01] — 2026-05-02
 
 ### Fixed

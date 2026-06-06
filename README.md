@@ -90,6 +90,10 @@
 | 🐳 | **Docker host detection** | identifies the host running the dashboard and blocks upgrades of container-runtime packages mid-flight |
 | 🔍 | **Fleet-wide package search** | five match modes (exact / contains / starts-with / ends-with / regex) · pivoted CVE-style table · diverged-version highlight |
 | ⚖️ | **Multi-server compare** | side-by-side installed-package inventory across any combination of servers · Diverged / Common / All filter modes |
+| ✅ | **Bulk selection + action bar** | select any subset of servers and run Check / Upgrade / Reboot / Enable-Disable / Tag across them — parallel calls honour the concurrency cap |
+| 📏 | **Density view** | toggle the card grid ↔ a compact list; persisted like the sort order |
+| 🏃 | **Fleet command runner** | run an admin-allowlisted, audited command across selected servers and group identical outputs ("47 said X, 3 said Y") |
+| ✨ | **Toasts & styled confirms** | app-wide non-blocking toast notifications and themed confirm dialogs, with opt-in undo for reversible actions |
 
 ### 🔄 Update & upgrade
 
@@ -97,6 +101,8 @@
 |---|---|---|
 | 📋 | **Upgradable list** | full version deltas · repo source · security flag · phased-update column · package descriptions on hover |
 | 🎯 | **Selective upgrade** | check the boxes for individual packages instead of upgrading everything |
+| 🔬 | **Upgrade impact preview** | pre-flight panel parses the dry-run plan and runs `needrestart -b` to show which services restart and whether a reboot is *actually* required |
+| ⏪ | **Snapshot & rollback** | auto btrfs/zfs snapshot before apt · snapshot name recorded on the upgrade · admin-gated "rollback to pre-upgrade snapshot" |
 | 🐛 | **Dist-upgrade detection** | parallel `apt-get dist-upgrade --dry-run` surfaces new dependency packages and "kept back" rows that plain `upgrade` would skip |
 | 🖥 | **Live terminal** | WebSocket stream of `apt-get` output with carriage-return progress lines updating in place; ANSI colour preserved |
 | 📦 | **Package install** | search the apt cache and install new packages on any host from the UI |
@@ -114,18 +120,20 @@
 | 🔐 | **Per-server SSH keys** | Fernet-encrypted in DB · falls back to global `SSH_PRIVATE_KEY` or `SSH_AUTH_SOCK` |
 | 🛡 | **Auto security updates** | per-server `unattended-upgrades` toggle with shield-badge state · streams live SSH output when toggling |
 | 🔢 | **TOTP 2FA** | QR enrolment in Settings → Account · login flow asks for a 6-digit code when enabled |
-| 🔑 | **API tokens** | `aptui_<32 url-safe bytes>` format · scrypt-hashed · raw value shown only once · for `curl` / CI / scripts |
+| 🔑 | **API tokens + `/api/v1`** | `aptui_<32 url-safe bytes>` · scrypt-hashed · shown once · per-token scopes (read / check / upgrade / calendar) and optional expiry · inbound automation API returns a pollable `job_id` |
 | 👥 | **RBAC** | admin / read-only roles · `require_admin` on ~28 mutation endpoints · "read-only" badge in the nav |
+| 🚫 | **Brute-force lockout** | per-(username, IP) backoff + lockout on repeated login / 2FA failures · TOTP replay protection · real-time alert on lockout |
+| 🕵 | **Actor attribution + auth-event log** | every action records who triggered it · logins / failures / token use / role changes in an **Auth Events** history tab |
 
 ### ⏰ Automation & scheduling
 
 | | Feature | Highlights |
 |---|---|---|
 | 🗓 | **Scheduled checks** | configurable cron for fleet-wide update checks |
-| 🤖 | **Auto-upgrade** | optional hands-off upgrades on a schedule · concurrency cap · phased-update toggle · conffile-action choice |
-| 🚦 | **Maintenance windows** | global or per-server time windows where auto-upgrades are blocked · midnight-wrap · iCal feed for ops calendars |
-| 🪝 | **Pre/post-upgrade hooks** | shell commands run before / after every upgrade · pre-hook failure aborts · global or per-server scope |
-| 🎟 | **Staged rollout (rings)** | `ring:*` tags promote upgrades through environments in alphabetical order · per-batch failure aborts the rollout |
+| 🤖 | **Auto-upgrade** | optional hands-off upgrades on a schedule · concurrency cap · phased-update toggle · conffile-action choice · canary-first health verification before a ring promotes |
+| 🚦 | **Maintenance windows** | enforced change-control gates on *all* mutating actions (not just auto-upgrade) · audited admin override · allow-only mode · midnight-wrap · iCal feed |
+| 🪝 | **Pre/post-upgrade hooks** | shell *or* HTTP/webhook calls before / after every upgrade (drain a load balancer, silence Alertmanager, file a ticket) · pre-hook failure aborts · global or per-server scope |
+| 🎟 | **Staged rollout (rings)** | `ring:*` tags promote upgrades through environments in alphabetical order · optional dependency / anti-affinity ordering for HA pairs + DB primary/replica · per-batch failure aborts |
 | 🔁 | **Rolling reboot** | fleet-wide reboot of `reboot_required` servers in ring order with per-batch waits and reachability checks |
 | 🐧 | **Reboot-after-upgrade** | optional checkbox auto-reboots after a successful upgrade if `/var/run/reboot-required` exists |
 
@@ -137,6 +145,7 @@
 | ✈️ | **Telegram** | Bot API · auto-chunk for messages over 4 K |
 | 💬 | **Slack** | incoming webhook · Block Kit messages with header + section blocks |
 | 🪝 | **Webhook** | JSON POST · optional `X-Hub-Signature-256` HMAC-SHA256 |
+| 📣 | **On-call destinations** | Discord · Mattermost · ntfy · PagerDuty · Opsgenie — per-event routing with dedup to avoid alert storms |
 | | | |
 | 🗓 | **Events** | upgrade complete · upgrade error · security updates found · reboot required · daily summary · weekly digest |
 | 🎚 | **Per-channel × per-event toggles** | independently enable each event on each channel |
@@ -150,11 +159,13 @@
 | 📜 | **Upgrade history** | per-server and fleet-wide log · filterable by server / status · full terminal output expandable per run |
 | 🔍 | **SSH audit log** | every command apt-ui dispatches recorded (command, exit, duration, 4 KB output excerpt) · sub-tab in History |
 | 🗒 | **dpkg log** | parses `/var/log/dpkg.log` + rotated `.gz` archives · filter by package / action / time |
-| 📊 | **Reports** | Patch Coverage · Upgrade Success Rate · Security SLA — all CSV-exportable |
+| 📊 | **Reports & change records** | Patch Coverage · Upgrade Success Rate · Security SLA · auditable per-window change records (planned vs actual) — CSV / Markdown export |
+| 📈 | **Fleet trends** | snapshot history + trend charts — pending packages, security debt, and % up-to-date over time (not just the point-in-time donut) |
+| ⚠️ | **Config drift detection** | flags abandoned `.dpkg-dist` / `.ucf-dist` / `.dpkg-new` conffiles per host · drill-down modal lists the files + the `diff` / `rm` commands to reconcile |
 | 📈 | **Prometheus /metrics** | fleet-state counters / gauges for Grafana · optional `METRICS_TOKEN` bearer auth |
 | 🌐 | **Public /status.json** | opt-in fleet health snapshot for embedding · disabled by default |
 | 📅 | **iCal feed** | subscribable maintenance-window calendar at `/api/calendar.ics?token=…` |
-| 🕒 | **OS EOL countdown** | dashboard 🕒 badge when OS reaches end-of-life within 365 days · severity-coloured · ESM note for Ubuntu LTS |
+| 🕒 | **OS EOL countdown** | dashboard 🕒 badge when OS reaches end-of-life within 365 days · severity-coloured · ESM note for Ubuntu LTS · self-updating daily from endoflife.date with bundled offline fallback |
 
 ### 🧰 Server detail
 
@@ -277,6 +288,7 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 | `STATUS_PAGE_PUBLIC` | `false` | Set `true` to enable the unauthenticated `/status.json` fleet health endpoint. |
 | `STATUS_PAGE_SHOW_NAMES` | `false` | Include server names (not hostnames) in `/status.json`. |
 | `STATUS_PAGE_TITLE` | `apt-ui Fleet Status` | Custom title returned by `/status.json`. |
+| `TRUST_PROXY_HEADERS` | `false` | Set `true` only when behind a trusted reverse proxy so client-IP attribution (auth log, lockout) trusts `X-Forwarded-For` / `X-Real-IP`. Otherwise the socket peer is used, preventing IP spoofing. |
 
 ---
 

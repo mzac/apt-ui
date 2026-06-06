@@ -174,6 +174,7 @@ FastAPI handles all HTTP traffic on port 8000 — both the REST API and static f
 | `reports` | `/api/reports/` | Upgrade activity reports with CSV export |
 | `calendar` | `/api/calendar.ics` | RFC 5545 iCal feed of maintenance windows; query-param API-token auth |
 | `security` | `/api/security/` | Fleet-wide CVE inventory aggregation: pivots per-package CVE data into CVE → servers view |
+| `api_v1` | `/api/v1/` | Inbound automation API — REST wrappers over the WebSocket ops returning a pollable `job_id`; scope- and expiry-checked tokens; safe fleet command runner (admin-allowlisted, audited) |
 
 ---
 
@@ -205,16 +206,17 @@ Host key verification is disabled (`known_hosts=None`). This is a deliberate tra
 
 #### APScheduler
 
-Five recurring jobs and one on-demand job type run on the `AsyncIOScheduler`, all scoped to the timezone defined by the `TZ` environment variable.
+Several recurring jobs and one on-demand job type run on the `AsyncIOScheduler`, all scoped to the timezone defined by the `TZ` environment variable.
 
 | Job | Trigger | What it does |
 |---|---|---|
-| `check_all` | Cron (default `0 6 * * *`) | Checks all enabled servers; fires security/reboot notifications; sends daily summary |
+| `check_all` | Cron (default `0 6 * * *`) | Checks all enabled servers; fires security/reboot notifications; sends daily summary; records a `FleetSnapshot` row for trend history |
 | `auto_upgrade` | Cron (configurable, disabled by default) | Upgrades all servers with pending updates up to the concurrency limit |
 | `ping_all` | Every 5 minutes | TCP-connects to each server's SSH port (3 s timeout); updates `is_reachable` + `last_seen` without SSH |
 | `log_purge` | Daily at 03:00 | Deletes `update_checks`, `update_history`, `server_stats`, `notification_log`, and `ssh_audit_log` records older than `log_retention_days` |
 | `daily_summary` | Time-of-day (default 07:00) | Sends fleet summary across enabled channels |
-| `weekly_digest` | Cron (configurable, opt-in) | Composes and dispatches the weekly patch digest across email / Telegram / webhook |
+| `weekly_digest` | Cron (configurable, opt-in) | Composes and dispatches the weekly patch digest across email / Telegram / Slack / webhook |
+| `refresh_eol_data` | Daily | Syncs OS end-of-life dates from endoflife.date, falling back to the bundled `backend/eol_data.py` table on failure |
 | `reboot_check_{id}` | One-shot (post-reboot delay) | Polls until the server responds, then triggers a check |
 
 Schedule and notification config changes made in the UI take effect immediately — the scheduler is reconfigured live without a restart.
@@ -230,14 +232,18 @@ For each server, a single check collects in parallel over SSH:
 - EEPROM firmware status (Raspberry Pi 4/400/CM4/5 only)
 - Last `apt-get update` timestamp
 - apt HTTP proxy (`apt-config dump` + `/etc/apt/apt.conf.d/` scan)
+- `/boot` disk usage (kernel buildup) and snapshot capability (btrfs / zfs / container)
+- Configuration drift — abandoned `.dpkg-dist` / `.ucf-dist` / `.dpkg-new` conffiles under `/etc` (true count + a capped path list)
 
-Results are stored in `update_checks` and `server_stats`. The `packages_json` field caches parsed package data as JSON to avoid re-parsing on every API call.
+Results are stored in `update_checks` and `server_stats` (including `drift_count` / `drift_files`). The `packages_json` field caches parsed package data — with persisted `is_security` / `is_kernel` / `is_new` flags — as JSON to avoid re-parsing on every API call.
 
 #### Upgrade Manager
 
 Each upgrade acquires a **per-server `asyncio.Lock`** from an in-memory dict to prevent concurrent upgrades on the same server. The lock resets on container restart.
 
 Upgrade commands are constructed server-side and never interpolate raw user input into shell strings. The conffile action (`confdef_confold` / `confold` / `confnew`) and phased-update flag are the only user-controlled parameters, and they map to a fixed set of `apt-get` options.
+
+On btrfs/zfs-capable hosts an optional **pre-upgrade snapshot** is taken before apt and its name recorded on `UpdateHistory.snapshot_name`, enabling an admin-gated rollback. For staged auto-upgrades, a **canary health check** captures a baseline of failed systemd units before the upgrade and re-probes afterwards, aborting the rollout on any *newly*-failed unit before the next ring is promoted. The authenticated actor is read from a `ContextVar` (`backend/actor.py`) so every run and SSH command is attributed in `update_history` / `ssh_audit_log`.
 
 #### Notifier
 
@@ -250,7 +256,9 @@ Three outbound channels, each independently toggleable per event type:
 | Slack | httpx POST to incoming-webhook URL, Block Kit (header + section blocks); long output goes in a code-fenced section truncated to ~2900 chars | — |
 | Webhook | httpx POST, JSON payload, optional `X-Hub-Signature-256` HMAC-SHA256 header | `webhook_secret` env |
 
-Events: `upgrade_complete`, `upgrade_failed`, `security_updates_found`, `reboot_required`, `daily_summary`.
+Events: `upgrade_complete`, `upgrade_failed`, `security_updates_found`, `reboot_required`, `daily_summary`, `weekly_digest`.
+
+Beyond the four built-in channels, a `notification_destinations` table adds **on-call adapters** — Discord, Mattermost, ntfy, PagerDuty, and Opsgenie — with per-event routing and dedup to avoid alert storms. Discord/Mattermost reuse the Slack Block-Kit shape.
 
 ---
 
@@ -282,7 +290,10 @@ Schema changes are applied at startup via a hand-maintained list of `ALTER TABLE
 | `maintenance_windows` | Time windows when auto-upgrade is blocked; global (server_id=NULL) or per-server |
 | `upgrade_hooks` | Pre/post-upgrade shell commands; global or per-server scope; sort_order |
 | `ssh_audit_log` | Every SSH command dispatched (command, exit code, duration, 4 KB output excerpt) |
-| `api_tokens` | Long-lived bearer tokens for automation; stored as scrypt hash |
+| `api_tokens` | Bearer tokens for automation; scrypt-hashed; per-token `scopes` + optional `expires_at` |
+| `auth_event_log` | Authentication events — logins, failures, token use, role changes (powers the Auth Events history tab + lockout) |
+| `fleet_snapshots` | Point-in-time fleet rollup written by `check_all`; the time series behind trend charts (excluded from log-purge) |
+| `notification_destinations` | On-call adapter endpoints (Discord / Mattermost / ntfy / PagerDuty / Opsgenie) with per-event routing |
 
 ---
 

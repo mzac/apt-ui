@@ -83,7 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up --build 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown. High-level:
 
 - **Single Docker container**: FastAPI serves both the REST/WebSocket API and the React SPA as static files from `static/`.
-- **23 backend routers** in `backend/routers/` — REST + 17 WebSocket streams.
+- **24 backend routers** in `backend/routers/` — REST + 17 WebSocket streams. The newest is `api_v1.py` (inbound `/api/v1` automation API).
 - **SQLite** at `/data/apt-ui.db` (Docker volume). Async SQLAlchemy throughout the API; sync SQLAlchemy in the CLI only.
 - **APScheduler** (`AsyncIOScheduler`) for cron-based checks, auto-upgrades, log purge, and daily summary. Reconfigured live from the DB without restart.
 - **asyncssh**: fresh connection per command, no pool. `known_hosts=None` (trusted LAN). Auth priority: per-server encrypted key → SSH agent → global `SSH_PRIVATE_KEY`.
@@ -112,6 +112,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - The release workflow (`.github/workflows/release.yml`) tags GHCR images using `type=ref,event=tag`, **not** `type=semver`. The date-based version scheme (`YYYY.MM.DD-NN`) is not strict SemVer, so `type=semver` rules silently produce no tags. The workflow also has a `workflow_dispatch` input so any existing git tag can be rebuilt manually (`gh workflow run release.yml -f tag=2026.05.01-02`).
 - "Current time in the configured `TZ`" should always come from `backend.config.now_local()` — never `datetime.now(tz=TZ)` directly. `TZ` is a string (e.g. `"America/Montreal"`) and `datetime.now()` requires a `tzinfo` subclass; the helper wraps it in `ZoneInfo` once at module load. Three separate runtime crashes traced back to this pattern before the helper was added.
 - `check_server` runs `apt-get dist-upgrade --dry-run` in parallel alongside `apt list --upgradable`. This is necessary because new dependency packages (e.g. a new kernel version pulled in when upgrading `linux-generic`) do not appear in `apt list --upgradable` at all — they are only visible via dist-upgrade. The dry-run also detects "kept back" packages (upgradable but blocked by plain `apt-get upgrade`). Results stored as `is_new`, `is_kernel`, and `needs_dist_upgrade` flags in `packages_json`.
+- **Actor attribution** flows through a `ContextVar` in `backend/actor.py` (`set_actor` / `get_actor`), not a parameter threaded through every call. HTTP requests set it from the JWT; WebSocket handlers set it after auth; scheduled jobs call `set_actor("scheduled")`. `run_command` / `upgrade_manager` read it so `UpdateHistory.initiated_by` and the `AuthEventLog` / `ssh_audit_log` are accurate. New background entry points must `set_actor(...)` or they'll log a stale/empty actor.
+- **The latest-row N+1 is gone** — never loop `select(latest UpdateCheck/ServerStats).where(server_id==...)` per server. Use `backend/query_helpers.py`: `latest_checks_by_server(db)` / `latest_stats_by_server(db)` return `{server_id: row}` in one windowed query. `/stats/overview`, `/status.json`, `reports/*`, `/metrics`, and `list_servers` all rely on these.
+- **Client IP is only trusted from proxy headers when `TRUST_PROXY_HEADERS` is set.** `_client_ip` (used by the auth-event log and brute-force lockout) ignores `X-Forwarded-For` / `X-Real-IP` by default and uses the socket peer, so a non-proxied deployment can't be spoofed into poisoning the audit log or lockout counters. Set the env var only when apt-ui actually sits behind a trusted reverse proxy.
+- **Snapshot/rollback + canary** reuse data already collected. Pre-upgrade snapshots are taken only on hosts whose `snapshot_capability` is `btrfs`/`zfs`; the snapshot name is written to `UpdateHistory.snapshot_name`, and rollback is restricted to snapshots recorded *for that server*. The canary health check captures a **baseline of failed systemd units before** the upgrade and aborts only on *newly*-failed units (not pre-existing ones).
+- **`FleetSnapshot`** rows (fleet trend history, written by `_job_check_all` via `record_fleet_snapshot`) are intentionally **excluded from the log-purge job** — they're the long-term time series behind `/api/stats/trend`, unlike the raw `UpdateCheck` rows which are purged.
+- **Config-drift detection** (`backend/update_checker.py` `drift` command) emits the **true (uncapped) count on line 1** and then up to 200 sorted conffile paths; the parser reads the count from line 1 and the list from the rest. `server_stats.drift_files` stores the JSON list; parse it defensively (`try/except`, validate it's a list) — see `routers/servers.py`.
+- **`/api/v1`** (`backend/routers/api_v1.py`) wraps the WebSocket-only ops as pollable REST jobs. Token `scopes` are enforced per endpoint (read / check / upgrade / calendar) and the upgrade action is allowlisted to `upgrade` / `dist-upgrade`. The safe fleet command runner lives here too — raw mode is admin-gated and every command is audited.
+- **Maintenance windows are enforced**, not advisory: the shared upgrade/reboot/template entry points call the window check, an audited admin `override_window` bypasses it, and an "allow-only" mode inverts the window meaning. Window-skipped servers send a `type:'skipped'` WS message (modals must handle the non-error skipped state).
 
 ### Router → file mapping
 
@@ -140,6 +148,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Upgrade activity reports + CSV | `backend/routers/reports.py` |
 | iCal feed for maintenance windows | `backend/routers/calendar.py` |
 | Fleet-wide CVE inventory aggregation | `backend/routers/security.py` |
+| Inbound automation API (`/api/v1`) + scoped tokens + safe fleet command runner | `backend/routers/api_v1.py` |
 
 ### Frontend pages
 
@@ -147,14 +156,15 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 |---|---|
 | Dashboard | `frontend/src/pages/Dashboard.tsx` |
 | Server detail (Packages / Upgrade / Health / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
-| Fleet-wide history (Upgrade History / Notification History / SSH Audit Log sub-tabs) | `frontend/src/pages/History.tsx` |
+| Fleet-wide history (Upgrade History / Notification History / SSH Audit Log / Auth Events sub-tabs) | `frontend/src/pages/History.tsx` |
 | Fleet-wide CVE inventory (CVE → servers / Server → CVEs views) | `frontend/src/pages/Security.tsx` |
 | Settings (Schedule / Hooks / Maintenance / Notifications / Users / Servers / Account) | `frontend/src/pages/Settings.tsx` |
 | Package templates | `frontend/src/pages/Templates.tsx` |
 | Multi-server package comparison | `frontend/src/pages/Compare.tsx` |
 | Login (+ 2FA code input) | `frontend/src/pages/Login.tsx` |
 | Fleet-wide package search | `frontend/src/pages/Search.tsx` |
-| Upgrade activity reports | `frontend/src/pages/Reports.tsx` |
+| Upgrade activity reports + change records | `frontend/src/pages/Reports.tsx` |
+| Safe fleet command runner (admin) | `frontend/src/pages/Run.tsx` |
 
 ---
 
@@ -179,5 +189,6 @@ See [TODO.md](TODO.md) for the backlog.
 | `STATUS_PAGE_PUBLIC` | No | Set `true` to enable the unauthenticated `/status.json` fleet health endpoint. Default: `false`. |
 | `STATUS_PAGE_SHOW_NAMES` | No | Include server names (not hostnames) in `/status.json`. Default: `false`. |
 | `STATUS_PAGE_TITLE` | No | Custom title for `/status.json`. Default: `apt-ui Fleet Status`. |
+| `TRUST_PROXY_HEADERS` | No | Set `true` only when apt-ui sits behind a trusted reverse proxy, so client-IP attribution (auth-event log, brute-force lockout) trusts `X-Forwarded-For` / `X-Real-IP`. Default: `false` (uses the socket peer; prevents IP spoofing). |
 
 Notification settings, schedule config, and user accounts are managed entirely through the UI and stored in the DB — not environment variables.
