@@ -4,6 +4,14 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.06.06-02] — 2026-06-06
+
+### Fixed
+
+- **"Upgrade All" (and selective upgrade) failed on every server with `cannot access local variable 'select' where it is not associated with a value`.** `upgrade_server` and `upgrade_packages_selective` in `backend/upgrade_manager.py` each carried a redundant nested `from sqlalchemy import select`; per Python's static scoping rules that makes `select` a function-local name for the *entire* function, so the module-level `select` used earlier in `upgrade_server` (the pre-upgrade snapshot config lookup added in 2026.06.06-01) raised at runtime — even though the nested import line never executed during a batch upgrade (`skip_notify=True`). Removed the nested imports so the module-level `select` is used throughout. Regression introduced in 2026.06.06-01.
+
+---
+
 ## [2026.06.06-01] — 2026-06-06
 
 The largest release to date: the full enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)) — 24 features across UX, security, automation, integrations, and observability — plus a frontend correctness sweep of 40 verified bugs ([#61](https://github.com/mzac/apt-ui/issues/61)). Both were produced by multi-agent reviews and landed across PRs [#63](https://github.com/mzac/apt-ui/pull/63)–[#71](https://github.com/mzac/apt-ui/pull/71).
