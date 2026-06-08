@@ -343,7 +343,6 @@ async def upgrade_server(
                     from backend.database import AsyncSessionLocal
                     from backend.models import NotificationConfig
                     from backend.notifier import notify_upgrade_complete
-                    from sqlalchemy import select
 
                     async with AsyncSessionLocal() as ndb:
                         cfg_res = await ndb.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
@@ -478,7 +477,6 @@ async def upgrade_packages_selective(
                 from backend.database import AsyncSessionLocal
                 from backend.models import NotificationConfig
                 from backend.notifier import notify_upgrade_complete
-                from sqlalchemy import select
 
                 async with AsyncSessionLocal() as ndb:
                     cfg_res = await ndb.execute(select(NotificationConfig).where(NotificationConfig.id == 1))
