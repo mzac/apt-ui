@@ -11,7 +11,7 @@ This document describes the application architecture and CI/CD pipeline for apt-
 ```mermaid
 flowchart TB
     subgraph browser["🌐 Browser"]
-        SPA["🖥 React 18 SPA<br/>Vite · TypeScript · Tailwind<br/>10 pages · Zustand state<br/>ansi-to-html · xterm.js · Recharts"]
+        SPA["🖥 React 19 SPA<br/>Vite · TypeScript · Tailwind 4<br/>10 pages · Zustand state<br/>ansi-to-html · xterm.js · Recharts"]
     end
 
     subgraph container["🐳 Docker Container — :8000"]
@@ -110,18 +110,18 @@ flowchart TB
 
 ### Frontend Layer
 
-The frontend is a **React 18 SPA** built with Vite and TypeScript, served as static files from within the same Docker container. It never communicates with the backend at build time — the Vite dev proxy (`/api/* → :8000`) is used only during local development.
+The frontend is a **React 19 SPA** built with Vite and TypeScript, served as static files from within the same Docker container. It never communicates with the backend at build time — the Vite dev proxy (`/api/* → :8000`) is used only during local development.
 
 | Concern | Implementation |
 |---|---|
-| Routing | React Router v6, 5 route paths |
+| Routing | React Router v7 (component router; no data-router APIs), 5 route paths |
 | State | Zustand (auth store, job store) |
 | API calls | Typed fetch wrapper in `api/client.ts`; all requests carry `credentials: 'include'` for the JWT cookie |
 | 401 handling | Any 401 response redirects to `/login?expired=1` |
 | WebSockets | Factory functions per stream type; browser sends cookie automatically on WS handshake |
 | Terminal output | `ansi-to-html` for coloured apt output; `@xterm/xterm` for the interactive SSH shell |
 | Charts | Recharts (update trend over time on the Stats tab) |
-| Theming | CSS custom properties in `index.css`; `html.light` class toggle; preference in `localStorage` |
+| Theming | Tailwind 4 CSS-first config in `index.css`: the palette lives in `--app-*` custom properties (Tailwind owns `--color-*`), mapped through `@theme inline` so the `html.light` class toggle re-colours utilities live; preference in `localStorage` |
 | Dashboard polling | `usePolling` hook calls `GET /api/servers` every 30 s |
 
 **Pages:**
@@ -345,7 +345,7 @@ flowchart LR
     end
 
     subgraph dockerfile["📦 Dockerfile · multi-stage"]
-        DF1["Stage 1: node:20-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
+        DF1["Stage 1: node:22-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
         DF2["Stage 2: python:3.12-slim<br/>pip install -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
         DF1 --> DF2
     end
@@ -425,7 +425,7 @@ Triggered by a **published GitHub Release**. All steps run on `ubuntu-latest`.
 
 The build is split into two stages to keep the final image small:
 
-- **Stage 1 (`node:20-alpine`)** — installs Node.js dependencies with `npm ci` (reproducible from `package-lock.json`) and produces the compiled React SPA in `dist/`
+- **Stage 1 (`node:22-alpine`)** — installs Node.js dependencies with `npm ci` (reproducible from `package-lock.json`) and produces the compiled React SPA in `dist/`
 - **Stage 2 (`python:3.12-slim`)** — installs Python dependencies, copies the backend, and copies the compiled frontend from Stage 1 into `static/`. FastAPI serves these static files directly with a SPA catch-all route.
 
 The result is a single self-contained image with no Node.js runtime in production.
