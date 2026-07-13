@@ -407,7 +407,7 @@ kubectl create secret generic apt-ui-secrets \
 
 ```mermaid
 flowchart LR
-    SPA["🖥 React 18 SPA<br/>10 pages · Zustand · Tailwind"]
+    SPA["🖥 React 19 SPA<br/>10 pages · Zustand · Tailwind 4"]
 
     subgraph backend["🐳 apt-ui container — :8000"]
         direction TB
@@ -460,11 +460,11 @@ flowchart LR
 | **Database** | SQLite · SQLAlchemy 2.x async · aiosqlite |
 | **Scheduler** | APScheduler 3.x AsyncIOScheduler — live reconfiguration, no restart needed |
 | **Notifications** | aiosmtplib (email) · httpx (Telegram / Slack / webhook with HMAC-SHA256) |
-| **Frontend** | React 18 · TypeScript · Vite · Tailwind CSS |
+| **Frontend** | React 19 · TypeScript · Vite · Tailwind CSS 4 |
 | **State** | Zustand (auth + job store + servers store) |
 | **Charts** | Recharts |
 | **Terminal** | ansi-to-html (apt output) · @xterm/xterm (interactive shell) |
-| **Container** | Multi-stage Dockerfile — `node:20-alpine` build → `python:3.12-slim` runtime |
+| **Container** | Multi-stage Dockerfile — `node:22-alpine` build → `python:3.12-slim` runtime |
 | **Registry** | GitHub Container Registry — `linux/amd64` + `linux/arm64` |
 | **CI/CD** | GitHub Actions · CodeQL · Dependabot · multi-arch release pipeline |
 
