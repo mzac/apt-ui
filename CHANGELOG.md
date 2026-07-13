@@ -4,6 +4,23 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.07.13-01] — 2026-07-13
+
+Fixes upgrades for non-root SSH users, which failed outright on the passwordless-sudo setup documented in the README ([#74](https://github.com/mzac/apt-ui/issues/74)).
+
+### Fixed
+
+- **Upgrades failed for every non-root SSH user with a narrow sudoers rule: `sudo: sorry, you are not allowed to set the following environment variables: DEBIAN_FRONTEND`** ([#74](https://github.com/mzac/apt-ui/issues/74)). sudo only accepts `VAR=value` on its command line when the matching sudoers rule carries the `SETENV` tag. `SETENV` is implied by `ALL`, but **not** by the narrow `NOPASSWD: /usr/bin/apt-get` rule that README "Option B" documents — so `sudo DEBIAN_FRONTEND=noninteractive apt-get …` was rejected before apt ever ran. Privilege escalation is now built by `sudo_prefix()` / `apt_prefix()` in `backend/ssh_manager.py`, which probe sudo with the target binary and drop the variable when it is refused; apt still runs unattended via `-y` and the `--force-conf*` dpkg options. Users with full `NOPASSWD: ALL` sudo are unaffected.
+- **`DEBIAN_FRONTEND` was silently stripped on the update-check and dry-run paths.** Roughly half the call sites placed the assignment *before* `sudo` (`DEBIAN_FRONTEND=noninteractive sudo apt-get …`), which never errors but is discarded by sudo's `env_reset` — so `check_server`'s `dist-upgrade --dry-run`, the upgrade preview, `pveupgrade`, and the apt-proxy / unattended-upgrades helpers were never actually running non-interactively for non-root users. All ~25 hand-rolled `sudo` prefixes across `upgrade_manager.py`, `update_checker.py`, `scheduler.py`, `routers/upgrades.py`, `routers/servers.py`, and `routers/apt_repos.py` now go through the shared helpers.
+- **Apt repo editing broke for root SSH users.** `backend/routers/apt_repos.py` hardcoded `sudo tee` / `sudo rm` / `sudo apt-get update` regardless of the SSH username, so hosts logged into as `root` without sudo installed could not write, delete, or test source files.
+- **Deleting an apt source file returned HTTP 500 after succeeding.** `backend/routers/apt_repos.py` read `cmd_result.exit_status`, but `run_command` returns a `CommandResult` whose field is `exit_code` — the `rm` ran, then the handler raised `AttributeError`.
+
+### Changed
+
+- **README "Option B" now recommends `NOPASSWD:SETENV: /usr/bin/apt-get`.** The `SETENV:` tag is optional — it lets apt-ui pass `DEBIAN_FRONTEND=noninteractive` through sudo to suppress debconf prompts, and without it upgrades still run. The section also documents which additional binaries the optional features (reboot, package holds, `.deb` install, repo editing, health tab, snapshots) need in sudoers.
+
+---
+
 ## [2026.06.06-02] — 2026-06-06
 
 ### Fixed

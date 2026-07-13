@@ -190,6 +190,15 @@ Connection options are resolved in `_connect_options(server)` with the following
 
 Host key verification is disabled (`known_hosts=None`). This is a deliberate trade-off: the tool is designed for use on a trusted LAN where maintaining a host key database across a fleet would be impractical.
 
+**Privilege escalation** is built by two helpers in `ssh_manager.py`, never hand-rolled at the call site:
+
+| Helper | Produces |
+|---|---|
+| `sudo_prefix(server)` | `""` for a root SSH user, `sudo ` otherwise |
+| `apt_prefix(server, binary="apt-get")` | the above, plus `DEBIAN_FRONTEND=noninteractive` **when sudo will accept it** |
+
+`sudo VAR=value cmd` is refused unless the matching sudoers rule carries the `SETENV` tag — implied by `ALL`, but absent from a narrow `NOPASSWD: /usr/bin/apt-get` rule. Moving the assignment before `sudo` doesn't help either: `env_reset` strips it. So `apt_prefix` probes sudo with the target binary and omits the variable when it is refused; apt still runs unattended via `-y` and the `--force-conf*` dpkg options.
+
 **Command types used on managed servers:**
 
 | Category | Commands |
