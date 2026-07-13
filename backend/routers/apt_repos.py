@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import get_current_user, require_admin, get_current_user_ws
 from backend.database import get_db
 from backend.models import Server, User
-from backend.ssh_manager import _connect_options, run_command
+from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
 
 router = APIRouter(tags=["apt_repos"])
 logger = logging.getLogger(__name__)
@@ -147,8 +147,8 @@ async def write_apt_repo(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
 
     safe_path = shlex.quote(body.path.strip())
-    # Pass content via stdin to sudo tee — avoids any shell escaping issues with file contents
-    cmd = f"sudo tee {safe_path} > /dev/null"
+    # Pass content via stdin to tee — avoids any shell escaping issues with file contents
+    cmd = f"{sudo_prefix(server)}tee {safe_path} > /dev/null"
     try:
         async with asyncssh.connect(**_connect_options(server)) as conn:
             proc_result = await conn.run(cmd, input=body.content)
@@ -185,7 +185,7 @@ async def delete_apt_repo(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
 
     safe_path = shlex.quote(body.path.strip())
-    cmd_result = await run_command(server, f"sudo rm -f {safe_path}", timeout=15)
+    cmd_result = await run_command(server, f"{sudo_prefix(server)}rm -f {safe_path}", timeout=15)
     if cmd_result.exit_status != 0:
         raise HTTPException(status_code=500, detail=f"rm failed: {cmd_result.stderr}")
 
@@ -225,7 +225,7 @@ async def ws_apt_repos_test(
     try:
         await send_fn({"type": "status", "data": "running"})
         async with asyncssh.connect(**_connect_options(server)) as conn:
-            async with conn.create_process("sudo apt-get update", stderr=asyncssh.STDOUT) as proc:
+            async with conn.create_process(f"{apt_prefix(server)}apt-get update", stderr=asyncssh.STDOUT) as proc:
                 async for line in proc.stdout:
                     await send_fn({"type": "output", "data": line})
             exit_code = proc.exit_status

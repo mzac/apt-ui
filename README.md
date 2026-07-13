@@ -257,8 +257,26 @@ Then set `username = root` when adding each server in the dashboard. No sudo con
 
 ```bash
 # Run on each managed server
-echo "youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/apt-ui
+echo "youruser ALL=(ALL) NOPASSWD:SETENV: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/apt-ui
 ```
+
+The `SETENV:` tag lets apt-ui pass `DEBIAN_FRONTEND=noninteractive` through sudo, which
+suppresses debconf prompts during an upgrade. It is optional — without it, apt-ui detects
+that sudo refuses the variable and runs apt-get without it. (sudo only accepts environment
+assignments on the command line when the matching rule carries `SETENV`, which a bare
+`NOPASSWD: /usr/bin/apt-get` rule does not.)
+
+This one rule covers checking for updates and installing them. Some optional features shell
+out to other binaries and need them listed too — add only the ones you use:
+
+| Feature | Binary to allow |
+|---|---|
+| Reboot / auto-reboot after upgrade | `/usr/sbin/reboot`, `/usr/sbin/shutdown` |
+| Hold / unhold packages | `/usr/bin/apt-mark` |
+| Install a `.deb` from URL or path | `/usr/bin/dpkg` |
+| Apt repo editing, apt proxy, auto-security-updates | `/usr/bin/tee`, `/usr/bin/rm` |
+| Health tab (failed units, needrestart, service restart) | `/usr/bin/systemctl`, `/usr/sbin/needrestart`, `/usr/bin/journalctl` |
+| Pre-upgrade snapshots / rollback | `/usr/bin/timeshift` |
 
 ### Key delivery
 
