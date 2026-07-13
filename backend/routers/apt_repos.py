@@ -186,7 +186,7 @@ async def delete_apt_repo(
 
     safe_path = shlex.quote(body.path.strip())
     cmd_result = await run_command(server, f"{sudo_prefix(server)}rm -f {safe_path}", timeout=15)
-    if cmd_result.exit_status != 0:
+    if cmd_result.exit_code != 0:
         raise HTTPException(status_code=500, detail=f"rm failed: {cmd_result.stderr}")
 
     return {"ok": True}
