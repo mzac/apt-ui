@@ -6,7 +6,7 @@ All notable changes to apt-ui are documented here.
 
 ## [2026.07.13-01] — 2026-07-13
 
-Fixes upgrades for non-root SSH users, which failed outright on the passwordless-sudo setup documented in the README ([#74](https://github.com/mzac/apt-ui/issues/74)).
+Fixes upgrades for non-root SSH users, which failed outright on the passwordless-sudo setup documented in the README ([#74](https://github.com/mzac/apt-ui/issues/74)), and brings the whole dependency stack up to date — React 19, Tailwind CSS 4, TypeScript 7 ([#76](https://github.com/mzac/apt-ui/pull/76)). **Tailwind 4 visibly changes the UI**: it revives ~30 utility classes that silently emitted no CSS under v3 — see *Changed* below.
 
 ### Fixed
 
