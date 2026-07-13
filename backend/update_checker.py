@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Server, ServerStats, ServerTag, Tag, UpdateCheck
-from backend.ssh_manager import run_command
+from backend.ssh_manager import apt_prefix, run_command, sudo_prefix
 
 if TYPE_CHECKING:
     pass
@@ -433,7 +433,7 @@ async def check_server(
         # Run apt update concurrently with stats collection
         apt_update_task = run_command(
             server,
-            ("" if server.username == "root" else "sudo ") + "apt-get update -q 2>&1",
+            sudo_prefix(server) + "apt-get update -q 2>&1",
             timeout=120,
         )
         apt_update_result, stats = await asyncio.gather(apt_update_task, stats_task)
@@ -455,7 +455,7 @@ async def check_server(
         await db.refresh(check)
         return check
 
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
 
     # Parallel: list upgradable, held packages, reboot required, autoremove dry-run,
     # and upgrade dry-run (to detect new packages pulled in as dependencies, e.g. new kernels)
@@ -467,7 +467,7 @@ async def check_server(
     # packages that apt-get upgrade leaves "kept back" because they have new dependencies.
     upgrade_dry_task = run_command(
         server,
-        f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get dist-upgrade --dry-run 2>/dev/null",
+        f"{apt_prefix(server)}apt-get dist-upgrade --dry-run 2>/dev/null",
         timeout=60,
     )
 

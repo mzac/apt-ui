@@ -21,7 +21,7 @@ from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
-from backend.ssh_manager import _connect_options, run_command
+from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
 from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
 
 router = APIRouter(tags=["upgrades"])
@@ -167,9 +167,8 @@ async def ws_install(websocket: WebSocket, server_id: int):
 
         await websocket.send_json({"type": "status", "data": "connecting"})
 
-        sudo = "" if server.username == "root" else "sudo "
         pkg_str = " ".join(safe_packages)
-        cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -y {pkg_str}"
+        cmd = f"{apt_prefix(server)}apt-get install -y {pkg_str}"
 
         async def send_fn(msg: dict):
             try:
@@ -237,11 +236,11 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
             params = {}
 
         enable: bool = params.get("enable", True)
-        sudo = "" if server.username == "root" else "sudo "
+        sudo = sudo_prefix(server)
 
         if enable:
             cmd = (
-                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y unattended-upgrades; "
+                f"{apt_prefix(server)}apt-get install -y unattended-upgrades; "
                 f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
                 f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
             )
@@ -324,7 +323,7 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
         proxy_url: str = params.get("proxy_url", "")
         # mode: "manual" (write URL to 01proxy) or "auto" (install auto-apt-proxy package)
         mode: str = params.get("mode", "manual")
-        sudo = "" if server.username == "root" else "sudo "
+        sudo = sudo_prefix(server)
         conf_file = "/etc/apt/apt.conf.d/01proxy"
 
         if not enable:
@@ -332,21 +331,21 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
             cmd = (
                 f"{sudo}rm -f {conf_file}; "
                 f"if dpkg -l auto-apt-proxy 2>/dev/null | grep -q '^ii'; then "
-                f"  DEBIAN_FRONTEND=noninteractive {sudo}apt-get remove -y auto-apt-proxy 2>&1; "
+                f"  {apt_prefix(server)}apt-get remove -y auto-apt-proxy 2>&1; "
                 f"fi; "
                 f"echo 'apt proxy configuration removed'"
             )
         elif mode == "auto":
             # Install auto-apt-proxy — discovers proxy via DNS SRV/_apt_proxy._tcp or WPAD
             cmd = (
-                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y auto-apt-proxy 2>&1; "
+                f"{apt_prefix(server)}apt-get install -y auto-apt-proxy 2>&1; "
                 f"{sudo}rm -f {conf_file}"  # remove any manual config that would override auto
             )
         else:
             # Manual: write the proxy URL to the conventional 01proxy file
             cmd = (
                 f"if dpkg -l auto-apt-proxy 2>/dev/null | grep -q '^ii'; then "
-                f"  DEBIAN_FRONTEND=noninteractive {sudo}apt-get remove -y auto-apt-proxy 2>&1; "
+                f"  {apt_prefix(server)}apt-get remove -y auto-apt-proxy 2>&1; "
                 f"fi; "
                 f"printf 'Acquire::http::Proxy \"{proxy_url}\";\\n' "
                 f"| {sudo}tee {conf_file}"
@@ -423,7 +422,7 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
             await websocket.close()
             return
 
-        sudo = "" if server.username == "root" else "sudo "
+        sudo = sudo_prefix(server)
         cmd = f"{sudo}rpi-eeprom-update -a"
 
         async def send_fn(msg: dict):
@@ -491,8 +490,6 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
             await websocket.close()
             return
 
-        sudo = "" if server.username == "root" else "sudo "
-
         async def send_fn(msg: dict):
             try:
                 await websocket.send_json(msg)
@@ -508,7 +505,7 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
             await send_fn({"type": "status", "data": "updating_apt"})
             await run_command_stream(
                 server,
-                f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get update -q",
+                f"{apt_prefix(server)}apt-get update -q",
                 send_fn,
                 timeout=120,
             )
@@ -517,7 +514,7 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
             await send_fn({"type": "status", "data": "upgrading"})
             result = await run_command_stream(
                 server,
-                f"DEBIAN_FRONTEND=noninteractive {sudo}pveupgrade --force 2>&1",
+                f"{apt_prefix(server)}pveupgrade --force 2>&1",
                 send_fn,
                 timeout=600,
             )
@@ -585,8 +582,7 @@ async def ws_dry_run(websocket: WebSocket, server_id: int):
 
     allow_phased = params.get("allow_phased", False)
     phased_flag = " -o APT::Get::Always-Include-Phased-Updates=true" if allow_phased else ""
-    sudo = "" if server.username == "root" else "sudo "
-    cmd = f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get {action} --dry-run{phased_flag} 2>&1"
+    cmd = f"{apt_prefix(server)}apt-get {action} --dry-run{phased_flag} 2>&1"
 
     async def send_fn(msg: dict):
         try:
@@ -1136,8 +1132,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
                     pass
                 return
 
-            sudo = "" if server.username == "root" else "sudo "
-            cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -y {pkg_str}"
+            cmd = f"{apt_prefix(server)}apt-get install -y {pkg_str}"
 
             # Serialize with upgrades/other template applies on the same server.
             async with _get_lock(server.id):
@@ -1224,7 +1219,7 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
             async with asyncssh.connect(**conn_opts) as conn:
                 await send_fn({"type": "status", "data": "running"})
                 async with conn.create_process(
-                    "sudo DEBIAN_FRONTEND=noninteractive apt-get update",
+                    f"{apt_prefix(server)}apt-get update",
                     stderr=asyncssh.STDOUT,
                 ) as proc:
                     async for line in proc.stdout:
@@ -1513,7 +1508,7 @@ async def ws_reboot_all(websocket: WebSocket):
     async def _reboot_one(server: Server):
         """Trigger reboot via SSH and stream the per-server phases."""
         await send({"server_id": server.id, "server_name": server.name, "type": "status", "phase": "rebooting"})
-        sudo = "" if server.username == "root" else "sudo "
+        sudo = sudo_prefix(server)
         try:
             # Same pattern as POST /api/servers/{id}/reboot — exit 255 is normal
             # because SSH drops as the server reboots.
@@ -1800,7 +1795,6 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
                 pass
 
         source = params.get("source", "url")  # "url" | "remote"
-        sudo = "" if server.username == "root" else "sudo "
 
         try:
             if source == "url":
@@ -1838,12 +1832,12 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
 
             # Install with dpkg
             await send_fn({"type": "status", "data": "installing"})
-            install_cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive dpkg -i {remote_path}"
+            install_cmd = f"{apt_prefix(server, 'dpkg')}dpkg -i {remote_path}"
             await run_command_stream(server, install_cmd, send_fn, timeout=300)
 
             # Fix any missing dependencies
             await send_fn({"type": "status", "data": "fixing_deps"})
-            fix_cmd = f"{sudo}DEBIAN_FRONTEND=noninteractive apt-get install -f -y"
+            fix_cmd = f"{apt_prefix(server)}apt-get install -f -y"
             fix_result = await run_command_stream(server, fix_cmd, send_fn, timeout=300)
 
             # Clean up temp file

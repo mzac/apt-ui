@@ -39,6 +39,33 @@ logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 15  # seconds — give up connecting after this long
 
+DEBIAN_FRONTEND = "DEBIAN_FRONTEND=noninteractive"
+
+
+def sudo_prefix(server: "Server") -> str:
+    """Return 'sudo ' unless the SSH user is root."""
+    return "" if server.username == "root" else "sudo "
+
+
+def apt_prefix(server: "Server", binary: str = "apt-get") -> str:
+    """Prefix that runs *binary* as root with DEBIAN_FRONTEND=noninteractive.
+
+    `sudo VAR=value cmd` is rejected ("sorry, you are not allowed to set the
+    following environment variables") unless the matching sudoers rule carries
+    the SETENV tag. SETENV is implied by `ALL`, but *not* by a narrow rule like
+    `NOPASSWD: /usr/bin/apt-get` — the setup documented in the README — so the
+    variable cannot be assumed to get through. Probe sudo with the same binary
+    and drop the variable when it is refused; apt still runs non-interactively
+    thanks to `-y` and the --force-conf* dpkg options.
+
+    Putting the assignment *before* sudo is not an alternative: env_reset strips
+    it, so the variable silently never reaches apt.
+    """
+    if server.username == "root":
+        return f"{DEBIAN_FRONTEND} "
+    probe = f"sudo -n {DEBIAN_FRONTEND} {binary} --version >/dev/null 2>&1"
+    return f"sudo $({probe} && echo {DEBIAN_FRONTEND}) "
+
 
 @dataclass
 class CommandResult:

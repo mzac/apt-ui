@@ -5,6 +5,11 @@ Prerequisites on remote servers:
   - The SSH user must have passwordless sudo configured.
     Example /etc/sudoers.d/apt-ui:
       deploy ALL=(ALL) NOPASSWD: /usr/bin/apt-get
+
+    Adding the SETENV tag lets apt-ui pass DEBIAN_FRONTEND=noninteractive through
+    sudo, which suppresses debconf prompts during the upgrade:
+      deploy ALL=(ALL) NOPASSWD:SETENV: /usr/bin/apt-get
+    Without it the upgrade still runs — see ssh_manager.apt_prefix().
 """
 
 import asyncio
@@ -18,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.models import Server, UpdateCheck, UpdateHistory, ScheduleConfig
-from backend.ssh_manager import run_command, run_command_stream
+from backend.ssh_manager import apt_prefix, run_command, run_command_stream, sudo_prefix
 from backend.update_checker import check_server
 from backend.actor import get_actor
 
@@ -110,11 +115,6 @@ def _validate_package_names(packages: list[str]) -> list[str]:
     return packages
 
 
-def _sudo(server) -> str:
-    """Return 'sudo ' prefix unless the SSH user is root."""
-    return "" if server.username == "root" else "sudo "
-
-
 _CONFFILE_OPTS = {
     # Use the package's declared default answer; fall back to keeping the existing
     # file if there is no default. This is the safest choice for production servers.
@@ -128,7 +128,7 @@ _CONFFILE_OPTS = {
 
 def _build_upgrade_command(server, action: str, allow_phased: bool, conffile_action: str = "confdef_confold") -> str:
     dpkg_opts = _CONFFILE_OPTS.get(conffile_action, _CONFFILE_OPTS["confdef_confold"])
-    base = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get {action} -y {dpkg_opts}"
+    base = f"{apt_prefix(server)}apt-get {action} -y {dpkg_opts}"
     if allow_phased:
         base += " -o APT::Get::Always-Include-Phased-Updates=true"
     return base
@@ -219,7 +219,7 @@ async def upgrade_server(
                 if run_apt_update:
                     if send_fn:
                         await send_fn({"type": "status", "data": "running_update"})
-                    update_cmd = f"{_sudo(server)}apt-get update -q"
+                    update_cmd = f"{sudo_prefix(server)}apt-get update -q"
                     if send_fn:
                         update_result = await run_command_stream(server, update_cmd, _send)
                     else:
@@ -312,7 +312,7 @@ async def upgrade_server(
                         # Schedule reboot in 1 minute so the SSH command can return cleanly
                         await run_command(
                             server,
-                            f"{_sudo(server)}shutdown -r +1 'apt-ui auto-reboot after upgrade'",
+                            f"{sudo_prefix(server)}shutdown -r +1 'apt-ui auto-reboot after upgrade'",
                             timeout=10,
                         )
                         rebooted = True
@@ -421,12 +421,12 @@ async def upgrade_packages_selective(
                 if run_apt_update:
                     if send_fn:
                         await send_fn({"type": "status", "data": "running_update"})
-                    update_result = await run_command_stream(server, f"{_sudo(server)}apt-get update -q", _send)
+                    update_result = await run_command_stream(server, f"{sudo_prefix(server)}apt-get update -q", _send)
                     if update_result.exit_code == 255:
                         raise RuntimeError(update_result.stderr or "SSH connection failed")
 
                 pkg_list = " ".join(packages)
-                cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y {pkg_list}"
+                cmd = f"{apt_prefix(server)}apt-get install --only-upgrade -y {pkg_list}"
                 if allow_phased:
                     cmd += " -o APT::Get::Always-Include-Phased-Updates=true"
 
@@ -555,9 +555,9 @@ async def run_autoremove(
 
                 if packages:
                     pkg_list = " ".join(packages)
-                    cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get remove -y {pkg_list}"
+                    cmd = f"{apt_prefix(server)}apt-get remove -y {pkg_list}"
                 else:
-                    cmd = f"{_sudo(server)}DEBIAN_FRONTEND=noninteractive apt-get autoremove -y"
+                    cmd = f"{apt_prefix(server)}apt-get autoremove -y"
 
                 result = await run_command_stream(server, cmd, _send, timeout=600)
 
@@ -622,7 +622,7 @@ async def _create_pre_upgrade_snapshot(server: Server, send_fn) -> str | None:
     timeshift is used (rather than raw btrfs/zfs subvolume ops) because it handles
     the bootloader and restore flow safely across distros. No-op if not installed.
     """
-    sudo = _sudo(server)
+    sudo = sudo_prefix(server)
     chk = await run_command(server, "command -v timeshift", timeout=15)
     if chk.exit_code != 0:
         if send_fn:
@@ -650,7 +650,7 @@ async def restore_snapshot(server: Server, snapshot_name: str) -> "CommandResult
     """Restore a timeshift snapshot (admin-gated, dangerous — typically reboots)."""
     if not _SNAP_NAME_RE.fullmatch(snapshot_name):
         raise ValueError("Invalid snapshot name")
-    sudo = _sudo(server)
+    sudo = sudo_prefix(server)
     return await run_command(
         server, f"{sudo}timeshift --restore --snapshot '{snapshot_name}' --scripted --yes",
         timeout=900,

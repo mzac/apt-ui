@@ -170,8 +170,8 @@ async def _job_auto_upgrade():
 
     async def _failed_units(server) -> set[str]:
         """Return the set of failed systemd units (empty if the probe is unavailable)."""
-        from backend.ssh_manager import run_command
-        sudo = "" if server.username == "root" else "sudo "
+        from backend.ssh_manager import run_command, sudo_prefix
+        sudo = sudo_prefix(server)
         res = await run_command(
             server,
             f"{sudo}systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{{print $1}}'",

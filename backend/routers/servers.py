@@ -20,7 +20,7 @@ from backend.schemas import (
     CheckAllProgress, GroupRef, ServerCreate, ServerOut, ServerUpdate,
     LatestCheckOut, TagOut,
 )
-from backend.ssh_manager import test_connection, run_command
+from backend.ssh_manager import apt_prefix, test_connection, run_command, sudo_prefix
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 
@@ -658,7 +658,7 @@ async def reboot_server(
     block = await window_block_reason(db, server_id, override=override_window)
     if block:
         return {"success": False, "detail": f"Reboot {block}. Pass ?override_window=true to override."}
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
     result = await run_command(server, f"{sudo}reboot", timeout=15)
     # SSH will drop mid-command on reboot — exit code 255 is normal here
     if result.exit_code == 0 or result.exit_code == 255:
@@ -962,7 +962,7 @@ async def get_server_health(
         "echo '__FAILED__'; "
         "systemctl --failed --no-legend --plain --no-pager 2>/dev/null | head -50; "
         "echo '__ERRORS__'; "
-        f"{('' if server.username == 'root' else 'sudo ')}journalctl -p err -b --no-pager -n 20 2>/dev/null || echo '(journalctl unavailable)'; "
+        f"{sudo_prefix(server)}journalctl -p err -b --no-pager -n 20 2>/dev/null || echo '(journalctl unavailable)'; "
         "echo '__REBOOTS__'; "
         "last reboot 2>/dev/null | head -5 | grep -v '^$'"
     )
@@ -1011,7 +1011,7 @@ async def upgrade_impact(
     """Upgrade impact preview (issue #62): use needrestart to show which services
     would restart and whether a reboot is truly required (vs the frontend's regex)."""
     server = await _get_server_or_404(server_id, db)
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
     chk = await run_command(server, "command -v needrestart", timeout=15)
     if chk.exit_code != 0:
         return {"available": False, "detail": "needrestart is not installed on this server"}
@@ -1132,7 +1132,7 @@ async def bulk_hold(
         try:
             opts = _connect_options(server)
             async with _asyncssh.connect(**opts) as conn:
-                sudo = "" if server.username == "root" else "sudo "
+                sudo = sudo_prefix(server)
                 r = await conn.run(
                     f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}",
                     timeout=30,
@@ -1213,7 +1213,7 @@ async def hold_package(
     hold = bool(body.get("hold", True))
     if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
         raise HTTPException(status_code=400, detail="Invalid package name")
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
     cmd = f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}"
     result = await run_command(server, cmd, timeout=30)
     return {
@@ -1239,7 +1239,7 @@ async def restart_service(
     unit = (body.get("unit") or "").strip()
     if not unit or not _re.match(r'^[a-zA-Z0-9@.\-_:]+\.(service|socket|timer|target|path|mount)$', unit):
         raise HTTPException(status_code=400, detail="Invalid unit name")
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
     result = await run_command(server, f"{sudo}systemctl restart {unit}", timeout=30)
     return {
         "success": result.exit_code == 0,
@@ -1259,12 +1259,12 @@ async def set_auto_security_updates(
     """Enable or disable unattended-upgrades (auto security updates) on a server via SSH."""
     server = await _get_server_or_404(server_id, db)
     enable: bool = body.get("enable", True)
-    sudo = "" if server.username == "root" else "sudo "
+    sudo = sudo_prefix(server)
 
     if enable:
         # Install unattended-upgrades if missing, then enable it
         cmd = (
-            f"DEBIAN_FRONTEND=noninteractive {sudo}apt-get install -y unattended-upgrades 2>/dev/null; "
+            f"{apt_prefix(server)}apt-get install -y unattended-upgrades 2>/dev/null; "
             f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
             f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
         )
