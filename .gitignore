@@ -1,4 +1,5 @@
 data/*.db
+data/eol_overrides.json   # runtime EOL cache written by the daily sync job
 data/*.db-shm
 data/*.db-wal
 __pycache__/
