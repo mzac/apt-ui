@@ -1,48 +1,85 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@source './index.html';
+@source './src/**/*.{ts,tsx}';
+
+/* Theme palette lives under --app-* rather than --color-*: Tailwind 4 owns the
+   --color-* namespace (@theme generates it), so reusing it here would make the
+   theme variables reference themselves. The light/dark switch works by swapping
+   these values on html.light — see hooks/useTheme.ts and the apt:theme key. */
 
 /* ── Dark theme (default) ── */
 :root {
-  --color-bg:           #0f1117;
-  --color-surface:      #1a1d27;
-  --color-surface-2:    #242736;
-  --color-border:       #2e3347;
-  --color-text-primary: #e5e7eb;
-  --color-text-muted:   #6b7280;
+  --app-bg:           #0f1117;
+  --app-surface:      #1a1d27;
+  --app-surface-2:    #242736;
+  --app-border:       #2e3347;
+  --app-text-primary: #e5e7eb;
+  --app-text-muted:   #6b7280;
 }
 
 /* ── Light theme ── */
 html.light {
-  --color-bg:           #f1f5f9;
-  --color-surface:      #ffffff;
-  --color-surface-2:    #f8fafc;
-  --color-border:       #e2e8f0;
-  --color-text-primary: #1e293b;
-  --color-text-muted:   #64748b;
+  --app-bg:           #f1f5f9;
+  --app-surface:      #ffffff;
+  --app-surface-2:    #f8fafc;
+  --app-border:       #e2e8f0;
+  --app-text-primary: #1e293b;
+  --app-text-muted:   #64748b;
+}
+
+/* `inline` makes the generated utilities resolve to var(--app-*) directly, so a
+   theme swap on html.light re-colours them live. Without it the utilities would
+   snapshot the value at build time and the light theme would not take. */
+@theme inline {
+  --font-sans: 'IBM Plex Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  --color-bg:           var(--app-bg);
+  --color-surface:      var(--app-surface);
+  --color-surface-2:    var(--app-surface-2);
+  --color-border:       var(--app-border);
+  --color-text-primary: var(--app-text-primary);
+  --color-text-muted:   var(--app-text-muted);
+
+  --color-green:  #22c55e;
+  --color-amber:  #f59e0b;
+  --color-red:    #ef4444;
+  --color-blue:   #3b82f6;
+  --color-cyan:   #06b6d4;
+  --color-purple: #a855f7;
 }
 
 @layer base {
   body {
-    background-color: var(--color-bg);
-    color: var(--color-text-primary);
+    background-color: var(--app-bg);
+    color: var(--app-text-primary);
     font-family: 'IBM Plex Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
+  }
+
+  /* v4 defaults `border` to currentColor; keep v3's neutral so the ~7 bare
+     `border` call sites don't inherit the text colour. */
+  *, ::before, ::after {
+    border-color: var(--app-border);
   }
 
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
-  ::-webkit-scrollbar-track { background: var(--color-surface); }
-  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--color-surface-2); }
+  ::-webkit-scrollbar-track { background: var(--app-surface); }
+  ::-webkit-scrollbar-thumb { background: var(--app-border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--app-surface-2); }
+}
+
+/* `btn` must be a @utility, not a plain class: v4's @apply only accepts
+   utilities, and .btn-primary and friends @apply it. */
+@utility btn {
+  @apply px-3 py-1.5 rounded text-sm font-medium transition-colors focus:outline-none;
 }
 
 @layer components {
-  .btn {
-    @apply px-3 py-1.5 rounded text-sm font-medium transition-colors focus:outline-none;
-  }
   .btn-primary {
     @apply btn bg-green text-bg hover:bg-green/90 disabled:opacity-50;
   }
