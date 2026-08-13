@@ -4,7 +4,9 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.08.13-01] — 2026-08-13
+
+Fixes per-server SSH keys and TOTP 2FA secrets being lost on every container restart ([#77](https://github.com/mzac/apt-ui/issues/77)) — the default `docker-compose.yml`, with `ENCRYPTION_KEY` and `JWT_SECRET` both commented out, encrypted them with a key that only existed in memory.
 
 ### Fixed
 
