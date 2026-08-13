@@ -4,6 +4,15 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Per-server SSH keys (and TOTP 2FA secrets) stopped working after every container restart** ([#77](https://github.com/mzac/apt-ui/issues/77)). When neither `ENCRYPTION_KEY` nor `JWT_SECRET` was set — the default for `docker-compose.yml`, where both are commented out — `backend/crypto.py` fell back to a **random Fernet key generated in memory at startup**. Keys were encrypted correctly, but the next restart derived a different key, so every stored blob became undecryptable and every server with a custom key silently fell back to the global `SSH_PRIVATE_KEY` / agent auth (or failed to connect at all). The encryption key is now resolved once at startup by `seed_defaults()` and persisted in the `app_config` table alongside the JWT secret, which lives on the mounted data volume — the same pattern that already kept login sessions alive across restarts. `ENCRYPTION_KEY` and `JWT_SECRET` still take precedence, in that order, so existing deployments that set either keep deriving the same key and are unaffected.
+- **Startup now names the servers whose stored SSH key can't be decrypted.** Keys written by an affected version are unrecoverable (the ephemeral key they were encrypted with is gone), and the fallback to global SSH auth was silent apart from a per-connection log line. A single warning at boot lists the affected servers and tells you to re-enter their keys in Settings → Servers.
+
+---
+
 ## [2026.07.13-01] — 2026-07-13
 
 Fixes upgrades for non-root SSH users, which failed outright on the passwordless-sudo setup documented in the README ([#74](https://github.com/mzac/apt-ui/issues/74)), and brings the whole dependency stack up to date — React 19, Tailwind CSS 4, TypeScript 7 ([#76](https://github.com/mzac/apt-ui/pull/76)). **Tailwind 4 visibly changes the UI**: it revives ~30 utility classes that silently emitted no CSS under v3 — see *Changed* below.
