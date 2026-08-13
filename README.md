@@ -296,8 +296,8 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 |---|---|---|
 | `SSH_PRIVATE_KEY` | — | Full PEM content of the private key. Required unless using SSH agent. |
 | `SSH_AUTH_SOCK` | — | Path to SSH agent socket inside the container (e.g. `/run/ssh-agent.sock`). Alternative to `SSH_PRIVATE_KEY` — allows passphrase-protected keys. |
-| `JWT_SECRET` | random | JWT signing secret. Set to persist sessions across restarts. |
-| `ENCRYPTION_KEY` | — | Master key used to encrypt per-server SSH keys in the DB. Falls back to `JWT_SECRET`. |
+| `JWT_SECRET` | generated | JWT signing secret. Auto-generated and stored in the DB on first start, so sessions survive restarts. |
+| `ENCRYPTION_KEY` | generated | Master key used to encrypt per-server SSH keys and TOTP secrets in the DB. Falls back to `JWT_SECRET`, then to a key auto-generated and stored in the DB on first start. Set it explicitly if you want the key managed outside the database. |
 | `DATABASE_PATH` | `/data/apt-ui.db` | SQLite file path. |
 | `TZ` | `America/Montreal` | Timezone for scheduled jobs. |
 | `LOG_LEVEL` | `INFO` | Python log level. |

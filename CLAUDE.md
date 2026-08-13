@@ -87,7 +87,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - **SQLite** at `/data/apt-ui.db` (Docker volume). Async SQLAlchemy throughout the API; sync SQLAlchemy in the CLI only.
 - **APScheduler** (`AsyncIOScheduler`) for cron-based checks, auto-upgrades, log purge, and daily summary. Reconfigured live from the DB without restart.
 - **asyncssh**: fresh connection per command, no pool. `known_hosts=None` (trusted LAN). Auth priority: per-server encrypted key → SSH agent → global `SSH_PRIVATE_KEY`.
-- **Per-server SSH keys**: Fernet-encrypted in DB (`backend/crypto.py`). Key derived from `ENCRYPTION_KEY` env var, falling back to `JWT_SECRET`.
+- **Per-server SSH keys**: Fernet-encrypted in DB (`backend/crypto.py`). Key derived from `ENCRYPTION_KEY` env var, falling back to `JWT_SECRET`, then to a random key generated on first start and persisted in `app_config` (issue #77 — it used to be *ephemeral* in that case, so stored keys and TOTP secrets became unreadable after every restart). `seed_defaults()` in `backend/main.py` resolves it and calls `crypto.init_encryption_key()`.
 - **Auth**: HS256 JWT in httpOnly cookie `apt_ui_token` (24h). All `/api/*` except `/api/auth/login` and `/health` require `get_current_user` dependency. WebSocket auth via `get_current_user_ws`; closes with code 1008 on failure.
 - **Frontend path alias**: `@/` → `frontend/src/` (configured in both `vite.config.ts` and `tsconfig.json`).
 - **State**: Zustand stores in `frontend/src/hooks/useAuth.ts` (auth) and `frontend/src/hooks/useJobStore.ts` (background job bell).
@@ -181,8 +181,8 @@ See [TODO.md](TODO.md) for the backlog.
 |---|---|---|
 | `SSH_PRIVATE_KEY` | Yes* | PEM-encoded SSH private key (full content, not a path). Required unless `SSH_AUTH_SOCK` is set. |
 | `SSH_AUTH_SOCK` | No | SSH agent socket — alternative to `SSH_PRIVATE_KEY`. |
-| `ENCRYPTION_KEY` | No | Master key for Fernet-encrypting per-server SSH keys. Falls back to `JWT_SECRET`. |
-| `JWT_SECRET` | No | JWT signing secret. Random secret generated at startup if unset (tokens invalidate on restart). |
+| `ENCRYPTION_KEY` | No | Master key for Fernet-encrypting per-server SSH keys and TOTP secrets. Falls back to `JWT_SECRET`, then to a key auto-generated and persisted in the DB. |
+| `JWT_SECRET` | No | JWT signing secret. If unset, a random secret is generated on first start and persisted in the DB. |
 | `DATABASE_PATH` | No | Default: `/data/apt-ui.db` |
 | `TZ` | No | Timezone for scheduled jobs. Default: `America/Montreal` |
 | `ENABLE_TERMINAL` | No | Set `true` to enable the interactive SSH shell tab. Default: `false`. Only enable for trusted users. |

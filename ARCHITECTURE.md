@@ -33,7 +33,7 @@ flowchart TB
 
         subgraph data_layer["💾 Data layer"]
             DB[("🗄 SQLite · /data/apt-ui.db<br/>20 tables · 50+ migrations<br/>servers · groups · tags · users<br/>update_checks · update_history<br/>server_stats · notification_config<br/>schedule_config · maintenance_windows<br/>upgrade_hooks · ssh_audit_log · api_tokens<br/>notification_log · templates · …")]
-            CRYPTO["🔐 Fernet Encryption<br/>AES-128-CBC + HMAC-SHA256<br/>Per-server SSH keys · TOTP secrets<br/>Key: SHA-256(ENCRYPTION_KEY)<br/>fallback → JWT_SECRET"]
+            CRYPTO["🔐 Fernet Encryption<br/>AES-128-CBC + HMAC-SHA256<br/>Per-server SSH keys · TOTP secrets<br/>Key: SHA-256(ENCRYPTION_KEY)<br/>fallback → JWT_SECRET → DB app_config"]
         end
 
         SSH_CLIENT["🔗 asyncssh client<br/>Fresh connection per command<br/>known_hosts=None (trusted LAN)<br/>Auth priority:<br/>1. Per-server encrypted key<br/>2. SSH agent socket<br/>3. Global SSH_PRIVATE_KEY"]

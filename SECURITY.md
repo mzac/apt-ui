@@ -45,7 +45,7 @@ apt-ui is designed to run as a **single Docker container on a trusted private ne
 ### SSH access
 
 - The dashboard connects to managed servers over SSH using a private key supplied via the `SSH_PRIVATE_KEY` environment variable or a forwarded SSH agent socket.
-- Per-server SSH keys are stored encrypted in SQLite using Fernet (AES-128-CBC + HMAC-SHA256). The encryption key is derived from the `ENCRYPTION_KEY` env var (falls back to `JWT_SECRET`).
+- Per-server SSH keys are stored encrypted in SQLite using Fernet (AES-128-CBC + HMAC-SHA256). The encryption key is derived from the `ENCRYPTION_KEY` env var, falling back to `JWT_SECRET`, and finally to a random key generated on first start and persisted in the `app_config` table (same SQLite file, on the mounted data volume). Set `ENCRYPTION_KEY` explicitly if you want the key held outside the database.
 - Host key verification is disabled (`known_hosts=None`) — this is an intentional trade-off for fleet management on a trusted network. It is documented in the code.
 - SSH connections are opened fresh per command; there is no persistent connection pool.
 

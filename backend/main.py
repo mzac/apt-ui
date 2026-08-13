@@ -67,13 +67,69 @@ async def seed_defaults():
                 auth_module.init_jwt_secret(new_secret)
                 logger.info("Generated and stored new JWT secret in database.")
 
+        # Encryption key for per-server SSH keys and TOTP secrets: env var if
+        # set, otherwise persist in the DB (issue #77 — an ephemeral key made
+        # stored SSH keys unusable after every container restart).
+        from backend import crypto as crypto_module
+
+        env_encryption_key = crypto_module.env_key()
+        if env_encryption_key:
+            crypto_module.init_encryption_key(env_encryption_key)
+        else:
+            result = await session.execute(
+                select(models.AppConfig).where(models.AppConfig.key == "encryption_key")
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                crypto_module.init_encryption_key(row.value)
+            else:
+                new_key = secrets.token_hex(32)
+                session.add(models.AppConfig(key="encryption_key", value=new_key))
+                crypto_module.init_encryption_key(new_key)
+                logger.info(
+                    "Generated and stored a new encryption key in the database. "
+                    "Set ENCRYPTION_KEY to manage it outside the DB instead."
+                )
+
         await session.commit()
+
+
+async def warn_unreadable_ssh_keys():
+    """Log a clear warning for stored per-server SSH keys we can no longer decrypt.
+
+    Before the encryption key was persisted (issue #77) it was regenerated on
+    every restart, leaving undecryptable blobs behind. Those servers silently
+    fall back to global SSH auth, so surface them explicitly at startup.
+    """
+    from sqlalchemy import select
+    from backend.crypto import decrypt
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(models.Server).where(models.Server.ssh_private_key_enc.isnot(None))
+        )
+        broken = []
+        for server in result.scalars().all():
+            try:
+                decrypt(server.ssh_private_key_enc)
+            except Exception:
+                broken.append(server.name or server.hostname)
+
+    if broken:
+        logger.warning(
+            "⚠️  Stored SSH key could not be decrypted for %d server(s): %s. "
+            "The encryption key changed (or was ephemeral before this version). "
+            "Re-enter the SSH key for these servers in Settings → Servers; "
+            "until then they fall back to the global SSH_PRIVATE_KEY / agent.",
+            len(broken), ", ".join(sorted(broken)),
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_defaults()
+    await warn_unreadable_ssh_keys()
 
     from backend.scheduler import start_scheduler, stop_scheduler
     await start_scheduler()
