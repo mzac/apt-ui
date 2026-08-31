@@ -1,5 +1,13 @@
 # ── Stage 1: build the React frontend ─────────────────────────────────────
-FROM node:22-alpine AS frontend-build
+# Pinned to BUILDPLATFORM: this stage only emits static JS/CSS, which is
+# architecture-independent, so it must run natively on the builder rather than
+# once per target arch. Without the pin the whole `npm ci` + vite build ran
+# under QEMU emulation for the linux/arm64 image — invisible while the buildx
+# layer cache was warm, but GitHub evicts that cache after 7 days, so the first
+# release built more than a week after the last one took over an hour instead
+# of ~4 minutes. The `dist/` output is copied into the final image below, which
+# *is* built per target arch.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 
 WORKDIR /app/frontend
 
