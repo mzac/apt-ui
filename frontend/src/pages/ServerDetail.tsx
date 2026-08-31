@@ -79,8 +79,14 @@ export default function ServerDetail() {
   const [server, setServer] = useState<Server | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
+  const { user: currentUser } = useAuthStore()
+  const isAdmin = !!currentUser?.is_admin
+  // Shell is admin-only server-side (interactive root shell) — don't offer the tab.
+  const visibleTabs = TABS.filter(t => t !== 'Shell' || isAdmin)
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
+  // A non-admin who deep-links to (or was left on) the Shell tab falls back to Packages.
+  const effectiveTab: Tab = tab === 'Shell' && !isAdmin ? 'Packages' : tab
   // 'waiting'/'back'/'failed' track the post-reboot "did it come back" indicator (issue #62)
   const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting' | 'waiting' | 'back' | 'failed'>('idle')
   const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
@@ -375,12 +381,12 @@ export default function ServerDetail() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border">
-        {TABS.map(t => (
+        {visibleTabs.map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 ${
-              tab === t ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
+              effectiveTab === t ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
           >
             {t}
@@ -388,14 +394,14 @@ export default function ServerDetail() {
         ))}
       </div>
 
-      {tab === 'Packages' && <PackagesTab serverId={serverId} server={server} onRefresh={load} />}
-      {tab === 'Upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={load} />}
-      {tab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
-      {tab === 'History' && <HistoryTab serverId={serverId} />}
-      {tab === 'Stats' && <StatsTab serverId={serverId} />}
-      {tab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
-      {tab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
-      {tab === 'Health' && <HealthTab serverId={serverId} />}
+      {effectiveTab === 'Packages' && <PackagesTab serverId={serverId} server={server} onRefresh={load} />}
+      {effectiveTab === 'Upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={load} />}
+      {effectiveTab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
+      {effectiveTab === 'History' && <HistoryTab serverId={serverId} />}
+      {effectiveTab === 'Stats' && <StatsTab serverId={serverId} />}
+      {effectiveTab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
+      {effectiveTab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
+      {effectiveTab === 'Health' && <HealthTab serverId={serverId} />}
     </div>
   )
 }
@@ -882,6 +888,8 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   const [removeModal, setRemoveModal] = useState(false)
   const [showInstallModal, setShowInstallModal] = useState(false)
   const [showDebModal, setShowDebModal] = useState(false)
+  // Installing a .deb runs maintainer scripts as root, so it is admin-only server-side.
+  const { user: debUser } = useAuthStore()
 
   const loadPackages = useCallback(async () => {
     try {
@@ -972,12 +980,14 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
     <div className="space-y-4">
       {/* Install buttons — always visible */}
       <div className="flex justify-end gap-2">
-        <button
-          onClick={() => setShowDebModal(true)}
-          className="btn-secondary text-xs"
-        >
-          + Install .deb
-        </button>
+        {debUser?.is_admin && (
+          <button
+            onClick={() => setShowDebModal(true)}
+            className="btn-secondary text-xs"
+          >
+            + Install .deb
+          </button>
+        )}
         <button
           onClick={() => setShowInstallModal(true)}
           className="btn-secondary text-xs"
