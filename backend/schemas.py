@@ -320,6 +320,7 @@ class ScheduleConfigOut(BaseModel):
     canary_health_check: bool = False
     conffile_action: str = "confdef_confold"
     reachability_ttl_minutes: int = 5
+    queue_for_next_window: bool = False
     staged_rollout_enabled: bool = False
     ring_promotion_delay_hours: int = 24
     weekly_digest_enabled: bool = False
@@ -350,6 +351,7 @@ class ScheduleConfigUpdate(BaseModel):
     canary_health_check: Optional[bool] = None
     conffile_action: Optional[str] = None
     reachability_ttl_minutes: Optional[int] = None
+    queue_for_next_window: Optional[bool] = None
     staged_rollout_enabled: Optional[bool] = None
     ring_promotion_delay_hours: Optional[int] = None
     weekly_digest_enabled: Optional[bool] = None

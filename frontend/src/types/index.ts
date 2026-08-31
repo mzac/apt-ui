@@ -199,6 +199,9 @@ export interface ScheduleConfig {
   canary_health_check: boolean
   conffile_action: string
   reachability_ttl_minutes: number
+  // When auto-upgrade hits a server inside a deny window, queue it for the
+  // window's next opening instead of skipping the run (issue #62).
+  queue_for_next_window: boolean
   staged_rollout_enabled: boolean        // issue #41
   ring_promotion_delay_hours: number     // issue #41
   weekly_digest_enabled: boolean         // issue #58

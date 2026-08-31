@@ -351,6 +351,11 @@ class ScheduleConfig(Base):
     conffile_action: Mapped[str] = mapped_column(Text, default="confdef_confold")
     reachability_ttl_minutes: Mapped[int] = mapped_column(Integer, default=5)
     # Staged rollout (issue #41) — group servers by `ring:*` tag and upgrade in order
+    # When the unattended auto-upgrade hits a server inside a deny window, queue it
+    # for the window's next opening instead of skipping the run entirely (issue #62).
+    # Defaults off: the long-standing behaviour is "skip and log", and changing that
+    # silently would surprise anyone relying on the job staying hands-off.
+    queue_for_next_window: Mapped[bool] = mapped_column(Boolean, default=False)
     staged_rollout_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     ring_promotion_delay_hours: Mapped[int] = mapped_column(Integer, default=24)
     # Weekly patch digest (issue #58) — separate cron from the daily summary so

@@ -106,6 +106,7 @@ async def _job_auto_upgrade():
         from backend.routers.maintenance import get_active_window_for_server
         to_upgrade = []
         skipped_for_maintenance = 0
+        queued_for_window = 0
         for s in servers:
             chk_res = await db.execute(
                 select(UpdateCheck)
@@ -122,20 +123,40 @@ async def _job_auto_upgrade():
                 # ws_upgrade_all's/ws_upgrade's `queue_for_window` param in
                 # backend/routers/upgrades.py and
                 # backend.rollout.queue_server_for_next_window (issue #62).
-                # It is intentionally NOT wired into this unattended cron path:
-                # there is no ScheduleConfig column to opt in/out per the
-                # scheduled run, and silently changing this job's long-standing
-                # "skip and log" behaviour with no off-switch would itself be a
-                # regression for anyone relying on it staying hands-off during
-                # a deny window.
+                # For the unattended cron path this is opt-in via
+                # ScheduleConfig.queue_for_next_window (default off), because the
+                # long-standing behaviour is "skip and log" and changing it with no
+                # off-switch would surprise anyone relying on the job staying
+                # hands-off during a deny window.
                 window = await get_active_window_for_server(db, s.id)
                 if window:
                     skipped_for_maintenance += 1
+                    if getattr(cfg, "queue_for_next_window", False):
+                        try:
+                            from backend.rollout import queue_server_for_next_window
+                            queued_at = await queue_server_for_next_window(db, s.id)
+                            if queued_at:
+                                queued_for_window += 1
+                                logger.info(
+                                    "Auto-upgrade queued %s for the next opening of window '%s' (%s)",
+                                    s.name, window.name, queued_at,
+                                )
+                                continue
+                            logger.warning(
+                                "Auto-upgrade could not find an opening for %s within the lookahead — skipping",
+                                s.name,
+                            )
+                        except Exception:
+                            # Queueing is best-effort: never let it turn a skip into a crash.
+                            logger.exception("Failed to queue %s for its next maintenance window", s.name)
                     logger.info("Auto-upgrade skipping %s — inside maintenance window '%s'", s.name, window.name)
                     continue
                 to_upgrade.append(s)
         if skipped_for_maintenance:
-            logger.info("Auto-upgrade: skipped %d server(s) inside maintenance windows", skipped_for_maintenance)
+            logger.info(
+                "Auto-upgrade: %d server(s) inside maintenance windows (%d queued for the next opening)",
+                skipped_for_maintenance, queued_for_window,
+            )
 
     semaphore = asyncio.Semaphore(concurrency)
 

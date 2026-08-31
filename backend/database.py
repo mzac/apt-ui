@@ -237,6 +237,7 @@ async def init_db():
             "ALTER TABLE update_history ADD COLUMN task_id INTEGER",
             "ALTER TABLE update_history ADD COLUMN rollout_id INTEGER",
             "ALTER TABLE maintenance_windows ADD COLUMN mode TEXT DEFAULT 'deny'",
+            "ALTER TABLE schedule_config ADD COLUMN queue_for_next_window BOOLEAN DEFAULT 0",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

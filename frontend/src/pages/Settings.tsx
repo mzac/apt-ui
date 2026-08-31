@@ -2264,6 +2264,21 @@ function PreferencesTab() {
               Allow phased updates in auto-upgrade
             </label>
 
+            <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.queue_for_next_window ?? false}
+                onChange={e => setForm(f => ({ ...f, queue_for_next_window: e.target.checked }))}
+                className="w-4 h-4 accent-amber"
+              />
+              Queue window-blocked servers for the next opening
+            </label>
+            <p className="text-xs text-text-muted leading-snug pl-6 -mt-1">
+              Off by default, auto-upgrade simply skips a server sitting inside a maintenance
+              deny window and logs it. With this on, the server is scheduled to upgrade when
+              that window next opens instead of waiting for the following cron run.
+            </p>
+
             {/* Staged rollout (issue #41) */}
             <div className="border-t border-border/30 pt-3 space-y-3">
               <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
