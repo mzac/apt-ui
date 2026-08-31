@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { stats as statsApi, type FleetTrendPoint } from '@/api/client'
+import { formatDate } from '@/utils/datetime'
 
 // Fleet trend over time, from persisted FleetSnapshot rows (written after each
 // scheduled check-all). Hidden until there are at least two data points.
@@ -14,7 +15,7 @@ export default function FleetTrendCard() {
   if (points.length < 2) return null
 
   const data = points.map(p => ({
-    date: new Date(p.recorded_at).toLocaleDateString(),
+    date: formatDate(p.recorded_at),
     pending: p.pending_packages_total,
     security: p.security_packages_total,
     pct: p.pct_up_to_date ?? 0,

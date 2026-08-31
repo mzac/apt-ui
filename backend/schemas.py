@@ -1,6 +1,15 @@
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel
+from typing import Annotated, Optional
+from pydantic import BaseModel, PlainSerializer
+
+from backend.timeutil import utc_iso
+
+# The DB stores naive UTC. Serializing that bare gives an offset-less string
+# that JS parses as local time, shifting every rendered timestamp by the
+# viewer's UTC offset. Use this alias for every outbound datetime field so the
+# zone is always explicit; tz-aware values (APScheduler next-run times) keep
+# their own offset.
+UtcDateTime = Annotated[datetime, PlainSerializer(utc_iso, return_type=Optional[str], when_used="json")]
 
 
 # ---------------------------------------------------------------------------
@@ -22,8 +31,8 @@ class UserOut(BaseModel):
     id: int
     username: str
     is_admin: bool
-    created_at: datetime
-    last_login: Optional[datetime] = None
+    created_at: UtcDateTime
+    last_login: Optional[UtcDateTime] = None
     is_default_password: bool = False
     totp_enabled: bool = False  # issue #18
 
@@ -124,7 +133,7 @@ class ServerUpdate(BaseModel):
 
 
 class LatestCheckOut(BaseModel):
-    checked_at: Optional[datetime] = None
+    checked_at: Optional[UtcDateTime] = None
     status: Optional[str] = None
     packages_available: int = 0
     security_packages: int = 0
@@ -155,8 +164,8 @@ class ServerOut(BaseModel):
     tags: list[TagOut] = []
     is_enabled: bool
     ssh_key_configured: bool = False  # true if a per-server encrypted key is stored
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
     latest_check: Optional[LatestCheckOut] = None
     # Stats fields from latest ServerStats row
     cpu_count: Optional[int] = None
@@ -168,14 +177,14 @@ class ServerOut(BaseModel):
     eeprom_update_available: Optional[str] = None  # up_to_date / update_available / update_staged / error / frozen
     eeprom_current_version: Optional[str] = None  # unix timestamp string
     eeprom_latest_version: Optional[str] = None   # unix timestamp string
-    last_apt_update: Optional[datetime] = None    # mtime of apt package cache on remote
+    last_apt_update: Optional[UtcDateTime] = None    # mtime of apt package cache on remote
     notes: Optional[str] = None                   # free-text notes for this server
     is_docker_host: bool = False                  # true when this server is the Docker host running this container
     apt_proxy: Optional[str] = None               # apt HTTP proxy URL if configured (e.g. apt-cacher-ng), else None
     is_proxmox: bool = False                      # true when os_info starts with "Proxmox VE"
     is_reachable: bool = True                     # updated by background TCP ping job
-    last_seen: Optional[datetime] = None          # timestamp of last successful TCP connect
-    kernel_install_date: Optional[datetime] = None  # when running kernel was installed (issue #44)
+    last_seen: Optional[UtcDateTime] = None          # timestamp of last successful TCP connect
+    kernel_install_date: Optional[UtcDateTime] = None  # when running kernel was installed (issue #44)
     boot_free_mb: Optional[int] = None              # free MB on /boot (issue #43)
     boot_total_mb: Optional[int] = None             # total MB on /boot
     snapshot_capability: Optional[str] = None       # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
@@ -205,7 +214,7 @@ class PackageInfo(BaseModel):
 class UpdateCheckOut(BaseModel):
     id: int
     server_id: int
-    checked_at: datetime
+    checked_at: UtcDateTime
     status: str
     error_message: Optional[str] = None
     packages_available: int
@@ -247,8 +256,8 @@ class UpgradeRequest(BaseModel):
 class UpdateHistoryOut(BaseModel):
     id: int
     server_id: int
-    started_at: datetime
-    completed_at: Optional[datetime] = None
+    started_at: UtcDateTime
+    completed_at: Optional[UtcDateTime] = None
     status: str
     action: str
     phased_updates: bool
@@ -272,8 +281,8 @@ class FleetOverview(BaseModel):
     reboot_required: int
     held_packages_total: int
     autoremove_total: int = 0
-    last_check_time: Optional[datetime] = None
-    next_check_time: Optional[datetime] = None
+    last_check_time: Optional[UtcDateTime] = None
+    next_check_time: Optional[UtcDateTime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +310,8 @@ class ScheduleConfigOut(BaseModel):
     allow_phased_on_auto: bool
     upgrade_concurrency: int
     log_retention_days: int
-    next_check_time: Optional[datetime] = None
-    next_upgrade_time: Optional[datetime] = None
+    next_check_time: Optional[UtcDateTime] = None
+    next_upgrade_time: Optional[UtcDateTime] = None
     timezone: str = ""
     auto_tag_os: bool = False
     auto_tag_virt: bool = False
@@ -317,7 +326,7 @@ class ScheduleConfigOut(BaseModel):
     weekly_digest_day_of_week: int = 0   # 0=Mon … 6=Sun
     weekly_digest_hour: int = 9
     weekly_digest_minute: int = 0
-    next_weekly_digest_time: Optional[datetime] = None
+    next_weekly_digest_time: Optional[UtcDateTime] = None
     # Rolling reboot orchestration (issue #56)
     reboot_batch_size: int = 3
     reboot_batch_wait_minutes: int = 5
@@ -466,7 +475,7 @@ class NotificationConfigUpdate(BaseModel):
 
 class NotificationLogOut(BaseModel):
     id: int
-    sent_at: datetime
+    sent_at: UtcDateTime
     channel: str
     event_type: str
     summary: str
@@ -498,7 +507,7 @@ class TemplateOut(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
-    created_at: datetime
+    created_at: UtcDateTime
     packages: list[TemplatePackageOut] = []
 
     model_config = {"from_attributes": True}

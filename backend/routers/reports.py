@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import get_current_user
 from backend.database import get_db
 from backend.models import Server, UpdateCheck, UpdateHistory, User
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -53,7 +54,7 @@ async def patch_coverage(
         rows.append({
             "server": s.name,
             "hostname": s.hostname,
-            "last_check": last.isoformat() if last else None,
+            "last_check": utc_iso(last),
             "in_24h": in_24h,
             "in_7d": in_7d,
             "in_30d": in_30d,
@@ -188,8 +189,8 @@ async def security_sla(
             rows.append({
                 "server": s.name,
                 "hostname": s.hostname,
-                "first_security_seen": first_sec.checked_at.isoformat(),
-                "cleared_at": cleared.checked_at.isoformat(),
+                "first_security_seen": utc_iso(first_sec.checked_at),
+                "cleared_at": utc_iso(cleared.checked_at),
                 "days_to_clear": round(days, 2),
                 "in_sla": ok,
             })
@@ -204,7 +205,7 @@ async def security_sla(
             rows.append({
                 "server": s.name,
                 "hostname": s.hostname,
-                "first_security_seen": first_sec.checked_at.isoformat(),
+                "first_security_seen": utc_iso(first_sec.checked_at),
                 "cleared_at": None,
                 "days_to_clear": round(days, 2),
                 "in_sla": ok,
@@ -250,7 +251,7 @@ async def change_record(
 
     records = [
         {
-            "started_at": h.started_at.isoformat() if h.started_at else "",
+            "started_at": utc_iso(h.started_at) or "",
             "server": srv_map.get(h.server_id, f"#{h.server_id}"),
             "action": h.action,
             "status": h.status,

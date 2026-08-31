@@ -18,6 +18,7 @@ import RollingRebootModal from '@/components/RollingRebootModal'
 import PackageInstallModal from '@/components/PackageInstallModal'
 import DriftModal from '@/components/DriftModal'
 import CopySshButton from '@/components/CopySshButton'
+import { relativeTime, isStale } from '@/utils/datetime'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
 
 function osIcon(osInfo: string | null): string {
@@ -33,6 +34,16 @@ function osIcon(osInfo: string | null): string {
   return '🐧'
 }
 
+// Mirrors the backend's own target selection for /api/ws/upgrade-all
+// (backend/routers/upgrades.py): disabled servers, and servers whose latest check
+// didn't succeed with pending packages, are dropped server-side. Including them
+// client-side inflated the "Upgrade All (n)" count and left them stuck as failures
+// in the modal because no message ever arrived for them.
+function isUpgradable(s: Server): boolean {
+  const c = s.latest_check
+  return s.is_enabled && c?.status === 'success' && c.packages_available > 0
+}
+
 function serverStatus(s: Server): ServerStatus {
   if (!s.is_enabled) return 'disabled'
   const c = s.latest_check
@@ -42,20 +53,14 @@ function serverStatus(s: Server): ServerStatus {
   return 'up_to_date'
 }
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const min = Math.floor(diff / 60000)
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min}m ago`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
-
-function isStale(iso: string | null | undefined, hours = 24): boolean {
-  if (!iso) return false
-  return Date.now() - new Date(iso).getTime() > hours * 3600_000
+// Parse an int URL query param, treating garbage as "no filter". `parseInt('x')`
+// yields NaN, and `NaN != null` made the filter read as active while matching
+// nothing — an empty dashboard with no visible filter chip, and `group=NaN`
+// written back to the URL.
+function intParam(raw: string | null): number | null {
+  if (raw == null || raw === '') return null
+  const n = parseInt(raw, 10)
+  return Number.isNaN(n) ? null : n
 }
 
 // Custom pie tooltip
@@ -89,15 +94,12 @@ export default function Dashboard() {
   const [serverList, setServerList] = useState<Server[]>([])
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [initialLoaded, setInitialLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [overview, setOverview] = useState<FleetOverview | null>(null)
   // Initialise filters from URL query params so views are bookmarkable/shareable (issue #47)
   const _initialUrl = new URLSearchParams(window.location.search)
-  const [activeGroup, setActiveGroup] = useState<number | null>(
-    _initialUrl.get('group') ? parseInt(_initialUrl.get('group')!) : null,
-  )
-  const [activeTag, setActiveTag] = useState<number | null>(
-    _initialUrl.get('tag') ? parseInt(_initialUrl.get('tag')!) : null,
-  )
+  const [activeGroup, setActiveGroup] = useState<number | null>(intParam(_initialUrl.get('group')))
+  const [activeTag, setActiveTag] = useState<number | null>(intParam(_initialUrl.get('tag')))
   const [search, setSearch] = useState(_initialUrl.get('q') || '')
   const [sortBy, setSortBy] = useState<'name' | 'updates' | 'status' | 'group'>(
     () => (_initialUrl.get('sort') as any) || (localStorage.getItem('dashboard:sortBy') as 'name' | 'updates' | 'status' | 'group') || 'status'
@@ -125,6 +127,7 @@ export default function Dashboard() {
   const [reachability, setReachability] = useState<Record<number, boolean | null>>({})
   const [confirmDisable, setConfirmDisable] = useState<Server | null>(null)
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const progressFailuresRef = useRef(0)
 
   const isDefaultPassword = user?.is_default_password === true
 
@@ -142,20 +145,27 @@ export default function Dashboard() {
 
   const seedPaletteServers = useServersStore(s => s.setServers)
 
+  // Errors are caught here rather than left to the caller: usePolling doesn't catch,
+  // so a failed fetch used to leave "Loading…" on screen forever and throw an
+  // unhandled rejection on every 30s tick.
   const load = useCallback(async () => {
-    const [s, g, o] = await Promise.all([
-      serversApi.list(),
-      groupsApi.list(),
-      statsApi.overview(),
-    ])
-    setServerList(s)
-    setGroupList(g)
-    setOverview(o)
-    setInitialLoaded(true)
-    // Share the freshly-fetched list with the command palette so it doesn't
-    // need to make a duplicate request when first opened.
-    seedPaletteServers(s)
-    return s
+    try {
+      const [s, g, o] = await Promise.all([
+        serversApi.list(),
+        groupsApi.list(),
+        statsApi.overview(),
+      ])
+      setServerList(s)
+      setGroupList(g)
+      setOverview(o)
+      setInitialLoaded(true)
+      setLoadError(null)
+      // Share the freshly-fetched list with the command palette so it doesn't
+      // need to make a duplicate request when first opened.
+      seedPaletteServers(s)
+    } catch (err: unknown) {
+      setLoadError((err as Error)?.message || 'Failed to load the dashboard.')
+    }
   }, [seedPaletteServers])
 
   usePolling(load, 30_000)
@@ -265,7 +275,10 @@ export default function Dashboard() {
     try {
       await serversApi.update(s.id, { is_enabled: true })
       await load()
-    } catch {}
+      toast.success(`Enabled ${s.name}`)
+    } catch (err: unknown) {
+      toast.error(`Failed to enable ${s.name}: ${(err as Error)?.message || 'unknown error'}`)
+    }
   }
 
   // ----- bulk selection (issue #62) --------------------------------------
@@ -296,15 +309,19 @@ export default function Dashboard() {
   }
 
   function bulkUpgrade() {
-    const targets = selectedServers.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
+    const targets = selectedServers.filter(isUpgradable)
     if (!targets.length) { toast.info('No selected servers have pending updates'); return }
     setBulkServers(targets)
     setShowUpgradeAll(true)
+    setUpgradeMinimized(false)
   }
 
   function bulkReboot() {
-    if (!selectedServers.length) return
-    setBulkServers(selectedServers)
+    // The backend drops disabled servers from /api/ws/reboot-all, so sending them
+    // would just leave dead rows in the modal.
+    const targets = selectedServers.filter(s => s.is_enabled)
+    if (!targets.length) { toast.info('No enabled servers selected'); return }
+    setBulkServers(targets)
     setShowRollingReboot(true)
   }
 
@@ -322,10 +339,14 @@ export default function Dashboard() {
 
   async function confirmDoDisable() {
     if (!confirmDisable) return
+    const target = confirmDisable
     try {
-      await serversApi.update(confirmDisable.id, { is_enabled: false })
+      await serversApi.update(target.id, { is_enabled: false })
       await load()
-    } catch {}
+      toast.success(`Disabled ${target.name}`)
+    } catch (err: unknown) {
+      toast.error(`Failed to disable ${target.name}: ${(err as Error)?.message || 'unknown error'}`)
+    }
     setConfirmDisable(null)
   }
 
@@ -333,6 +354,7 @@ export default function Dashboard() {
     setCheckingAll(true)
     setCheckingMode(mode)
     setCheckProgress({ done: 0, total: 0, current: [] })
+    progressFailuresRef.current = 0
     const label = mode === 'refresh' ? 'Refresh All' : 'Check All'
     addJob({ id: 'check-all', type: 'check-all', label, status: 'running', link: '/', startedAt: Date.now() })
     try {
@@ -343,6 +365,7 @@ export default function Dashboard() {
       progressIntervalRef.current = setInterval(async () => {
         try {
           const prog = await serversApi.checkProgress()
+          progressFailuresRef.current = 0
           setCheckProgress({ done: prog.done, total: prog.total || total, current: prog.current_servers })
           if (!prog.running) {
             clearInterval(progressIntervalRef.current!)
@@ -352,10 +375,17 @@ export default function Dashboard() {
             await load()
           }
         } catch {
-          clearInterval(progressIntervalRef.current!)
-          progressIntervalRef.current = null
-          setCheckingAll(false)
-          setCheckingMode(null)
+          // A single failed poll doesn't mean the fleet check stopped — giving up on
+          // the first error cleared the banner and re-enabled Check All mid-run,
+          // which let a second overlapping run start. Only bail after N in a row.
+          progressFailuresRef.current += 1
+          if (progressFailuresRef.current >= 3) {
+            clearInterval(progressIntervalRef.current!)
+            progressIntervalRef.current = null
+            setCheckingAll(false)
+            setCheckingMode(null)
+            toast.error('Lost contact with the fleet check — progress is no longer being tracked.')
+          }
         }
       }, 2000)
     } catch {
@@ -385,7 +415,7 @@ export default function Dashboard() {
     return () => window.removeEventListener('apt:restore-upgrade-all', onRestore)
   }, [])
 
-  const serversWithUpdates = filtered.filter(s => (s.latest_check?.packages_available ?? 0) > 0)
+  const serversWithUpdates = filtered.filter(isUpgradable)
   const serversWithAutoremove = serverList.filter(s => s.is_enabled && (s.latest_check?.autoremove_count ?? 0) > 0)
   const serversNeedingReboot = serverList.filter(s => s.is_enabled && s.latest_check?.reboot_required === true)
   const hasFilters = activeGroup != null || activeTag != null
@@ -400,6 +430,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-4">
+      {/* Load failure banner — a poll after the first successful load failed. The
+          stale data below is still rendered, so this only offers a retry. */}
+      {loadError && initialLoaded && (
+        <div className="px-4 py-2 bg-red/10 border border-red/30 rounded text-red text-sm flex items-center gap-2">
+          <span>⚠ {loadError}</span>
+          <button onClick={() => load()} className="btn-secondary text-xs ml-auto">Retry</button>
+        </div>
+      )}
+
       {/* Default password warning */}
       {isDefaultPassword && (
         <div className="px-4 py-2 bg-amber/10 border border-amber/30 rounded text-amber text-sm">
@@ -618,7 +657,13 @@ export default function Dashboard() {
           </div>
         </div>
         {serversWithUpdates.length > 0 && (
-          <button onClick={() => setShowUpgradeAll(true)} className="btn-amber text-xs">
+          <button
+            // Also clear the minimized flag — otherwise clicking this while the modal
+            // is minimized re-set an already-true flag and the wrapper stayed display:none,
+            // making the button look dead.
+            onClick={() => { setShowUpgradeAll(true); setUpgradeMinimized(false) }}
+            className="btn-amber text-xs"
+          >
             Upgrade All ({serversWithUpdates.length})
           </button>
         )}
@@ -656,8 +701,14 @@ export default function Dashboard() {
       {/* Server cards */}
       {groupView ? (
         <div className="space-y-6">
-          {!initialLoaded && (
+          {!initialLoaded && !loadError && (
             <div className="py-12 text-center text-text-muted text-sm">Loading…</div>
+          )}
+          {!initialLoaded && loadError && (
+            <div className="py-12 text-center text-sm space-y-2">
+              <p className="text-red font-mono">{loadError}</p>
+              <button onClick={() => load()} className="btn-secondary text-xs">Retry</button>
+            </div>
           )}
           {initialLoaded && filtered.length === 0 && (
             <div className="py-12 text-center text-text-muted text-sm">
@@ -722,8 +773,14 @@ export default function Dashboard() {
               />
             )
           })}
-          {!initialLoaded && (
+          {!initialLoaded && !loadError && (
             <div className="col-span-full py-12 text-center text-text-muted text-sm">Loading…</div>
+          )}
+          {!initialLoaded && loadError && (
+            <div className="col-span-full py-12 text-center text-sm space-y-2">
+              <p className="text-red font-mono">{loadError}</p>
+              <button onClick={() => load()} className="btn-secondary text-xs">Retry</button>
+            </div>
           )}
           {initialLoaded && filtered.length === 0 && (
             <div className="col-span-full py-12 text-center text-text-muted text-sm">
@@ -1152,17 +1209,31 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
         <div className="flex-1 min-w-0 space-y-0.5">
           <div className="flex items-center gap-1.5">
             {/* Status dot doubles as the bulk-select control: the checkbox replaces the
-                dot on hover or when the card is selected — no overlap with corner status. */}
+                dot on hover or when the card is selected — no overlap with corner status.
+                It is faded out rather than `hidden` so it stays in the tab order (a
+                `display:none` control can never be focused, and `focus-within` could
+                never fire on it), and it is shown unconditionally on pointer-coarse
+                devices, which have no hover state at all. */}
             <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 shrink-0">
               {onToggleSelect && (
-                <SelectCheckbox
-                  checked={!!selected}
-                  onChange={onToggleSelect}
-                  label={`Select ${s.name}`}
-                  className={selected ? '' : 'hidden group-hover/card:inline-flex'}
-                />
+                <span
+                  className={`absolute inset-0 inline-flex items-center justify-center ${selected
+                    ? ''
+                    : 'opacity-0 transition-opacity focus-within:opacity-100 group-hover/card:opacity-100 [@media(hover:none)]:opacity-100'}`}
+                >
+                  <SelectCheckbox
+                    checked={!!selected}
+                    onChange={onToggleSelect}
+                    label={`Select ${s.name}`}
+                  />
+                </span>
               )}
-              <span className={selected ? 'hidden' : (onToggleSelect ? 'group-hover/card:hidden' : '')}>
+              <span
+                className={selected
+                  ? 'hidden'
+                  : (onToggleSelect ? 'group-hover/card:hidden [@media(hover:none)]:hidden' : '')}
+                title={status}
+              >
                 <StatusDot status={status} />
               </span>
             </span>
@@ -1349,7 +1420,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           className={`text-xs font-mono ${isStale(c?.checked_at, 24) ? 'text-amber' : isStale(c?.checked_at, 12) ? 'text-amber/70' : 'text-text-muted'}`}
           title={isStale(c?.checked_at, 24) ? 'Last check was over 24h ago' : undefined}
         >
-          {relativeTime(c?.checked_at || null)}
+          {relativeTime(c?.checked_at)}
           {isStale(c?.checked_at, 24) && ' ⚠'}
         </span>
         <div className="flex gap-1 flex-wrap justify-end items-center">

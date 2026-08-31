@@ -19,6 +19,7 @@ from backend.auth import (
 from backend.database import get_db
 from backend.models import ApiToken, AuthEventLog, User
 from backend.schemas import ChangePasswordRequest, LoginRequest, UserOut
+from backend.timeutil import utc_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -233,6 +234,13 @@ async def change_password(
             detail="Current password is incorrect",
         )
 
+    # Same minimum the admin create/reset paths enforce
+    if len(body.new_password) < 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 4 characters",
+        )
+
     # Re-fetch within this session to allow update
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one()
@@ -263,9 +271,9 @@ async def list_tokens(
             "id": t.id,
             "name": t.name,
             "prefix": t.token_prefix,
-            "created_at": t.created_at,
-            "last_used_at": t.last_used_at,
-            "expires_at": t.expires_at,
+            "created_at": utc_iso(t.created_at),
+            "last_used_at": utc_iso(t.last_used_at),
+            "expires_at": utc_iso(t.expires_at),
             "scopes": t.scopes,
         }
         for t in res.scalars().all()
@@ -316,9 +324,9 @@ async def create_token(
         "name": tok.name,
         "prefix": tok.token_prefix,
         "token": raw,  # shown ONCE
-        "created_at": tok.created_at,
+        "created_at": utc_iso(tok.created_at),
         "scopes": tok.scopes,
-        "expires_at": tok.expires_at,
+        "expires_at": utc_iso(tok.expires_at),
     }
     await record_auth_event(db, "token_created", username=current_user.username,
                             actor=current_user.username, detail=name)
@@ -447,8 +455,8 @@ def _user_dict(u: User) -> dict:
         "id": u.id,
         "username": u.username,
         "is_admin": u.is_admin,
-        "created_at": u.created_at,
-        "last_login": u.last_login,
+        "created_at": utc_iso(u.created_at),
+        "last_login": utc_iso(u.last_login),
     }
 
 
@@ -513,9 +521,9 @@ async def update_user(
         # Don't let an admin demote themselves if they're the last admin
         if user.id == current_user.id and not new_admin:
             other_admins = await db.execute(
-                select(User).where(User.is_admin == True, User.id != user.id)
+                select(User.id).where(User.is_admin == True, User.id != user.id).limit(1)
             )
-            if other_admins.scalar_one_or_none() is None:
+            if other_admins.scalars().first() is None:
                 raise HTTPException(status_code=400, detail="Cannot demote the last admin")
         user.is_admin = new_admin
 
@@ -552,9 +560,9 @@ async def delete_user(
     # Make sure we don't delete the last admin
     if user.is_admin:
         other_admins = await db.execute(
-            select(User).where(User.is_admin == True, User.id != user.id)
+            select(User.id).where(User.is_admin == True, User.id != user.id).limit(1)
         )
-        if other_admins.scalar_one_or_none() is None:
+        if other_admins.scalars().first() is None:
             raise HTTPException(status_code=400, detail="Cannot delete the last admin")
     # Cascade-delete the user's API tokens
     deleted_username = user.username
@@ -588,7 +596,7 @@ async def list_auth_events(
     items = [
         {
             "id": e.id,
-            "created_at": e.created_at,
+            "created_at": utc_iso(e.created_at),
             "event_type": e.event_type,
             "username": e.username,
             "actor": e.actor,

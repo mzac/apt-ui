@@ -13,9 +13,16 @@ interface Props {
 }
 
 interface ServerProgress {
-  status: 'pending' | 'running' | 'done' | 'error'
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
   lines: string[]
 }
+
+// A server keeps streaming output after its 'complete' message (hook output, the
+// trailing summary line), so a late 'output'/'status' must never downgrade a
+// terminal result back to "running" — that flipped finished ✓ chips to ⚙️.
+const TERMINAL: ServerProgress['status'][] = ['done', 'error', 'skipped']
+const liveStatus = (prev?: ServerProgress): ServerProgress['status'] =>
+  prev && TERMINAL.includes(prev.status) ? prev.status : 'running'
 
 export default function AutoremoveAllModal({ servers, onClose }: Props) {
   const [started, setStarted] = useState(false)
@@ -26,6 +33,7 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   const [done, setDone] = useState(false)
   const [filterServer, setFilterServer] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const termRef = useRef<HTMLDivElement>(null)
   const { addJob, updateJob } = useJobStore()
   const pendingRef = useRef(0)
 
@@ -34,6 +42,13 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   useEffect(() => {
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Keep the terminal pinned to the newest line as output streams in.
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+    }
+  }, [progress])
 
   // Escape closes the modal before start or once done (not mid-run).
   useEscapeKey(handleClose, !started || done)
@@ -63,15 +78,25 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
       if (msg.type === 'output') {
         setProgress(p => ({
           ...p,
-          [sid]: { ...p[sid], status: 'running', lines: [...(p[sid]?.lines || []), msg.data as string] },
+          [sid]: { ...p[sid], status: liveStatus(p[sid]), lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
       } else if (msg.type === 'status') {
-        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'running' } }))
+        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: liveStatus(p[sid]) } }))
       } else if (msg.type === 'complete') {
         const data = msg.data as { success: boolean }
         setProgress(p => ({
           ...p,
           [sid]: { ...p[sid], status: data.success ? 'done' : 'error' },
+        }))
+        pendingRef.current -= 1
+        if (pendingRef.current <= 0) {
+          updateJob('autoremove-all', { status: 'complete', completedAt: Date.now() })
+        }
+      } else if (msg.type === 'skipped') {
+        // Maintenance-window / backend-dropped target — terminal, but NOT a failure.
+        setProgress(p => ({
+          ...p,
+          [sid]: { ...p[sid], status: 'skipped', lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
         pendingRef.current -= 1
         if (pendingRef.current <= 0) {
@@ -116,7 +141,7 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   }
 
   const statusIcon = (s: ServerProgress['status']) =>
-    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗' }[s])
+    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗', skipped: '⏭️' }[s])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
@@ -187,6 +212,7 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
             </div>
 
             <div
+              ref={termRef}
               className="flex-1 overflow-y-auto bg-bg border border-border rounded p-2 font-mono text-xs text-text-primary min-h-0"
               style={{ maxHeight: '40vh' }}
             >

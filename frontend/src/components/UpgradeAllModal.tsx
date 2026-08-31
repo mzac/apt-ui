@@ -19,6 +19,15 @@ interface ServerProgress {
   packagesUpgraded?: number
 }
 
+// The backend keeps streaming for a server *after* its 'complete' message —
+// post-upgrade hook output, the auto-reboot status, and the "Server is rebooting"
+// line (backend/upgrade_manager.py). A late 'output'/'status' must therefore never
+// downgrade a server that already reported a terminal result back to "running",
+// or every ✓ chip flips to ⚙️ and stays that way in the final Done view.
+const TERMINAL: ServerProgress['status'][] = ['done', 'error', 'skipped']
+const liveStatus = (prev?: ServerProgress): ServerProgress['status'] =>
+  prev && TERMINAL.includes(prev.status) ? prev.status : 'running'
+
 export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props) {
   // Auto-default to dist-upgrade when any server has new dependency packages
   // (e.g. new kernel) or kept-back packages — plain `apt-get upgrade` would skip them.
@@ -51,6 +60,13 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
     return () => { wsRef.current?.close() }
   }, [])
 
+  // Keep the terminal pinned to the newest line as output streams in.
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+    }
+  }, [progress])
+
   // Escape closes the modal before start or once the run is done (not mid-run).
   useEscapeKey(handleClose, !started || done)
 
@@ -82,10 +98,10 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
       if (msg.type === 'output') {
         setProgress(p => ({
           ...p,
-          [sid]: { ...p[sid], status: 'running', lines: [...(p[sid]?.lines || []), msg.data as string] },
+          [sid]: { ...p[sid], status: liveStatus(p[sid]), lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
       } else if (msg.type === 'status') {
-        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'running' } }))
+        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: liveStatus(p[sid]) } }))
       } else if (msg.type === 'complete') {
         const data = msg.data as { success: boolean; packages_upgraded: number }
         setProgress(p => ({

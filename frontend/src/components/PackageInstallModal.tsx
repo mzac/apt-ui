@@ -34,17 +34,23 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   const termRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const completedRef = useRef(false)
+  // Monotonic request id — a slow earlier search must not overwrite the results of
+  // a newer one that already landed (apt-cache search latency varies per query).
+  const searchSeqRef = useRef(0)
 
   const doSearch = useCallback(async (q: string) => {
-    if (!q.trim()) { setResults([]); return }
+    const seq = ++searchSeqRef.current
+    if (!q.trim()) { setResults([]); setSearching(false); return }
     setSearching(true)
     try {
       const r = await serversApi.packageSearch(serverId, q.trim())
+      if (seq !== searchSeqRef.current) return
       setResults(r)
     } catch {
+      if (seq !== searchSeqRef.current) return
       setResults([])
     } finally {
-      setSearching(false)
+      if (seq === searchSeqRef.current) setSearching(false)
     }
   }, [serverId])
 
@@ -120,7 +126,13 @@ export default function PackageInstallModal({ serverId, serverName, onClose }: P
   const modal = (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
-      onClick={e => { if (e.target === e.currentTarget) { e.stopPropagation(); handleClose() } }}
+      onClick={e => {
+        // Same gate as the ✕ button and Escape: a stray backdrop click must not
+        // tear down a running install.
+        if (e.target !== e.currentTarget) return
+        e.stopPropagation()
+        if (!started || done) handleClose()
+      }}
     >
       <div className="bg-surface border border-border rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}

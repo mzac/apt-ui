@@ -855,15 +855,38 @@ async def ws_upgrade_all(websocket: WebSocket):
         concurrency = cfg.upgrade_concurrency if cfg else 5
         run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
-        srv_query = select(Server).where(Server.is_enabled == True)
+        # When an explicit target set is given, load those servers *including* the
+        # disabled ones so we can report a skip for each — the client is waiting on a
+        # terminal message for every id it sent. Without an explicit set the target is
+        # "every enabled server", so disabled hosts were never in scope.
+        srv_query = select(Server)
         if explicit_ids:
             srv_query = srv_query.where(Server.id.in_(explicit_ids))
+        else:
+            srv_query = srv_query.where(Server.is_enabled == True)
         srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
+
+        async def _send_skipped(server_id: int, server_name: str | None, reason: str) -> None:
+            try:
+                await websocket.send_json({"type": "skipped", "server_id": server_id,
+                                           "server_name": server_name,
+                                           "data": f"Skipped — {reason}."})
+            except Exception:
+                pass
+
+        if explicit_ids:
+            found = {s.id for s in servers}
+            for missing in dict.fromkeys(explicit_ids):
+                if missing not in found:
+                    await _send_skipped(missing, None, "Server not found")
 
         from backend.routers.maintenance import window_block_reason
         to_upgrade = []
         for s in servers:
+            if not s.is_enabled:
+                await _send_skipped(s.id, s.name, "Server is disabled")
+                continue
             chk_res = await db.execute(
                 select(UpdateCheck)
                 .where(UpdateCheck.server_id == s.id)
@@ -872,14 +895,15 @@ async def ws_upgrade_all(websocket: WebSocket):
             )
             chk = chk_res.scalar_one_or_none()
             if not (chk and chk.status == "success" and chk.packages_available > 0):
+                await _send_skipped(
+                    s.id, s.name,
+                    "No pending updates from the last check" if chk and chk.status == "success"
+                    else "No successful update check yet",
+                )
                 continue
             block = await window_block_reason(db, s.id, override=override_window)
             if block:
-                try:
-                    await websocket.send_json({"type": "skipped", "server_id": s.id, "server_name": s.name,
-                                               "data": f"Skipped — {block}."})
-                except Exception:
-                    pass
+                await _send_skipped(s.id, s.name, block)
                 continue
             to_upgrade.append(s)
 
@@ -1224,7 +1248,12 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
                 ) as proc:
                     async for line in proc.stdout:
                         await send_fn({"type": "output", "data": line})
-                await send_fn({"type": "complete", "data": {"success": True}})
+                    await proc.wait_closed()
+                    exit_code = proc.exit_status if proc.exit_status is not None else 1
+                await send_fn({
+                    "type": "complete",
+                    "data": {"success": exit_code == 0, "exit_code": exit_code},
+                })
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -1447,21 +1476,40 @@ async def ws_reboot_all(websocket: WebSocket):
         batch_wait_seconds = max(0, (cfg.reboot_batch_wait_minutes if cfg else 5)) * 60
         reboot_timeout_seconds = max(60, (cfg.reboot_timeout_minutes if cfg else 10) * 60)
 
+        async def _send_skipped(server_id: int, server_name: str | None, reason: str) -> None:
+            """Terminal, non-failure message so the client can account for every
+            server it targeted instead of reporting 'stream ended early'."""
+            try:
+                await websocket.send_json({"type": "skipped", "server_id": server_id,
+                                           "server_name": server_name, "phase": "skipped",
+                                           "data": f"Skipped — {reason}."})
+            except Exception:
+                pass
+
         # Default target set: all enabled servers with reboot_required=True
         if explicit_ids:
-            srv_res = await db.execute(
-                select(Server).where(
-                    Server.id.in_(explicit_ids),
-                    Server.is_enabled == True,
-                )
-            )
-            servers = list(srv_res.scalars().all())
-        else:
-            srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
-            all_enabled = list(srv_res.scalars().all())
-            # Filter to those whose latest check has reboot_required=True
+            # Load the disabled ones too so each gets an explicit skip message.
+            srv_res = await db.execute(select(Server).where(Server.id.in_(explicit_ids)))
+            found = list(srv_res.scalars().all())
+            found_ids = {s.id for s in found}
+            for missing in dict.fromkeys(explicit_ids):
+                if missing not in found_ids:
+                    await _send_skipped(missing, None, "Server not found")
             servers = []
-            for s in all_enabled:
+            for s in found:
+                if not s.is_enabled:
+                    await _send_skipped(s.id, s.name, "Server is disabled")
+                    continue
+                servers.append(s)
+        else:
+            srv_res = await db.execute(select(Server))
+            all_servers = list(srv_res.scalars().all())
+            # Filter to enabled servers whose latest check has reboot_required=True
+            servers = []
+            for s in all_servers:
+                if not s.is_enabled:
+                    await _send_skipped(s.id, s.name, "Server is disabled")
+                    continue
                 chk_res = await db.execute(
                     select(UpdateCheck)
                     .where(UpdateCheck.server_id == s.id)
@@ -1471,6 +1519,8 @@ async def ws_reboot_all(websocket: WebSocket):
                 chk = chk_res.scalar_one_or_none()
                 if chk and chk.reboot_required:
                     servers.append(s)
+                else:
+                    await _send_skipped(s.id, s.name, "No reboot required")
 
         if not servers:
             await websocket.send_json({

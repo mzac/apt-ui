@@ -16,6 +16,7 @@ from backend.auth import get_current_user, require_admin
 from backend.config import now_local as _now_local
 from backend.database import get_db
 from backend.models import MaintenanceWindow, Server, User
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
 
@@ -81,7 +82,7 @@ def _serialize(w: MaintenanceWindow) -> dict:
         "end_minutes": w.end_minutes,
         "days_of_week": w.days_of_week,
         "enabled": w.enabled,
-        "created_at": w.created_at,
+        "created_at": utc_iso(w.created_at),
     }
 
 

@@ -8,8 +8,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.actor import set_actor
 from backend.auth import get_current_user, require_admin, get_current_user_ws
-from backend.database import get_db
+from backend.database import AsyncSessionLocal, get_db
 from backend.models import Server, User
 from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
 
@@ -197,45 +198,47 @@ async def delete_apt_repo(
 # ---------------------------------------------------------------------------
 
 @router.websocket("/api/ws/apt-repos-test/{server_id}")
-async def ws_apt_repos_test(
-    server_id: int,
-    websocket: WebSocket,
-    db: AsyncSession = Depends(get_db),
-):
-    user = await get_current_user_ws(websocket)
-    if user is None:
-        await websocket.close(code=1008)
-        return
-
+async def ws_apt_repos_test(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    result = await db.execute(select(Server).where(Server.id == server_id))
-    server = result.scalar_one_or_none()
-    if server is None:
-        await websocket.send_json({"type": "error", "data": "Server not found"})
-        await websocket.close()
-        return
+    token = websocket.cookies.get("apt_ui_token") or websocket.query_params.get("token")
+    async with AsyncSessionLocal() as db:
+        user = await get_current_user_ws(token or "", db)
+        if user is None:
+            await websocket.close(code=1008)
+            return
+        set_actor(user.username)
 
-    async def send_fn(msg: dict) -> None:
-        try:
-            await websocket.send_json(msg)
-        except Exception:
-            pass
-
-    try:
-        await send_fn({"type": "status", "data": "running"})
-        async with asyncssh.connect(**_connect_options(server)) as conn:
-            async with conn.create_process(f"{apt_prefix(server)}apt-get update", stderr=asyncssh.STDOUT) as proc:
-                async for line in proc.stdout:
-                    await send_fn({"type": "output", "data": line})
-            exit_code = proc.exit_status
-        await send_fn({"type": "complete", "data": {"success": exit_code == 0, "exit_code": exit_code}})
-    except WebSocketDisconnect:
-        pass
-    except Exception as exc:
-        await send_fn({"type": "error", "data": str(exc)})
-    finally:
-        try:
+        result = await db.execute(select(Server).where(Server.id == server_id))
+        server = result.scalar_one_or_none()
+        if server is None:
+            await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
-        except Exception:
+            return
+
+        async def send_fn(msg: dict) -> None:
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                pass
+
+        try:
+            await send_fn({"type": "status", "data": "running"})
+            async with asyncssh.connect(**_connect_options(server)) as conn:
+                async with conn.create_process(
+                    f"{apt_prefix(server)}apt-get update", stderr=asyncssh.STDOUT
+                ) as proc:
+                    async for line in proc.stdout:
+                        await send_fn({"type": "output", "data": line})
+                    await proc.wait_closed()
+                    exit_code = proc.exit_status if proc.exit_status is not None else 1
+            await send_fn({"type": "complete", "data": {"success": exit_code == 0, "exit_code": exit_code}})
+        except WebSocketDisconnect:
             pass
+        except Exception as exc:
+            await send_fn({"type": "error", "data": str(exc)})
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass

@@ -35,6 +35,20 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
   const termRef = useRef<HTMLDivElement>(null)
   const mountedRef = useRef(true)
   const uploadAbortRef = useRef<AbortController | null>(null)
+  const completedRef = useRef(false)
+
+  // The socket closing is NOT completion — only a 'complete'/'error' message is.
+  // Without this the spinner sat on "Installing…" forever when the stream dropped
+  // (auth expiry, network, backend restart).
+  function handleStreamClose(ev?: CloseEvent) {
+    if (completedRef.current || !mountedRef.current) return
+    setLines(prev => [...prev, ev && !ev.wasClean
+      ? 'ERROR: Connection closed before the install finished — check the server.'
+      : 'ERROR: Install ended without a completion message.'])
+    setStatusMsg('Installation failed')
+    setSuccess(false)
+    setPhase('done')
+  }
 
   useEffect(() => {
     if (termRef.current) {
@@ -79,6 +93,7 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
     setLines([])
     setSuccess(null)
     setStatusMsg('Connecting…')
+    completedRef.current = false
 
     wsRef.current = createInstallDebWebSocket(
       serverId,
@@ -92,16 +107,19 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
         } else if (msg.type === 'output') {
           setLines(prev => [...prev, msg.data as string])
         } else if (msg.type === 'error') {
+          completedRef.current = true
           setLines(prev => [...prev, `ERROR: ${msg.data}`])
           setPhase('done')
           setSuccess(false)
         } else if (msg.type === 'complete') {
+          completedRef.current = true
           const ok = (msg.data as Record<string, unknown>).success as boolean
           setSuccess(ok)
           setStatusMsg(ok ? 'Installation complete' : 'Installation failed')
           setPhase('done')
         }
       },
+      handleStreamClose,
     )
   }
 
@@ -132,6 +150,7 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
 
     setPhase('running')
     setStatusMsg('Installing…')
+    completedRef.current = false
 
     wsRef.current = createInstallDebWebSocket(
       serverId,
@@ -144,16 +163,19 @@ export default function DebInstallModal({ serverId, onClose }: Props) {
         } else if (msg.type === 'output') {
           setLines(prev => [...prev, msg.data as string])
         } else if (msg.type === 'error') {
+          completedRef.current = true
           setLines(prev => [...prev, `ERROR: ${msg.data}`])
           setPhase('done')
           setSuccess(false)
         } else if (msg.type === 'complete') {
+          completedRef.current = true
           const ok = (msg.data as Record<string, unknown>).success as boolean
           setSuccess(ok)
           setStatusMsg(ok ? 'Installation complete' : 'Installation failed')
           setPhase('done')
         }
       },
+      handleStreamClose,
     )
   }
 

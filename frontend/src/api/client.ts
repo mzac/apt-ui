@@ -30,6 +30,26 @@ class ApiError extends Error {
   }
 }
 
+// True once any API call in this page's lifetime has come back with a non-401
+// status — i.e. the cookie was actually accepted, so there really was a session.
+// Before that, a 401 is just the boot-time `auth.me()` probe of someone who has
+// never logged in: hard-redirecting there greeted a first-ever visitor with an
+// amber "Session expired" banner and, being a document navigation, threw away the
+// deep link RequireAuth stashes in `state.from`.
+let sessionEstablished = false
+
+// Full-page redirect to the login form, carrying the page the user asked for in a
+// query param. Router state can't survive a document navigation, so `?next=` is
+// how Login gets the user back where they were.
+function redirectToLogin(expired: boolean) {
+  if (window.location.pathname.startsWith('/login')) return
+  const next = window.location.pathname + window.location.search + window.location.hash
+  const q = new URLSearchParams()
+  if (expired) q.set('expired', '1')
+  if (next && next !== '/') q.set('next', next)
+  window.location.href = `/login${q.toString() ? `?${q}` : ''}`
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     credentials: 'include',
@@ -46,12 +66,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       const body = await res.json()
       if (body?.detail) detail = body.detail
     } catch {}
-    // Redirect to login unless already there (the login page surfaces the detail instead).
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.href = '/login?expired=1'
+    // Only a session that actually existed can *expire*. Without an established
+    // session this is the logged-out boot probe — leave the navigation to
+    // RequireAuth, which keeps the requested route in router state.
+    if (sessionEstablished) {
+      sessionEstablished = false
+      redirectToLogin(true)
     }
     throw new ApiError(401, detail)
   }
+
+  // Any non-401 response means the cookie was accepted, so a later 401 is a real
+  // expiry rather than "never logged in".
+  sessionEstablished = true
 
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
@@ -64,6 +91,31 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (res.status === 204) return undefined as unknown as T
   return res.json()
+}
+
+// The FormData / blob endpoints can't go through request() (which assumes JSON in
+// and out) but must still honour res.ok and the 401 handling. Without this a 401 or
+// 422 error body was blobbed straight into a ".csv" download, or rendered as a
+// successful import ("Imported: undefined added, undefined skipped").
+async function assertOk(res: Response): Promise<Response> {
+  if (res.ok) {
+    sessionEstablished = true
+    return res
+  }
+  let detail = res.status === 401 ? 'Session expired' : `HTTP ${res.status}`
+  try {
+    const body = await res.json()
+    if (typeof body?.detail === 'string') detail = body.detail
+  } catch {}
+  if (res.status === 401) {
+    if (sessionEstablished) {
+      sessionEstablished = false
+      redirectToLogin(true)
+    }
+  } else {
+    sessionEstablished = true
+  }
+  throw new ApiError(res.status, detail)
 }
 
 const get = <T>(path: string) => request<T>(path)
@@ -433,13 +485,14 @@ export const config = {
   import: (data: Record<string, unknown>, opts?: { overwrite_servers?: boolean; overwrite_schedule?: boolean; overwrite_notifications?: boolean }) =>
     post<{ imported: Record<string, unknown> }>('/api/config/import', { data, ...opts }),
   features: () => get<{ enable_terminal: boolean }>('/api/config/features'),
-  exportCsv: () => fetch('/api/config/servers/csv', { credentials: 'include' }),
+  exportCsv: () =>
+    fetch('/api/config/servers/csv', { credentials: 'include' }).then(assertOk),
   importCsv: (file: File, overwrite = false) => {
     const form = new FormData()
     form.append('file', file)
     return fetch(`/api/config/servers/csv?overwrite=${overwrite}`, {
       method: 'POST', credentials: 'include', body: form,
-    }).then(r => r.json() as Promise<{ added: number; skipped: number }>)
+    }).then(assertOk).then(r => r.json() as Promise<{ added: number; skipped: number }>)
   },
 }
 
@@ -576,8 +629,8 @@ export const aptcache = {
 // an auth-failure close (server sends 1008), redirects to login like an HTTP 401 does.
 function wsClose(onClose?: (ev?: CloseEvent) => void) {
   return (ev: CloseEvent) => {
-    if (ev.code === 1008 && !window.location.pathname.startsWith('/login')) {
-      window.location.href = '/login?expired=1'
+    if (ev.code === 1008) {
+      redirectToLogin(true)
     }
     onClose?.(ev)
   }

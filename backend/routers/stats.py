@@ -8,6 +8,7 @@ from backend.auth import get_current_user
 from backend.database import get_db
 from backend.models import Server, UpdateCheck, UpdateHistory, User
 from backend.schemas import FleetOverview
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api", tags=["stats"])
 
@@ -94,7 +95,7 @@ async def fleet_trend(
     return {
         "points": [
             {
-                "recorded_at": (r.recorded_at or datetime.utcnow()).isoformat(),
+                "recorded_at": utc_iso(r.recorded_at or datetime.utcnow()),
                 "total_servers": r.total_servers,
                 "up_to_date": r.up_to_date,
                 "updates_available": r.updates_available,
@@ -197,8 +198,8 @@ async def global_history(
             "id": h.id,
             "server_id": h.server_id,
             "server_name": srv_map.get(h.server_id, f"Server {h.server_id}"),
-            "started_at": h.started_at,
-            "completed_at": h.completed_at,
+            "started_at": utc_iso(h.started_at),
+            "completed_at": utc_iso(h.completed_at),
             "status": h.status,
             "action": h.action,
             "phased_updates": h.phased_updates,
@@ -247,8 +248,8 @@ async def server_history(
         items.append({
             "id": h.id,
             "server_id": h.server_id,
-            "started_at": h.started_at,
-            "completed_at": h.completed_at,
+            "started_at": utc_iso(h.started_at),
+            "completed_at": utc_iso(h.completed_at),
             "status": h.status,
             "action": h.action,
             "phased_updates": h.phased_updates,

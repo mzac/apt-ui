@@ -130,6 +130,8 @@ function TemplateDetail({
       await templatesApi.update(template.id, editForm)
       setEditMode(false)
       onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -138,15 +140,23 @@ function TemplateDetail({
   async function handleAddPkg(e: React.FormEvent) {
     e.preventDefault()
     if (!newPkg.trim()) return
-    await templatesApi.addPackage(template.id, { package_name: newPkg.trim(), notes: newPkgNotes.trim() || undefined })
-    setNewPkg('')
-    setNewPkgNotes('')
-    onRefresh()
+    try {
+      await templatesApi.addPackage(template.id, { package_name: newPkg.trim(), notes: newPkgNotes.trim() || undefined })
+      setNewPkg('')
+      setNewPkgNotes('')
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
   }
 
   async function handleRemovePkg(pkg: TemplatePackage) {
-    await templatesApi.removePackage(template.id, pkg.id)
-    onRefresh()
+    try {
+      await templatesApi.removePackage(template.id, pkg.id)
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
@@ -180,7 +190,14 @@ function TemplateDetail({
         <div className="flex gap-2 shrink-0">
           {!editMode && (
             <>
-              <button onClick={onApply} className="btn-primary text-sm">Apply to Servers</button>
+              {/* An empty template can't install anything — the backend rejects it
+                  with a fleet-level error, so don't offer the action at all. */}
+              <button
+                onClick={onApply}
+                disabled={template.packages.length === 0}
+                title={template.packages.length === 0 ? 'Add at least one package before applying this template' : undefined}
+                className="btn-primary text-sm"
+              >Apply to Servers</button>
               <button onClick={() => setEditMode(true)} className="btn-secondary text-sm">Edit</button>
               <button onClick={onDelete} className="btn-danger text-sm">Delete</button>
             </>
@@ -309,6 +326,7 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
   const [done, setDone] = useState(false)
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [filterSrv, setFilterSrv] = useState<number | null>(null)
+  const [fleetError, setFleetError] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -329,16 +347,30 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
   }
 
   function start() {
-    if (selectedServers.size === 0) return
+    if (selectedServers.size === 0 || template.packages.length === 0) return
     const ids = Array.from(selectedServers)
     setStarted(true)
+    setFleetError(null)
     const initial: Record<number, ServerProgress> = {}
     ids.forEach(id => { initial[id] = { status: 'pending', lines: [] } })
     setProgress(initial)
 
     wsRef.current = createTemplateApplyWebSocket(template.id, ids, (msg) => {
-      const sid = msg.server_id as number
-      if (!sid) return
+      const sid = msg.server_id as number | undefined
+      if (!sid) {
+        // Fleet-level failures ("Template has no packages", "Template not found",
+        // "No servers specified") carry no server_id. Dropping them left every
+        // server stuck at ⏳ and then flipping to "Done" with no explanation.
+        if (msg.type === 'error') {
+          setFleetError(typeof msg.data === 'string' ? msg.data : 'Template apply failed')
+          setProgress(p => {
+            const next = { ...p }
+            for (const id of ids) next[id] = { ...next[id], status: 'error' }
+            return next
+          })
+        }
+        return
+      }
       if (msg.type === 'output') {
         setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'running', lines: [...(p[sid]?.lines || []), msg.data as string] } }))
       } else if (msg.type === 'complete') {
@@ -368,7 +400,9 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
         {!started ? (
           <div className="p-4 space-y-4 overflow-y-auto">
             <p className="text-sm text-text-muted">
-              Packages: <span className="font-mono text-text-primary">{template.packages.map(p => p.package_name).join(', ')}</span>
+              Packages: {template.packages.length === 0
+                ? <span className="text-red">none — add at least one package to this template first</span>
+                : <span className="font-mono text-text-primary">{template.packages.map(p => p.package_name).join(', ')}</span>}
             </p>
             <div>
               <h3 className="text-xs text-text-muted uppercase tracking-wide mb-2">Select Servers</h3>
@@ -388,7 +422,7 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
               </div>
             </div>
             <div className="flex gap-2">
-              <button onClick={start} disabled={selectedServers.size === 0} className="btn-primary">
+              <button onClick={start} disabled={selectedServers.size === 0 || template.packages.length === 0} className="btn-primary">
                 Apply to {selectedServers.size} server{selectedServers.size !== 1 ? 's' : ''}
               </button>
               <button onClick={onClose} className="btn-secondary">Cancel</button>
@@ -396,6 +430,11 @@ function ApplyTemplateModal({ template, onClose }: { template: Template; onClose
           </div>
         ) : (
           <div className="flex-1 overflow-hidden flex flex-col p-4 gap-3">
+            {fleetError && (
+              <div className="px-3 py-2 bg-red/10 border border-red/30 rounded text-red text-xs font-mono">
+                {fleetError}
+              </div>
+            )}
             {/* Server status chips */}
             <div className="flex flex-wrap gap-2">
               <button

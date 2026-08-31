@@ -1,27 +1,36 @@
-import { useState, useEffect } from 'react'
+import { Fragment, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { stats as statsApi, servers as serversApi, notifications as notifApi, sshAudit as sshAuditApi, auth as authApi } from '@/api/client'
 import type { UpdateHistory, Server, NotificationLog } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
+// Shared parsers: the backend serializes naive UTC, so `new Date(iso)` was read
+// as local time here — which printed literal negative ages ("-14341s ago") and
+// clamped hours-old events to "just now".
+import { formatDateTime, parseServerDate, relativeTime } from '@/utils/datetime'
 
 type HistoryItem = UpdateHistory & { server_name: string }
 
-function relativeTime(iso: string | null): string {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const min = Math.floor(diff / 60000)
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min}m ago`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
-
 function duration(item: HistoryItem): string {
-  if (!item.completed_at) return '—'
-  const secs = Math.round((new Date(item.completed_at).getTime() - new Date(item.started_at).getTime()) / 1000)
+  const completed = parseServerDate(item.completed_at)
+  const started = parseServerDate(item.started_at)
+  if (!completed || !started) return '—'
+  const secs = Math.round((completed.getTime() - started.getTime()) / 1000)
   if (secs < 60) return `${secs}s`
   return `${Math.floor(secs / 60)}m ${secs % 60}s`
+}
+
+/** Inline error card with a retry — used by every tab's loader. */
+function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="card border-red/40 bg-red/5 p-3 flex items-center gap-3">
+      <span className="text-sm text-red font-mono flex-1 truncate" title={message}>{message}</span>
+      <button onClick={onRetry} className="btn-secondary text-xs shrink-0">Retry</button>
+    </div>
+  )
+}
+
+function errMsg(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback
 }
 
 function UpdateHistory() {
@@ -33,6 +42,8 @@ function UpdateHistory() {
   const [serverList, setServerList] = useState<Server[]>([])
   const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
   const [filterStatus, setFilterStatus] = useState<string>('')
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
 
   const perPage = 50
 
@@ -40,13 +51,28 @@ function UpdateHistory() {
     serversApi.list().then(setServerList).catch(() => {})
   }, [])
 
+  // `cancelled` guards against an out-of-order response: flipping pages or
+  // filters quickly could otherwise paint an older page's rows under the newly
+  // selected filters.
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
-    statsApi.globalHistory(page, filterServerId, filterStatus || undefined).then(res => {
-      setItems(res.items)
-      setTotal(res.total)
-    }).finally(() => setLoading(false))
-  }, [page, filterServerId, filterStatus])
+    setError(null)
+    statsApi.globalHistory(page, filterServerId, filterStatus || undefined)
+      .then(res => {
+        if (cancelled) return
+        setItems(res.items)
+        setTotal(res.total)
+      })
+      .catch(e => {
+        if (cancelled) return
+        setItems([])
+        setTotal(0)
+        setError(errMsg(e, 'Failed to load upgrade history'))
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [page, filterServerId, filterStatus, reload])
 
   function handleFilterChange() {
     setPage(1)
@@ -93,7 +119,9 @@ function UpdateHistory() {
         )}
       </div>
 
-      {loading ? (
+      {error ? (
+        <LoadError message={error} onRetry={() => setReload(n => n + 1)} />
+      ) : loading ? (
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-text-muted text-sm">No upgrade history found.</div>
@@ -114,9 +142,8 @@ function UpdateHistory() {
             </thead>
             <tbody>
               {items.map(item => (
-                <>
+                <Fragment key={item.id}>
                   <tr
-                    key={item.id}
                     className="border-b border-border/50 hover:bg-surface/50 cursor-pointer"
                     onClick={() => setExpanded(expanded === item.id ? null : item.id)}
                   >
@@ -150,7 +177,7 @@ function UpdateHistory() {
                     <td className="px-3 py-2 text-text-muted">{expanded === item.id ? '▲' : '▼'}</td>
                   </tr>
                   {expanded === item.id && (
-                    <tr key={`${item.id}-detail`} className="border-b border-border bg-bg">
+                    <tr className="border-b border-border bg-bg">
                       <td colSpan={8} className="px-3 py-3 space-y-3">
                         {item.packages_upgraded && item.packages_upgraded.length > 0 && (
                           <div>
@@ -176,7 +203,7 @@ function UpdateHistory() {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -213,24 +240,25 @@ function NotificationHistory() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
   const limit = 50
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
+    setError(null)
     notifApi.history(page, limit)
-      .then(r => { setItems(r.items); setTotal(r.total) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [page])
-
-  function relTime(iso: string) {
-    const diff = Date.now() - new Date(iso).getTime()
-    const s = Math.floor(diff / 1000)
-    if (s < 60) return `${s}s ago`
-    if (s < 3600) return `${Math.floor(s / 60)}m ago`
-    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-    return new Date(iso).toLocaleDateString()
-  }
+      .then(r => { if (cancelled) return; setItems(r.items); setTotal(r.total) })
+      .catch(e => {
+        if (cancelled) return
+        setItems([])
+        setTotal(0)
+        setError(errMsg(e, 'Failed to load notification history'))
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [page, reload])
 
   const channelBadge = (ch: string) => {
     const map: Record<string, string> = { email: 'text-blue', telegram: 'text-cyan', webhook: 'text-purple', slack: 'text-amber' }
@@ -265,7 +293,7 @@ function NotificationHistory() {
               <tbody className="divide-y divide-border/30">
                 {items.map(item => (
                   <tr key={item.id} className="hover:bg-surface/50">
-                    <td className="px-3 py-2 text-text-muted whitespace-nowrap" title={item.sent_at}>{relTime(item.sent_at)}</td>
+                    <td className="px-3 py-2 text-text-muted whitespace-nowrap" title={formatDateTime(item.sent_at)}>{relativeTime(item.sent_at)}</td>
                     <td className="px-3 py-2">{channelBadge(item.channel)}</td>
                     <td className="px-3 py-2 text-text-muted whitespace-nowrap">{item.event_type.replace(/_/g, ' ')}</td>
                     <td className="px-3 py-2 text-text-primary max-w-xs truncate" title={item.summary}>{item.summary}</td>
@@ -354,15 +382,6 @@ function SshAuditHistory() {
       .finally(() => setLoading(false))
   }, [page, filterServerId])
 
-  function relTime(iso: string) {
-    const diff = Date.now() - new Date(iso).getTime()
-    const s = Math.floor(diff / 1000)
-    if (s < 60) return `${s}s ago`
-    if (s < 3600) return `${Math.floor(s / 60)}m ago`
-    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-    return new Date(iso).toLocaleDateString()
-  }
-
   const totalPages = Math.ceil(total / limit)
 
   return (
@@ -404,7 +423,7 @@ function SshAuditHistory() {
                       className="hover:bg-surface/50 cursor-pointer"
                       onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
                     >
-                      <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={entry.started_at}>{relTime(entry.started_at)}</td>
+                      <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={formatDateTime(entry.started_at)}>{relativeTime(entry.started_at)}</td>
                       <td className="px-3 py-1.5">
                         <Link to={`/servers/${entry.server_id}`} onClick={e => e.stopPropagation()} className="text-cyan hover:underline">
                           {entry.server_name}
@@ -506,7 +525,7 @@ function AuthEventsHistory() {
               <tbody className="divide-y divide-border/30">
                 {items.map(e => (
                   <tr key={e.id} className="hover:bg-surface/50">
-                    <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={e.created_at}>{relativeTime(e.created_at)}</td>
+                    <td className="px-3 py-1.5 text-text-muted whitespace-nowrap" title={formatDateTime(e.created_at)}>{relativeTime(e.created_at)}</td>
                     <td className={`px-3 py-1.5 ${AUTH_EVENT_STYLE[e.event_type] ?? 'text-text-primary'}`}>{e.event_type}</td>
                     <td className="px-3 py-1.5 text-text-primary">{e.username ?? '—'}</td>
                     <td className="px-3 py-1.5 text-text-muted">{e.actor ?? '—'}</td>

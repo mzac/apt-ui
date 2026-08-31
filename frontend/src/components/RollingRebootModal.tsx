@@ -9,12 +9,16 @@ interface Props {
   onClose: () => void
 }
 
-type RebootPhase = 'pending' | 'rebooting' | 'waiting' | 'back' | 'failed' | 'error'
+type RebootPhase = 'pending' | 'rebooting' | 'waiting' | 'back' | 'failed' | 'error' | 'skipped'
 
 interface ServerProgress {
   phase: RebootPhase
   message?: string
 }
+
+// Phases a server can't move back out of — a late 'status' message must not
+// reset a host that already came back / timed out / errored.
+const TERMINAL_PHASES: RebootPhase[] = ['back', 'failed', 'error', 'skipped']
 
 // Group servers by their first ring:* tag (or "ring:default") — mirrors the
 // backend grouping used by /api/ws/reboot-all so the confirm step shows the
@@ -50,12 +54,28 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const { addJob, updateJob } = useJobStore()
-  const completedRef = useRef(0)
+  // Completion is tracked per server id, not as a counter: the backend sends BOTH
+  // 'error' and 'complete' for a server that failed to come back, and double-counting
+  // it defeated the "socket dropped before everyone reported" check below.
+  const completedIdsRef = useRef<Set<number>>(new Set())
   const abortedRef = useRef(false)
+  // The batch_wait countdown ticker — kept in a ref so a new wait (or unmount)
+  // clears the previous one instead of leaving overlapping intervals running.
+  const waitTickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function stopWaitTick() {
+    if (waitTickRef.current) {
+      clearInterval(waitTickRef.current)
+      waitTickRef.current = null
+    }
+  }
 
   useEffect(() => {
     schedulerApi.status().then(setCfg).catch(() => {})
-    return () => { wsRef.current?.close() }
+    return () => {
+      wsRef.current?.close()
+      if (waitTickRef.current) clearInterval(waitTickRef.current)
+    }
   }, [])
 
   // Escape closes the modal before start or once done (not mid-rollout).
@@ -72,8 +92,9 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
     const snapshot = servers
     setStarted(true)
     setRunServers(snapshot)
-    completedRef.current = 0
+    completedIdsRef.current = new Set()
     abortedRef.current = false
+    stopWaitTick()
     const initial: Record<number, ServerProgress> = {}
     snapshot.forEach(s => { initial[s.id] = { phase: 'pending' } })
     setProgress(initial)
@@ -113,17 +134,20 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
         setWaitingSeconds(data.seconds)
         setLogs(l => [...l, `[wait] sleeping ${Math.round(data.seconds / 60)}m before next batch`])
         // Tick down the wait counter for the UI
-        const start = Date.now()
-        const tickId = setInterval(() => {
-          const remaining = Math.max(0, data.seconds - Math.floor((Date.now() - start) / 1000))
+        stopWaitTick()
+        const startedAt = Date.now()
+        waitTickRef.current = setInterval(() => {
+          const remaining = Math.max(0, data.seconds - Math.floor((Date.now() - startedAt) / 1000))
           setWaitingSeconds(remaining)
-          if (remaining === 0) clearInterval(tickId)
+          if (remaining === 0) stopWaitTick()
         }, 1000)
         return
       }
       if (t === 'abort') {
         const data = msg.data as { ring: string; reason: string }
         abortedRef.current = true
+        stopWaitTick()
+        setWaitingSeconds(0)
         setAborted(true)
         setAbortReason(data.reason)
         setLogs(l => [...l, `[abort] ring ${data.ring}: ${data.reason}`])
@@ -141,21 +165,33 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
 
       if (t === 'status') {
         const phase = (msg.phase as RebootPhase) ?? 'rebooting'
-        setProgress(p => ({ ...p, [sid]: { phase } }))
+        // Never downgrade a server that already reported a terminal phase — the
+        // backend can emit a trailing status after 'complete'/'error'.
+        setProgress(p => (TERMINAL_PHASES.includes(p[sid]?.phase) ? p : { ...p, [sid]: { phase } }))
       } else if (t === 'complete') {
         const data = msg.data as { success: boolean; phase?: RebootPhase }
         const finalPhase: RebootPhase = data.phase ?? (data.success ? 'back' : 'failed')
-        setProgress(p => ({ ...p, [sid]: { phase: finalPhase } }))
-        completedRef.current += 1
+        // A server that already errored keeps its error phase/message — the backend
+        // sends 'error' followed by 'complete' for a host that never came back.
+        setProgress(p => (p[sid]?.phase === 'error' ? p : { ...p, [sid]: { phase: finalPhase } }))
+        completedIdsRef.current.add(sid)
       } else if (t === 'error') {
         setProgress(p => ({ ...p, [sid]: { phase: 'error', message: msg.data as string } }))
-        completedRef.current += 1
+        completedIdsRef.current.add(sid)
+      } else if (t === 'skipped') {
+        // The backend drops disabled servers and hosts that need no reboot, and
+        // says so explicitly. Terminal, but NOT a failure — without this the
+        // socket-close repair below would redden them and fail the whole job.
+        setProgress(p => ({ ...p, [sid]: { phase: 'skipped', message: msg.data as string } }))
+        completedIdsRef.current.add(sid)
       }
     }, (ev) => {
       setDone(true)
+      stopWaitTick()
+      setWaitingSeconds(0)
       // If the socket dropped before every server came back (and we didn't already
       // abort), mark the unfinished servers as errored rather than implying success.
-      if (!abortedRef.current && completedRef.current < snapshot.length) {
+      if (!abortedRef.current && completedIdsRef.current.size < snapshot.length) {
         updateJob('reboot-all', { status: 'error', completedAt: Date.now() })
         const note = ev && !ev.wasClean ? 'connection closed before completion' : 'stream ended early'
         setProgress(p => {
@@ -181,6 +217,7 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   const phaseColor = (phase: RebootPhase): string => {
     switch (phase) {
       case 'back': return '#22c55e'        // green
+      case 'skipped': return '#6b7280'     // gray
       case 'rebooting':
       case 'waiting': return '#06b6d4'     // cyan
       case 'failed':
@@ -191,10 +228,10 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   }
 
   const phaseIcon = (phase: RebootPhase): string =>
-    ({ pending: '⏳', rebooting: '↻', waiting: '⌛', back: '✓', failed: '✗', error: '✗' }[phase])
+    ({ pending: '⏳', rebooting: '↻', waiting: '⌛', back: '✓', failed: '✗', error: '✗', skipped: '⊘' }[phase])
 
   const phaseLabel = (phase: RebootPhase): string =>
-    ({ pending: 'pending', rebooting: 'rebooting', waiting: 'waiting', back: 'back', failed: 'timed out', error: 'error' }[phase])
+    ({ pending: 'pending', rebooting: 'rebooting', waiting: 'waiting', back: 'back', failed: 'timed out', error: 'error', skipped: 'skipped' }[phase])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
