@@ -13,6 +13,11 @@ from backend.schemas import NotificationConfigOut, NotificationConfigUpdate, Not
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
+# Secrets that are masked on read and must therefore be ignored on write when the
+# caller echoes the mask back instead of a real value.
+_MASKED_FIELDS = ("smtp_password", "telegram_bot_token", "slack_webhook_url")
+
+
 def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
     """Return config with sensitive fields masked."""
     out = NotificationConfigOut.model_validate(cfg)
@@ -20,6 +25,9 @@ def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
         out.smtp_password = "••••••••"
     if out.telegram_bot_token:
         out.telegram_bot_token = out.telegram_bot_token[:8] + "••••••••"
+    if out.slack_webhook_url:
+        # The webhook URL *is* the credential; show only enough to identify it.
+        out.slack_webhook_url = out.slack_webhook_url[:24] + "••••••••"
     return out
 
 
@@ -49,7 +57,7 @@ def _effective_cfg(cfg: NotificationConfig, body: NotificationConfigUpdate | Non
     data = {col.name: getattr(cfg, col.name) for col in NotificationConfig.__table__.columns}
     if body is not None:
         for field, value in body.model_dump(exclude_unset=True).items():
-            if field in ("smtp_password", "telegram_bot_token") and value and "••••" in value:
+            if field in _MASKED_FIELDS and value and "••••" in value:
                 continue
             data[field] = value
     return SimpleNamespace(**data)
@@ -74,7 +82,7 @@ async def update_config(
 
     for field, value in body.model_dump(exclude_unset=True).items():
         # Don't overwrite secrets with the masked placeholder
-        if field in ("smtp_password", "telegram_bot_token") and value and "••••" in value:
+        if field in _MASKED_FIELDS and value and "••••" in value:
             continue
         setattr(cfg, field, value)
 
