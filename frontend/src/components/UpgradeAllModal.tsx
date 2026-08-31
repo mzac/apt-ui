@@ -157,6 +157,25 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
     wsRef.current = ws
   }
 
+  // The fleet terminal is the only record of a bulk run — per-server history keeps
+  // its own logs, but this combined view is lost the moment the modal closes.
+  function downloadLog() {
+    const lines: string[] = []
+    for (const s of runServers) {
+      const p = progress[s.id]
+      lines.push(`===== ${s.name} (${s.hostname}) — ${p?.status ?? 'pending'} =====`)
+      for (const l of p?.lines || []) lines.push(l.replace(/\u001b\[[0-9;]*m/g, ''))
+      lines.push('')
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `apt-ui-upgrade-all-${stamp}.log`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function handleClose() {
     window.dispatchEvent(new CustomEvent('apt:refresh'))
     onClose()
@@ -322,7 +341,12 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
             </div>
 
             {done && (
-              <button onClick={handleClose} className="btn-primary">Done</button>
+              <div className="flex items-center gap-2">
+                <button onClick={handleClose} className="btn-primary">Done</button>
+                <button onClick={downloadLog} className="btn-secondary text-sm" title="Save the combined fleet output as a .log file">
+                  ⤓ Download log
+                </button>
+              </div>
             )}
           </div>
         )}

@@ -286,6 +286,20 @@ export default function Dashboard() {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
   const selectedServers = serverList.filter(s => selectedIds.has(s.id))
+  // "Select all" acts on the *filtered* view, not the whole fleet — selecting
+  // servers you cannot see is how bulk actions surprise people. Anything already
+  // selected but hidden by the active filter is surfaced in the bar instead.
+  const allFilteredSelected = filtered.length > 0 && filtered.every(s => selectedIds.has(s.id))
+  const hiddenSelectedCount = selectedIds.size - filtered.filter(s => selectedIds.has(s.id)).length
+
+  function toggleSelectAllFiltered() {
+    setSelectedIds(prev => {
+      const n = new Set(prev)
+      if (allFilteredSelected) filtered.forEach(s => n.delete(s.id))
+      else filtered.forEach(s => n.add(s.id))
+      return n
+    })
+  }
 
   async function _runCapped(ids: number[], cap: number, fn: (id: number) => Promise<void>) {
     let i = 0
@@ -796,6 +810,18 @@ export default function Dashboard() {
       {selectedIds.size > 0 && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-surface border border-border rounded-lg shadow-2xl px-3 py-2">
           <span className="text-sm font-mono text-text-primary">{selectedIds.size} selected</span>
+          {hiddenSelectedCount > 0 && (
+            <span
+              className="text-xs font-mono text-amber"
+              title="These are selected but hidden by the active filter — bulk actions will still include them."
+            >
+              ({hiddenSelectedCount} hidden by filter)
+            </span>
+          )}
+          <span className="w-px h-5 bg-border mx-1" />
+          <button onClick={toggleSelectAllFiltered} className="btn-secondary text-xs">
+            {allFilteredSelected ? 'Deselect all' : `Select all (${filtered.length})`}
+          </button>
           <span className="w-px h-5 bg-border mx-1" />
           <button onClick={bulkCheck} className="btn-secondary text-xs">Check</button>
           <button onClick={bulkUpgrade} className="btn-amber text-xs">Upgrade</button>
