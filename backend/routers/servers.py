@@ -15,7 +15,10 @@ from backend.actor import set_actor
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.eol_data import get_eol_status_from_os_info
-from backend.models import Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag, UpdateCheck, User
+from backend.models import (
+    PackageWatch, Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag,
+    UpdateCheck, User,
+)
 from backend.schemas import (
     CheckAllProgress, GroupRef, ServerCreate, ServerOut, ServerUpdate,
     LatestCheckOut, TagOut,
@@ -1458,3 +1461,122 @@ async def refresh_all_servers_endpoint(
 
     asyncio.create_task(_run())
     return {"detail": "Refresh started", "total": len(servers)}
+
+
+# ---------------------------------------------------------------------------
+# Package version watches (issue #62)
+#
+# Evaluation (divergence / new-version detection against cached check data,
+# no extra SSH round-trips) lives in backend/package_watch.py — the scheduler
+# calls evaluate_package_watches() after each fleet check. This section is
+# just the CRUD surface for managing which packages are watched.
+# ---------------------------------------------------------------------------
+
+def _watch_out(w: PackageWatch) -> dict:
+    last_versions = None
+    if w.last_versions_json:
+        try:
+            last_versions = json.loads(w.last_versions_json)
+        except Exception:
+            last_versions = None
+    return {
+        "id": w.id,
+        "package_name": w.package_name,
+        "created_at": utc_iso(w.created_at),
+        "created_by": w.created_by,
+        "enabled": w.enabled,
+        "notify_on_divergence": w.notify_on_divergence,
+        "notify_on_new_version": w.notify_on_new_version,
+        "last_versions": last_versions,
+        "last_notified_at": utc_iso(w.last_notified_at),
+    }
+
+
+async def _get_watch_or_404(watch_id: int, db: AsyncSession) -> PackageWatch:
+    watch = await db.get(PackageWatch, watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    return watch
+
+
+def _require_watch_owner_or_admin(user: User, watch: PackageWatch) -> None:
+    """Deleting/toggling your own watch is fine for anyone; deleting or toggling
+    someone else's requires admin — same "your own vs. anyone's" split used
+    elsewhere for user-scoped mutations in this file."""
+    if not getattr(user, "is_admin", False) and watch.created_by != user.username:
+        raise HTTPException(status_code=403, detail="Only the creator or an admin can modify this watch")
+
+
+@router.get("/watches")
+async def list_package_watches(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """List all package version watches (issue #62)."""
+    rows = (await db.execute(select(PackageWatch).order_by(PackageWatch.package_name.asc()))).scalars().all()
+    return {"items": [_watch_out(w) for w in rows]}
+
+
+@router.post("/watches", status_code=201)
+async def create_package_watch(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Create a package version watch. Creating one is a normal authenticated
+    action — any logged-in user can watch a package; deleting/disabling someone
+    else's watch is admin-only (see _require_watch_owner_or_admin)."""
+    import re as _re
+
+    pkg = (body.get("package_name") or "").strip()
+    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+        raise HTTPException(status_code=400, detail="Invalid package name")
+
+    existing = (
+        await db.execute(select(PackageWatch).where(PackageWatch.package_name == pkg))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"'{pkg}' is already being watched")
+
+    watch = PackageWatch(
+        package_name=pkg,
+        created_by=user.username,
+        enabled=bool(body.get("enabled", True)),
+        notify_on_divergence=bool(body.get("notify_on_divergence", True)),
+        notify_on_new_version=bool(body.get("notify_on_new_version", True)),
+    )
+    db.add(watch)
+    await db.commit()
+    await db.refresh(watch)
+    return _watch_out(watch)
+
+
+@router.post("/watches/{watch_id}/toggle")
+async def toggle_package_watch(
+    watch_id: int,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Flip (or explicitly set, via {"enabled": true|false}) a watch's enabled flag."""
+    watch = await _get_watch_or_404(watch_id, db)
+    _require_watch_owner_or_admin(user, watch)
+    if body is not None and "enabled" in body:
+        watch.enabled = bool(body["enabled"])
+    else:
+        watch.enabled = not watch.enabled
+    await db.commit()
+    await db.refresh(watch)
+    return _watch_out(watch)
+
+
+@router.delete("/watches/{watch_id}", status_code=204)
+async def delete_package_watch(
+    watch_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    watch = await _get_watch_or_404(watch_id, db)
+    _require_watch_owner_or_admin(user, watch)
+    await db.delete(watch)
+    await db.commit()

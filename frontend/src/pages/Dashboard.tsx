@@ -5,7 +5,8 @@ import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache
 import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow, PackageInfo } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
-import { useJobStore } from '@/hooks/useJobStore'
+import { useJobStore, visibleServerTasks } from '@/hooks/useJobStore'
+import TaskLogModal, { taskTypeLabel, statusBadge } from '@/components/TaskLogModal'
 import { useServersStore } from '@/hooks/useServers'
 import StatusDot from '@/components/StatusDot'
 import SelectCheckbox from '@/components/SelectCheckbox'
@@ -114,7 +115,12 @@ export default function Dashboard() {
   // When a bulk action targets a specific subset, the Upgrade/Reboot modals render
   // these instead of the fleet-wide lists. Reset to null on modal close.
   const [bulkServers, setBulkServers] = useState<Server[] | null>(null)
-  const { addJob, updateJob } = useJobStore()
+  const { addJob, updateJob, jobs, serverTasks, hydrateFromServer } = useJobStore()
+  // Reattach to in-flight operations (issue #62): the task the user opened
+  // TaskLogModal for. Independent of `serverTasks` so the modal stays open
+  // (still polling its own transcript by id) even if the next hydrate poll
+  // drops the task from the reattach list — e.g. once it finishes.
+  const [openTaskId, setOpenTaskId] = useState<number | null>(null)
   const [showUpgradeAll, setShowUpgradeAll] = useState(false)
   const [upgradeMinimized, setUpgradeMinimized] = useState(false)
   const [showAutoremoveAll, setShowAutoremoveAll] = useState(false)
@@ -202,6 +208,17 @@ export default function Dashboard() {
     return () => clearInterval(id)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Reattach to in-flight operations (issue #62): re-adopt whatever the backend
+  // still reports as queued/running after a page reload wiped the in-memory job
+  // list, and keep it fresh while the user stays on the page. Best-effort —
+  // hydrateFromServer swallows its own errors, so a flaky poll just leaves the
+  // previous list in place rather than clearing a working reattach card.
+  useEffect(() => {
+    hydrateFromServer()
+    const id = setInterval(() => hydrateFromServer(), 15_000)
+    return () => clearInterval(id)
+  }, [hydrateFromServer])
 
   // Collect all unique tags from server list
   const allTags: Tag[] = []
@@ -437,6 +454,9 @@ export default function Dashboard() {
   const eepromCount = serverList.filter(s => s.eeprom_update_available === 'update_available').length
   const offlineCount = serverList.filter(s => s.is_enabled && s.is_reachable === false).length
   const eolSoonCount = serverList.filter(s => s.os_eol_days_remaining != null && s.os_eol_days_remaining < 365).length
+  // Server-reported queued/running Tasks not already shown as a live local job
+  // in this tab (see useJobStore's module doc for why the two are kept apart).
+  const reattachableTasks = visibleServerTasks(jobs, serverTasks)
 
   // Groups with servers (including via memberships)
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
@@ -549,6 +569,41 @@ export default function Dashboard() {
           Last check: {relativeTime(overview.last_check_time)}
           {overview.next_check_time && ` · Next: ${new Date(overview.next_check_time).toLocaleTimeString()}`}
         </p>
+      )}
+
+      {/* Reattach to in-flight operations (issue #62) — only rendered while there's
+          something to reattach to, so a quiet fleet doesn't grow an empty section. */}
+      {reattachableTasks.length > 0 && (
+        <div className="card px-3 py-2 space-y-1.5">
+          <div className="text-xs text-text-muted font-mono">
+            {reattachableTasks.length} operation{reattachableTasks.length === 1 ? '' : 's'} in progress on the server
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {reattachableTasks.map(t => {
+              const badge = statusBadge(t.status)
+              return (
+                <div
+                  key={t.id}
+                  className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded bg-surface-2/40 border border-border text-xs"
+                >
+                  <span className={`badge border ${badge.className} ${t.status === 'running' ? 'animate-pulse' : ''}`}>
+                    {badge.text}
+                  </span>
+                  <span className="font-mono text-text-primary">{t.label || taskTypeLabel(t.task_type)}</span>
+                  {t.server_name && <span className="font-mono text-text-muted">on {t.server_name}</span>}
+                  {t.progress_total > 0 && (
+                    <span className="font-mono text-text-muted">{t.progress_done}/{t.progress_total}</span>
+                  )}
+                  {t.initiated_by && <span className="font-mono text-text-muted">· {t.initiated_by}</span>}
+                  <span className="font-mono text-text-muted">· {relativeTime(t.started_at ?? t.created_at)}</span>
+                  <button onClick={() => setOpenTaskId(t.id)} className="btn-secondary text-xs py-0.5 ml-auto">
+                    Reattach
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       )}
 
       {/* Fleet trend (hidden until 2+ snapshots exist) */}
@@ -855,6 +910,11 @@ export default function Dashboard() {
           servers={bulkServers ?? serversNeedingReboot}
           onClose={() => { setShowRollingReboot(false); setBulkServers(null); load() }}
         />
+      )}
+
+      {/* Reattach-to-in-flight-operation viewer (issue #62) */}
+      {openTaskId != null && (
+        <TaskLogModal taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
       )}
 
       {/* Custom disable confirmation modal */}

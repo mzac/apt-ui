@@ -3,6 +3,18 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { auth } from '@/api/client'
 import { useAuthStore } from '@/hooks/useAuth'
 
+// The backend sends a fixed code, never IdP-supplied text — see _SSO_ERROR_CODES
+// in backend/routers/auth.py. The full detail is in the auth event log.
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  sso_disabled: 'Single sign-on is not enabled on this server.',
+  sso_provider_error: 'The identity provider rejected or cancelled the sign-in.',
+  sso_bad_callback: 'The sign-in response was incomplete. Please try again.',
+  sso_state_invalid: 'This sign-in attempt expired or was already used. Please try again.',
+  sso_token_invalid: 'The identity provider\'s response could not be verified.',
+  sso_account_conflict: 'An account with that username already exists and is not linked to SSO. Ask an administrator to resolve the conflict.',
+  sso_failed: 'Sign-in failed unexpectedly. Please try again or contact an administrator.',
+}
+
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -10,11 +22,18 @@ export default function Login() {
   const [needs2fa, setNeeds2fa] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // SSO (issue #62) — the button only ever renders once the backend confirms it's
+  // configured; `null` = still checking, so nothing SSO-related flashes on load.
+  const [ssoEnabled, setSsoEnabled] = useState<boolean | null>(null)
   const { setUser, user } = useAuthStore()
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const expired = searchParams.get('expired') === '1'
+  // The backend redirects failed/cancelled SSO attempts back here with this param
+  // (see backend/routers/auth.py sso_callback) rather than leaving the user on a
+  // blank page or a raw JSON error.
+  const ssoError = searchParams.get('sso_error')
   // RequireAuth stashes the full location the user originally tried to reach in
   // location.state.from — preserve its search/hash too so deep links like
   // /settings?tab=Users land on the right tab after login, not just the pathname.
@@ -31,6 +50,26 @@ export default function Login() {
   useEffect(() => {
     if (user) navigate(from, { replace: true })
   }, [user, navigate, from])
+
+  useEffect(() => {
+    let cancelled = false
+    // Plain fetch (not api/client.ts's `auth` helper) — this is a public,
+    // pre-login probe and the client.ts wrapper redirects to /login on a 401,
+    // which would be wrong here even though this endpoint never 401s.
+    fetch('/api/auth/sso/status')
+      .then(res => (res.ok ? res.json() : { enabled: false }))
+      .then(data => { if (!cancelled) setSsoEnabled(Boolean(data.enabled)) })
+      .catch(() => { if (!cancelled) setSsoEnabled(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  function handleSsoLogin() {
+    // Full-page navigation (not a client-side route) — the backend redirects
+    // the browser on to the IdP's authorization endpoint.
+    const q = new URLSearchParams()
+    if (from && from !== '/') q.set('next', from)
+    window.location.href = `/api/auth/sso/login${q.toString() ? `?${q}` : ''}`
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -76,6 +115,12 @@ export default function Login() {
           {expired && (
             <div className="mb-4 px-3 py-2 bg-amber/10 border border-amber/30 rounded text-amber text-sm">
               Session expired — please log in again.
+            </div>
+          )}
+
+          {ssoError && (
+            <div className="mb-4 px-3 py-2 bg-red/10 border border-red/30 rounded text-red text-sm">
+              SSO sign-in failed: {SSO_ERROR_MESSAGES[ssoError] ?? SSO_ERROR_MESSAGES.sso_failed}
             </div>
           )}
 
@@ -133,6 +178,23 @@ export default function Login() {
               {loading ? 'Signing in…' : 'Sign In'}
             </button>
           </form>
+
+          {ssoEnabled && (
+            <>
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 border-t border-border" />
+                <span className="text-xs text-text-muted">or</span>
+                <div className="flex-1 border-t border-border" />
+              </div>
+              <button
+                type="button"
+                onClick={handleSsoLogin}
+                className="w-full bg-surface-2 border border-border text-text-primary font-medium py-2 rounded text-sm hover:border-green transition-colors"
+              >
+                Sign in with SSO
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

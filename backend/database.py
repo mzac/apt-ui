@@ -229,6 +229,15 @@ async def init_db():
             "ALTER TABLE server_stats ADD COLUMN drift_count INTEGER",
             # Config drift — the actual drifted conffile paths (JSON list, capped) (issue #62)
             "ALTER TABLE server_stats ADD COLUMN drift_files TEXT",
+            # Roadmap #62 — SSO identities and job/rollout linkage. New *tables*
+            # are created by Base.metadata.create_all(); only new columns on
+            # existing tables need an entry here.
+            "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'",
+            "ALTER TABLE users ADD COLUMN oidc_subject TEXT",
+            "ALTER TABLE update_history ADD COLUMN task_id INTEGER",
+            "ALTER TABLE update_history ADD COLUMN rollout_id INTEGER",
+            "ALTER TABLE maintenance_windows ADD COLUMN mode TEXT DEFAULT 'deny'",
+            "ALTER TABLE schedule_config ADD COLUMN queue_for_next_window BOOLEAN DEFAULT 0",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

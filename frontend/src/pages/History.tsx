@@ -1,5 +1,5 @@
-import { Fragment, useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Fragment, useState, useEffect, useCallback } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { stats as statsApi, servers as serversApi, notifications as notifApi, sshAudit as sshAuditApi, auth as authApi } from '@/api/client'
 import type { UpdateHistory, Server, NotificationLog } from '@/types'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -33,17 +33,45 @@ function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback
 }
 
+// ---------------------------------------------------------------------------
+// Deep-linkable audit state (issue #62)
+//
+// Sub-tab, per-tab filters and page number all live in the query string so an
+// audit view can be bookmarked or shared. Each tab's params are prefixed
+// (u_/n_/s_/a_) so switching tabs never lets one tab's filter bleed into
+// another's same-named field. `patch` always uses `replace` — otherwise every
+// filter tweak or page flip would push a new history entry and the Back
+// button would have to be clicked through each one instead of leaving History
+// entirely, one click back.
+// ---------------------------------------------------------------------------
+function useQueryPatch() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const patch = useCallback((updates: Record<string, string | undefined>) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      for (const [k, v] of Object.entries(updates)) {
+        if (!v) next.delete(k)
+        else next.set(k, v)
+      }
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+  return [searchParams, patch] as const
+}
+
 function UpdateHistory() {
   const [items, setItems] = useState<HistoryItem[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<number | null>(null)
   const [serverList, setServerList] = useState<Server[]>([])
-  const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
-  const [filterStatus, setFilterStatus] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
+  const [searchParams, patchParams] = useQueryPatch()
+
+  const filterServerId = searchParams.get('u_server') ? parseInt(searchParams.get('u_server')!) : undefined
+  const filterStatus = searchParams.get('u_status') ?? ''
+  const page = parseInt(searchParams.get('u_page') ?? '1') || 1
 
   const perPage = 50
 
@@ -74,11 +102,6 @@ function UpdateHistory() {
     return () => { cancelled = true }
   }, [page, filterServerId, filterStatus, reload])
 
-  function handleFilterChange() {
-    setPage(1)
-    setExpanded(null)
-  }
-
   const totalPages = Math.ceil(total / perPage)
 
   return (
@@ -92,7 +115,7 @@ function UpdateHistory() {
         <select
           className="input w-48 text-sm"
           value={filterServerId ?? ''}
-          onChange={e => { setFilterServerId(e.target.value ? parseInt(e.target.value) : undefined); handleFilterChange() }}
+          onChange={e => { patchParams({ u_server: e.target.value || undefined, u_page: undefined }); setExpanded(null) }}
         >
           <option value="">All servers</option>
           {serverList.map(s => (
@@ -102,7 +125,7 @@ function UpdateHistory() {
         <select
           className="input w-36 text-sm"
           value={filterStatus}
-          onChange={e => { setFilterStatus(e.target.value); handleFilterChange() }}
+          onChange={e => { patchParams({ u_status: e.target.value || undefined, u_page: undefined }); setExpanded(null) }}
         >
           <option value="">All statuses</option>
           <option value="success">Success</option>
@@ -112,7 +135,7 @@ function UpdateHistory() {
         {(filterServerId || filterStatus) && (
           <button
             className="btn-secondary text-xs"
-            onClick={() => { setFilterServerId(undefined); setFilterStatus(''); setPage(1) }}
+            onClick={() => patchParams({ u_server: undefined, u_status: undefined, u_page: undefined })}
           >
             Clear filters
           </button>
@@ -213,7 +236,7 @@ function UpdateHistory() {
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
           <button
-            onClick={() => setPage(p => Math.max(1, p - 1))}
+            onClick={() => patchParams({ u_page: page - 1 <= 1 ? undefined : String(page - 1) })}
             disabled={page === 1}
             className="btn-secondary text-xs"
           >
@@ -223,7 +246,7 @@ function UpdateHistory() {
             Page {page} of {totalPages}
           </span>
           <button
-            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            onClick={() => patchParams({ u_page: String(Math.min(totalPages, page + 1)) })}
             disabled={page === totalPages}
             className="btn-secondary text-xs"
           >
@@ -238,10 +261,11 @@ function UpdateHistory() {
 function NotificationHistory() {
   const [items, setItems] = useState<NotificationLog[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
+  const [searchParams, patchParams] = useQueryPatch()
+  const page = parseInt(searchParams.get('n_page') ?? '1') || 1
   const limit = 50
 
   useEffect(() => {
@@ -311,9 +335,9 @@ function NotificationHistory() {
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2">
-              <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="btn-secondary text-xs">← Prev</button>
+              <button disabled={page <= 1} onClick={() => patchParams({ n_page: page - 1 <= 1 ? undefined : String(page - 1) })} className="btn-secondary text-xs">← Prev</button>
               <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
-              <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="btn-secondary text-xs">Next →</button>
+              <button disabled={page >= totalPages} onClick={() => patchParams({ n_page: String(page + 1) })} className="btn-secondary text-xs">Next →</button>
             </div>
           )}
         </>
@@ -325,10 +349,41 @@ function NotificationHistory() {
 const ALL_TABS = ['Upgrade History', 'Notification History', 'SSH Audit Log', 'Auth Events'] as const
 type Tab = typeof ALL_TABS[number]
 
+// Short, URL-friendly slugs for the `tab` query param — kept distinct from the
+// display labels so the URL doesn't need to encode spaces.
+const TAB_SLUGS: Record<Tab, string> = {
+  'Upgrade History': 'upgrades',
+  'Notification History': 'notifications',
+  'SSH Audit Log': 'ssh',
+  'Auth Events': 'auth',
+}
+const SLUG_TO_TAB: Record<string, Tab> = {}
+for (const t of ALL_TABS) SLUG_TO_TAB[TAB_SLUGS[t]] = t
+const DEFAULT_TAB: Tab = 'Upgrade History'
+
 export default function History() {
   const { user } = useAuthStore()
   const tabs = ALL_TABS.filter(t => t !== 'Auth Events' || user?.is_admin)  // auth log is admin-only
-  const [tab, setTab] = useState<Tab>('Upgrade History')
+
+  // The active tab is driven by ?tab=<slug> (see Settings.tsx for the pattern this
+  // follows, including the comment there about a navigate() to the same route
+  // leaving the tab stuck — the fix is to re-derive the tab from the URL on every
+  // render rather than mirroring it into local state that only updates on mount).
+  // History has no unsaved-edit state to guard, so unlike Settings there's no
+  // confirm-before-switch dance needed — just read straight from the URL.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const slug = searchParams.get('tab')
+  const urlTab = (slug && SLUG_TO_TAB[slug]) || DEFAULT_TAB
+  const tab: Tab = tabs.includes(urlTab) ? urlTab : DEFAULT_TAB
+
+  function selectTab(t: Tab) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (t === DEFAULT_TAB) next.delete('tab')
+      else next.set('tab', TAB_SLUGS[t])
+      return next
+    }, { replace: true })
+  }
 
   return (
     <div className="max-w-5xl mx-auto space-y-4">
@@ -338,7 +393,7 @@ export default function History() {
         {tabs.map(t => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => selectTab(t)}
             className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 ${
               tab === t
                 ? 'border-green text-text-primary'
@@ -365,13 +420,14 @@ export default function History() {
 function SshAuditHistory() {
   const [items, setItems] = useState<import('@/api/client').SshAuditEntry[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
   const [serverList, setServerList] = useState<Server[]>([])
-  const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
   const [expanded, setExpanded] = useState<number | null>(null)
+  const [searchParams, patchParams] = useQueryPatch()
+  const filterServerId = searchParams.get('s_server') ? parseInt(searchParams.get('s_server')!) : undefined
+  const page = parseInt(searchParams.get('s_page') ?? '1') || 1
   const limit = 100
 
   useEffect(() => {
@@ -411,7 +467,7 @@ function SshAuditHistory() {
         <select
           className="input w-48 text-sm"
           value={filterServerId ?? ''}
-          onChange={e => { setFilterServerId(e.target.value ? parseInt(e.target.value) : undefined); setPage(1); setExpanded(null) }}
+          onChange={e => { patchParams({ s_server: e.target.value || undefined, s_page: undefined }); setExpanded(null) }}
         >
           <option value="">All servers</option>
           {serverList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -481,9 +537,9 @@ function SshAuditHistory() {
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
+              <button onClick={() => patchParams({ s_page: page - 1 <= 1 ? undefined : String(page - 1) })} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
               <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
+              <button onClick={() => patchParams({ s_page: String(Math.min(totalPages, page + 1)) })} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
             </div>
           )}
         </>
@@ -514,10 +570,11 @@ const AUTH_EVENT_STYLE: Record<string, string> = {
 function AuthEventsHistory() {
   const [items, setItems] = useState<import('@/api/client').AuthEvent[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
+  const [searchParams, patchParams] = useQueryPatch()
+  const page = parseInt(searchParams.get('a_page') ?? '1') || 1
   const limit = 100
 
   // See UpdateHistory above: `cancelled` avoids an out-of-order response
@@ -584,9 +641,9 @@ function AuthEventsHistory() {
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
+              <button onClick={() => patchParams({ a_page: page - 1 <= 1 ? undefined : String(page - 1) })} disabled={page <= 1} className="btn-secondary text-xs">← Prev</button>
               <span className="text-sm text-text-muted font-mono">Page {page} of {totalPages}</span>
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
+              <button onClick={() => patchParams({ a_page: String(Math.min(totalPages, page + 1)) })} disabled={page >= totalPages} className="btn-secondary text-xs">Next →</button>
             </div>
           )}
         </>

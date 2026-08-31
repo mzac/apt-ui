@@ -36,23 +36,61 @@ def is_in_window(window: MaintenanceWindow, now: datetime | None = None) -> bool
     return minute_of_day >= window.start_minutes or minute_of_day < window.end_minutes
 
 
-async def get_active_window_for_server(db: AsyncSession, server_id: int) -> MaintenanceWindow | None:
-    """Return the first active deny window for *server_id*, or None.
+def _mode(w: MaintenanceWindow) -> str:
+    """Window mode, tolerating rows written before the column existed."""
+    return (getattr(w, "mode", None) or "deny").lower()
 
-    Per-server windows take priority; falls back to global windows.
+
+async def _windows_for_server(db: AsyncSession, server_id: int) -> list[MaintenanceWindow]:
+    """Every enabled window applying to *server_id*: its own **and** the global
+    (``server_id IS NULL``) ones.
+
+    They MERGE — a per-server window does not exempt a host from a fleet-wide
+    window. Making per-server windows replace the global set would mean adding
+    any per-server schedule silently cancels a fleet-wide emergency freeze for
+    that host, which is the opposite of what a freeze is for.
     """
-    now = _now_local()
     res = await db.execute(
         select(MaintenanceWindow).where(MaintenanceWindow.enabled == True)
     )
-    windows = list(res.scalars().all())
-    # Per-server first
+    return [w for w in res.scalars().all() if w.server_id in (None, server_id)]
+
+
+def is_blocked_at(windows: list[MaintenanceWindow], when: datetime) -> str | None:
+    """Reason *when* is blocked by *windows*, or None if the action may proceed.
+
+    THE single definition of what a window means, so callers can never drift:
+      * a deny window blocks while it is open, and always wins; and
+      * if any allow window applies, the action is permitted *only* while one of
+        them is open.
+
+    Pure and synchronous so a forward scan (see
+    ``backend.rollout.compute_next_window_opening``) can call it per candidate
+    minute without re-querying.
+    """
+    allow: list[MaintenanceWindow] = []
     for w in windows:
-        if w.server_id == server_id and is_in_window(w, now):
-            return w
-    # Then global (server_id IS NULL)
-    for w in windows:
-        if w.server_id is None and is_in_window(w, now):
+        if _mode(w) == "deny":
+            if is_in_window(w, when):
+                return f"blocked by maintenance window '{w.name}'"
+        else:
+            allow.append(w)
+    if allow and not any(is_in_window(w, when) for w in allow):
+        names = ", ".join(sorted(w.name for w in allow))
+        return f"outside the permitted maintenance window(s): {names}"
+    return None
+
+
+async def get_active_window_for_server(db: AsyncSession, server_id: int) -> MaintenanceWindow | None:
+    """Return the first active *deny* window for *server_id*, or None.
+
+    Per-server windows take priority; falls back to global windows. Allow-mode
+    windows are handled separately in :func:`window_block_reason` — they do not
+    block by being active, they block by *not* being active.
+    """
+    now = _now_local()
+    for w in await _windows_for_server(db, server_id):
+        if _mode(w) == "deny" and is_in_window(w, now):
             return w
     return None
 
@@ -63,10 +101,8 @@ async def window_block_reason(db: AsyncSession, server_id: int, override: bool =
     (admin) bypasses the gate."""
     if override:
         return None
-    w = await get_active_window_for_server(db, server_id)
-    if w is not None:
-        return f"blocked by maintenance window '{w.name}'"
-    return None
+
+    return is_blocked_at(await _windows_for_server(db, server_id), _now_local())
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +118,7 @@ def _serialize(w: MaintenanceWindow) -> dict:
         "end_minutes": w.end_minutes,
         "days_of_week": w.days_of_week,
         "enabled": w.enabled,
+        "mode": _mode(w),
         "created_at": utc_iso(w.created_at),
     }
 
@@ -115,6 +152,10 @@ async def create_window(
     if not (0 < days < 128):
         raise HTTPException(status_code=400, detail="days_of_week must be 1..127")
 
+    mode = (body.get("mode") or "deny").strip().lower()
+    if mode not in ("deny", "allow"):
+        raise HTTPException(status_code=400, detail="mode must be 'deny' or 'allow'")
+
     sid = body.get("server_id")
     if sid is not None:
         srv = (await db.execute(select(Server).where(Server.id == sid))).scalar_one_or_none()
@@ -128,6 +169,7 @@ async def create_window(
         end_minutes=end,
         days_of_week=days,
         enabled=bool(body.get("enabled", True)),
+        mode=mode,
     )
     db.add(w)
     await db.commit()
@@ -158,6 +200,11 @@ async def update_window(
             w.days_of_week = d
     if "enabled" in body:
         w.enabled = bool(body["enabled"])
+    if "mode" in body:
+        m = (body["mode"] or "deny").strip().lower()
+        if m not in ("deny", "allow"):
+            raise HTTPException(status_code=400, detail="mode must be 'deny' or 'allow'")
+        w.mode = m
     if "server_id" in body:
         w.server_id = body["server_id"]
     await db.commit()
@@ -192,7 +239,14 @@ async def list_active(
     servers = res.scalars().all()
     blocked: dict[int, dict] = {}
     for s in servers:
-        w = await get_active_window_for_server(db, s.id)
-        if w:
-            blocked[s.id] = {"window_id": w.id, "name": w.name}
+        # Report what actually blocks, so allow-only windows (which block by NOT
+        # being open) show up here too rather than reading as "not blocked".
+        reason = is_blocked_at(await _windows_for_server(db, s.id), _now_local())
+        if reason:
+            w = await get_active_window_for_server(db, s.id)
+            blocked[s.id] = {
+                "window_id": w.id if w else None,
+                "name": w.name if w else None,
+                "reason": reason,
+            }
     return {"blocked": blocked, "checked_at": _now_local().isoformat()}

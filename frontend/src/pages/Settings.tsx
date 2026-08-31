@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi, hooks as hooksApi } from '@/api/client'
@@ -1384,6 +1384,192 @@ function formatDays(bitmask: number): string {
   return DAY_LABELS.filter((_, i) => bitmask & (1 << i)).join(', ')
 }
 
+// ---------------------------------------------------------------------------
+// Week-grid preview (issue #62)
+//
+// Windows carry a `mode`: 'deny' (the default) blocks actions *inside* the
+// window, while 'allow' inverts it — actions are permitted only inside, and
+// blocked at all other times. A deny window always wins over an overlapping
+// allow window, so an emergency freeze cannot be defeated by an allow period.
+// The grid draws the two modes distinctly, plus enabled vs disabled.
+// ---------------------------------------------------------------------------
+
+type DaySegment = {
+  windowId: number
+  name: string
+  scopeLabel: string
+  enabled: boolean
+  mode: 'deny' | 'allow'
+  start: number   // minutes since midnight, 0..1440
+  end: number
+  color: string
+}
+
+/** Split each window into one segment per day it applies to, splitting a
+ *  midnight-wrapping window (e.g. 22:00→06:00) into its two day-local pieces
+ *  so each day column only ever holds forward-time [start, end) ranges. */
+function buildDaySegments(windows: MaintenanceWindow[], servers: Server[]): DaySegment[][] {
+  const days: DaySegment[][] = Array.from({ length: 7 }, () => [])
+  windows.forEach((w, i) => {
+    const color = PALETTE[i % PALETTE.length]
+    const scopeLabel = w.server_id == null
+      ? 'Global'
+      : (servers.find(s => s.id === w.server_id)?.name ?? `server #${w.server_id}`)
+    for (let d = 0; d < 7; d++) {
+      if (!(w.days_of_week & (1 << d))) continue
+      const base = { windowId: w.id, name: w.name, scopeLabel, enabled: w.enabled, mode: w.mode ?? 'deny', color }
+      if (w.start_minutes <= w.end_minutes) {
+        days[d].push({ ...base, start: w.start_minutes, end: w.end_minutes })
+      } else {
+        // Wraps midnight: tonight's piece runs to end-of-day, tomorrow's picks up at 00:00.
+        days[d].push({ ...base, start: w.start_minutes, end: 1440 })
+        days[(d + 1) % 7].push({ ...base, start: 0, end: w.end_minutes })
+      }
+    }
+  })
+  return days
+}
+
+function segmentsOverlap(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  return Math.max(a.start, b.start) < Math.min(a.end, b.end)
+}
+
+type LaidSegment = DaySegment & { lane: number; totalLanes: number; overlapping: boolean }
+
+/** Lay out one day's *enabled* segments into side-by-side lanes (the standard
+ *  calendar-view interval-packing algorithm) — a segment only needs a new
+ *  lane when it genuinely overlaps every currently-open lane, so `totalLanes
+ *  > 1` for a day always means two enabled windows are actually active at
+ *  the same time on that day. Disabled windows don't block anything, so they
+ *  are excluded from packing/overlap and drawn separately. */
+function layoutDay(segments: DaySegment[]): LaidSegment[] {
+  const enabled = segments.filter(s => s.enabled)
+  const sorted = [...enabled].sort((a, b) => a.start - b.start || a.end - b.end)
+  const laneEnds: number[] = []
+  const withLane: (DaySegment & { lane: number })[] = []
+  for (const seg of sorted) {
+    let lane = laneEnds.findIndex(end => end <= seg.start)
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(seg.end) }
+    else laneEnds[lane] = seg.end
+    withLane.push({ ...seg, lane })
+  }
+  const totalLanes = laneEnds.length || 1
+  return withLane.map(seg => ({
+    ...seg,
+    totalLanes,
+    overlapping: enabled.some(o => o.windowId !== seg.windowId && segmentsOverlap(o, seg)),
+  }))
+}
+
+const WEEK_GRID_HOUR_MARKS = [0, 4, 8, 12, 16, 20]
+const WEEK_GRID_TRACK_HEIGHT = 288 // px — 12px/hour
+
+function MaintenanceWeekGrid({ windows, servers, timezone }: { windows: MaintenanceWindow[]; servers: Server[]; timezone: string | null }) {
+  const daySegments = useMemo(() => buildDaySegments(windows, servers), [windows, servers])
+  const laidByDay = useMemo(() => daySegments.map(layoutDay), [daySegments])
+  const disabledByDay = useMemo(() => daySegments.map(segs => segs.filter(s => !s.enabled)), [daySegments])
+  const anyOverlap = laidByDay.some(day => day.some(s => s.overlapping))
+
+  if (windows.length === 0) return null
+
+  return (
+    <div className="border-t border-border/40 pt-3">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
+        <h3 className="text-xs uppercase tracking-wide text-text-muted">Week preview</h3>
+        <span className="text-[10px] text-text-muted">
+          Evaluated in {timezone ? <span className="font-mono text-text-primary">{timezone}</span> : 'the server timezone'}
+        </span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <div className="grid" style={{ gridTemplateColumns: '28px repeat(7, minmax(56px, 1fr))', minWidth: 420 }}>
+          <div />
+          {DAY_LABELS.map(d => (
+            <div key={d} className="text-center text-[10px] text-text-muted font-mono pb-1">{d}</div>
+          ))}
+
+          {/* Hour axis */}
+          <div className="relative" style={{ height: WEEK_GRID_TRACK_HEIGHT }}>
+            {WEEK_GRID_HOUR_MARKS.map(h => (
+              <span
+                key={h}
+                className="absolute right-1 -translate-y-1/2 text-[9px] text-text-muted/70 font-mono"
+                style={{ top: `${(h / 24) * 100}%` }}
+              >
+                {String(h).padStart(2, '0')}
+              </span>
+            ))}
+          </div>
+
+          {DAY_LABELS.map((d, dayIdx) => (
+            <div key={d} className="relative border-l border-border/30 bg-surface/20" style={{ height: WEEK_GRID_TRACK_HEIGHT }}>
+              {WEEK_GRID_HOUR_MARKS.map(h => (
+                <div key={h} className="absolute inset-x-0 border-t border-border/20" style={{ top: `${(h / 24) * 100}%` }} />
+              ))}
+
+              {/* Disabled windows — hatched, full width, drawn behind the enabled lanes */}
+              {disabledByDay[dayIdx].map((seg, i) => (
+                <div
+                  key={`d-${seg.windowId}-${i}`}
+                  className="absolute inset-x-0 rounded-sm"
+                  style={{
+                    top: `${(seg.start / 1440) * 100}%`,
+                    height: `${Math.max(((seg.end - seg.start) / 1440) * 100, 1.5)}%`,
+                    background: 'repeating-linear-gradient(45deg, rgba(148,163,184,0.18) 0 4px, transparent 4px 8px)',
+                    border: '1px dashed rgba(148,163,184,0.55)',
+                    boxSizing: 'border-box',
+                  }}
+                  title={`${seg.name} (disabled) — ${minutesToHHMM(seg.start)}–${minutesToHHMM(seg.end)}`}
+                />
+              ))}
+
+              {/* Enabled windows — side-by-side lanes, red hatch+outline where they overlap */}
+              {laidByDay[dayIdx].map(seg => (
+                <div
+                  key={`e-${seg.windowId}-${seg.start}-${seg.lane}`}
+                  className="absolute rounded-sm"
+                  style={{
+                    top: `${(seg.start / 1440) * 100}%`,
+                    height: `${Math.max(((seg.end - seg.start) / 1440) * 100, 1.5)}%`,
+                    left: `${(seg.lane / seg.totalLanes) * 100}%`,
+                    width: `${(1 / seg.totalLanes) * 100}%`,
+                    background: seg.overlapping
+                      ? `repeating-linear-gradient(45deg, ${seg.color}cc 0 4px, ${seg.color}55 4px 8px)`
+                      : `${seg.color}cc`,
+                    border: seg.overlapping ? '1.5px solid #ef4444' : `1px solid ${seg.color}`,
+                    boxSizing: 'border-box',
+                  }}
+                  title={`${seg.name} — ${seg.scopeLabel} — ${seg.mode === 'allow' ? 'ALLOW-only (blocked outside)' : 'deny (blocked inside)'} — ${minutesToHHMM(seg.start)}–${minutesToHHMM(seg.end)}${seg.overlapping ? ' — overlaps another window' : ''}`}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {anyOverlap && (
+        <p className="text-[10px] text-red mt-1.5">
+          ⚠ Overlapping windows are outlined in red and hatched — hover a block for details.
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+        {windows.map((w, i) => (
+          <span key={w.id} className="flex items-center gap-1 text-[10px]">
+            <span
+              className="w-2.5 h-2.5 rounded-sm shrink-0"
+              style={w.enabled
+                ? { background: PALETTE[i % PALETTE.length] }
+                : { background: 'repeating-linear-gradient(45deg, rgba(148,163,184,0.35) 0 2px, transparent 2px 4px)', border: '1px dashed rgba(148,163,184,0.7)' }}
+            />
+            <span className={w.enabled ? 'text-text-primary' : 'text-text-muted/70 line-through'}>{w.name}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function MaintenanceWindowsSection() {
   const [windows, setWindows] = useState<MaintenanceWindow[]>([])
   const [servers, setServers] = useState<Server[]>([])
@@ -1418,6 +1604,7 @@ function MaintenanceWindowsSection() {
       end_minutes: 17 * 60,    // 17:00
       days_of_week: 0b0011111, // Mon-Fri
       enabled: true,
+      mode: 'deny',
     })
   }
 
@@ -1470,6 +1657,8 @@ function MaintenanceWindowsSection() {
       )}
 
       {error && <p className="text-xs text-red font-mono">{error}</p>}
+
+      <MaintenanceWeekGrid windows={windows} servers={servers} timezone={timezone} />
 
       {windows.length === 0 && !editing ? (
         <p className="text-xs text-text-muted py-2">No maintenance windows configured.</p>
@@ -1588,7 +1777,25 @@ function MaintenanceWindowsSection() {
               </p>
             </div>
 
-            {/* 5. Enabled */}
+            {/* 5. Mode — deny (freeze) vs allow-only (permitted period) */}
+            <div>
+              <label className="label">Mode</label>
+              <select
+                className="input text-sm w-full"
+                value={editing.mode ?? 'deny'}
+                onChange={e => setEditing({ ...editing, mode: e.target.value as 'deny' | 'allow' })}
+              >
+                <option value="deny">Deny — block changes during this window (freeze)</option>
+                <option value="allow">Allow-only — permit changes ONLY during this window</option>
+              </select>
+              <p className="text-xs text-text-muted mt-1">
+                {(editing.mode ?? 'deny') === 'allow'
+                  ? 'Inverted: upgrades and reboots are blocked at all other times. A deny window still wins where they overlap.'
+                  : 'Upgrades and reboots are blocked while this window is open. Admins can override per action.'}
+              </p>
+            </div>
+
+            {/* 6. Enabled */}
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="checkbox"
@@ -2056,6 +2263,21 @@ function PreferencesTab() {
               <input type="checkbox" checked={form.allow_phased_on_auto ?? false} onChange={e => setForm(f => ({ ...f, allow_phased_on_auto: e.target.checked }))} className="w-4 h-4 accent-amber" />
               Allow phased updates in auto-upgrade
             </label>
+
+            <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.queue_for_next_window ?? false}
+                onChange={e => setForm(f => ({ ...f, queue_for_next_window: e.target.checked }))}
+                className="w-4 h-4 accent-amber"
+              />
+              Queue window-blocked servers for the next opening
+            </label>
+            <p className="text-xs text-text-muted leading-snug pl-6 -mt-1">
+              Off by default, auto-upgrade simply skips a server sitting inside a maintenance
+              deny window and logs it. With this on, the server is scheduled to upgrade when
+              that window next opens instead of waiting for the following cron run.
+            </p>
 
             {/* Staged rollout (issue #41) */}
             <div className="border-t border-border/30 pt-3 space-y-3">
@@ -3332,6 +3554,16 @@ function TwoFactorSection() {
 
 const TOKEN_SCOPES = ['read', 'check', 'upgrade', 'calendar'] as const
 
+// One-click scope presets (issue #62). Scope names are exactly what the backend
+// enforces per-endpoint — 'read'/'check'/'upgrade' via require_scope() in
+// backend/routers/api_v1.py, 'calendar' via the manual check in
+// backend/routers/calendar.py — checked against those files rather than guessed.
+const SCOPE_PRESETS: { label: string; scopes: readonly string[]; hint: string }[] = [
+  { label: 'Calendar feed', scopes: ['calendar'], hint: 'Only the iCal maintenance-window subscription' },
+  { label: 'CI read-only', scopes: ['read'], hint: 'List servers and status — no checks, upgrades, or writes' },
+  { label: 'Automation', scopes: ['read', 'check', 'upgrade'], hint: 'Poll status, trigger checks and upgrades via /api/v1' },
+]
+
 function ApiTokensSection() {
   const [tokens, setTokens] = useState<import('@/api/client').ApiTokenSummary[]>([])
   const [newName, setNewName] = useState('')
@@ -3434,8 +3666,29 @@ function ApiTokensSection() {
             {creating ? '…' : 'Create'}
           </button>
         </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-text-muted mr-1">Presets:</span>
+          {SCOPE_PRESETS.map(p => {
+            const active = scopes.size === p.scopes.length && p.scopes.every(sc => scopes.has(sc))
+            return (
+              <button
+                key={p.label}
+                type="button"
+                title={p.hint}
+                onClick={() => setScopes(new Set(p.scopes))}
+                className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                  active
+                    ? 'border-green text-green bg-green/10'
+                    : 'border-border text-text-muted hover:text-text-primary hover:border-text-muted'
+                }`}
+              >
+                {p.label}
+              </button>
+            )
+          })}
+        </div>
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs text-text-muted">Scopes (none = full access):</span>
+          <span className="text-xs text-text-muted">Scopes:</span>
           {TOKEN_SCOPES.map(sc => (
             <label key={sc} className="flex items-center gap-1 text-xs text-text-muted cursor-pointer">
               <input type="checkbox" checked={scopes.has(sc)}
@@ -3445,6 +3698,15 @@ function ApiTokensSection() {
             </label>
           ))}
         </div>
+        {/* Empty scopes silently means full admin access on the backend (see
+            require_scope() in backend/auth.py — an unscoped token is unrestricted).
+            That's dangerous enough as a default that it needs to be loud, not a
+            parenthetical next to the checkboxes. */}
+        {scopes.size === 0 && (
+          <p className="text-xs text-amber font-medium">
+            ⚠ No scopes selected — this token will have full admin access. Pick a preset above or check at least one scope to limit it.
+          </p>
+        )}
       </form>
       {error && <p className="text-red text-xs">{error}</p>}
 

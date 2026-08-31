@@ -1,13 +1,16 @@
 import logging
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import bcrypt
 
+from backend import oidc
 from backend.auth import (
     create_access_token,
     generate_api_token,
@@ -236,6 +239,149 @@ async def login(
 async def logout(response: Response):
     response.delete_cookie(key=COOKIE_NAME)
     return {"detail": "Logged out"}
+
+
+# ---------------------------------------------------------------------------
+# OIDC / OAuth2 SSO (issue #62) — entirely optional; see backend/oidc.py for
+# the protocol implementation and backend/config.py for the env vars. Local
+# password login (above) is untouched and remains the break-glass path if
+# SSO is enabled but misconfigured.
+# ---------------------------------------------------------------------------
+
+_SAFE_NEXT_RE = __import__("re").compile(r"^/(?![/\\])[^\s\x00-\x1f\\]*$")
+
+
+def _safe_next_path(next_param: str | None) -> str:
+    r"""Only accept a same-origin absolute path — never an absolute URL, a
+    protocol-relative `//host`, a `/\host`, or anything carrying control
+    characters (which could smuggle a newline into the Location header).
+
+    Applied both when the ?next= is *stored* at login start and again when it is
+    *used* on callback: the stored value round-trips through the pending-state
+    store, so re-validating at the point of redirect is what actually guarantees
+    the redirect is same-origin (and is what makes that provable to a scanner).
+    Mirrors the ?next= handling in frontend/src/pages/Login.tsx.
+    """
+    if next_param and _SAFE_NEXT_RE.match(next_param):
+        return next_param
+    return "/"
+
+
+# Fixed set of SSO failure codes. The redirect carries only one of these — never
+# IdP-supplied text. Reflecting `error_description` back into the URL put an
+# externally-controlled string into a redirect target (and into the page the
+# browser then renders); percent-encoding made that safe in practice but left a
+# value no part of this system controls flowing to the user. The real detail is
+# recorded in the auth event log, which is where an operator should look.
+_SSO_ERROR_CODES = frozenset({
+    "sso_disabled",
+    "sso_provider_error",
+    "sso_bad_callback",
+    "sso_state_invalid",
+    "sso_token_invalid",
+    "sso_account_conflict",
+    "sso_failed",
+})
+
+
+def _login_error_redirect(code: str) -> RedirectResponse:
+    """Bounce back to the login page with a fixed, allow-listed failure code."""
+    safe_code = code if code in _SSO_ERROR_CODES else "sso_failed"
+    return RedirectResponse(url=f"/login?sso_error={safe_code}", status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/sso/status")
+async def sso_status():
+    """Public — reports ONLY whether SSO is configured/enabled, never any
+    secret or config detail, so the login page can decide whether to show
+    the SSO button before the user has authenticated."""
+    return {"enabled": oidc.is_enabled()}
+
+
+@router.get("/sso/login")
+async def sso_login(request: Request, next: str | None = Query(default=None)):
+    if not oidc.is_enabled():
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+    try:
+        url = await oidc.build_authorization_request(_safe_next_path(next))
+    except oidc.OIDCError as exc:
+        logger.warning("SSO login start failed: %s", exc)
+        return _login_error_redirect("sso_provider_error")
+    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/sso/callback")
+async def sso_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+):
+    if not oidc.is_enabled():
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+
+    ip = _client_ip(request)
+
+    def _fail(code: str) -> RedirectResponse:
+        return _login_error_redirect(code)
+
+    # The IdP itself can redirect back with an error instead of a code (e.g.
+    # the user cancelled consent, or access_denied from a policy check).
+    if error:
+        detail = error_description or error
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=detail, success=False)
+        return _fail("sso_provider_error")
+
+    if not code or not state:
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail="missing code/state", success=False)
+        return _fail("sso_bad_callback")
+
+    try:
+        pending = oidc.pop_pending(state)
+        tokens = await oidc.exchange_code_for_tokens(code, pending.code_verifier)
+        claims = await oidc.verify_id_token(tokens["id_token"], pending.nonce)
+        user, info = await oidc.provision_or_login_user(db, claims)
+    except oidc.OIDCAccountConflict as exc:
+        # Surfaced distinctly: this is a name collision an admin must resolve,
+        # not a token problem. Full detail goes to the audit log.
+        logger.warning("SSO account conflict: %s", exc)
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=str(exc), success=False)
+        return _fail("sso_account_conflict")
+    except oidc.OIDCError as exc:
+        logger.warning("SSO login failed: %s", exc)
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=str(exc), success=False)
+        return _fail("sso_token_invalid")
+    except Exception as exc:  # defensive — never leak internals, still audit the failure
+        logger.exception("Unexpected SSO login failure")
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail="unexpected error", success=False)
+        return _fail("sso_failed")
+
+    if info["created"]:
+        await record_auth_event(
+            db, "sso_provisioned", username=info["username"], ip=ip,
+            detail="admin" if info["is_admin"] else "user", success=True,
+        )
+    elif info["role_changed"]:
+        await record_auth_event(
+            db, "sso_role_change", username=info["username"], ip=ip,
+            detail=f"is_admin={info['is_admin']} (group mapping)", success=True,
+        )
+    await record_auth_event(db, "sso_login", username=info["username"], ip=ip, success=True)
+
+    token = create_access_token(user.username)
+    # Re-validate at the point of use, not just when it was stored: this is what
+    # guarantees the post-login redirect can only ever be same-origin.
+    redirect = RedirectResponse(url=_safe_next_path(pending.next_path), status_code=status.HTTP_302_FOUND)
+    redirect.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=COOKIE_MAX_AGE,
+    )
+    return redirect
 
 
 @router.get("/me", response_model=UserOut)

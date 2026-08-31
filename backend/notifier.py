@@ -1067,6 +1067,71 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
 
 
 # ---------------------------------------------------------------------------
+# Package version watch (issue #62)
+# ---------------------------------------------------------------------------
+
+async def notify_package_watch(cfg: NotificationConfig | None, watch, event: str, detail: dict) -> None:
+    """Fire a package-watch alert (see backend/package_watch.py) through every
+    enabled channel, mirroring the shape of notify_security_updates_found /
+    notify_reboot_required above.
+
+    `event` is "divergence" or "new_version"; `detail` is the event-specific
+    payload built by the evaluator (a "servers" map of server_name -> {current,
+    available}, plus "versions" for the new_version case).
+
+    There is no dedicated per-event NotificationConfig toggle for this (unlike
+    notify_security_updates / notify_reboot_required) — adding one needs a new
+    models.py column plus a backend/database.py migration entry, both out of
+    scope for this change. Instead this follows the same channel-enabled gate
+    every other event uses (cfg.email_enabled, etc.) with no extra granularity,
+    and it always fans out through notify_destinations() — the generic
+    multi-destination adapter system (Discord/Mattermost/ntfy/PagerDuty/
+    Opsgenie/webhook) — exactly like the two functions above do at the end of
+    their bodies.
+    """
+    servers: dict = detail.get("servers", {})
+
+    if event == "divergence":
+        subject = f"Apt Dashboard — Package watch: '{watch.package_name}' versions diverge"
+        lines = [f"Installed versions of '{watch.package_name}' diverge across the fleet:", ""]
+        for name, v in sorted(servers.items()):
+            lines.append(f"  {name}: {v.get('current') or '?'}")
+        evt_type = "package_watch_divergence"
+    else:
+        versions = detail.get("versions", [])
+        subject = f"Apt Dashboard — Package watch: '{watch.package_name}' new version detected"
+        lines = [f"New version(s) of '{watch.package_name}' seen: {', '.join(versions)}", ""]
+        for name, v in sorted(servers.items()):
+            lines.append(f"  {name}: {v.get('current') or '?'} → {v.get('available') or '?'}")
+        evt_type = "package_watch_new_version"
+
+    text = "\n".join(lines)
+    html = (
+        "<html><body style='font-family:sans-serif;background:#0f1117;color:#e2e8f0'>"
+        "<div style='max-width:600px;margin:20px auto;background:#1a1d27;border-radius:8px;padding:24px'>"
+        f"<h2 style='margin:0 0 4px 0;color:#fbbf24'>📦 Package watch — {watch.package_name}</h2>"
+        f"<pre style='color:#94a3b8;white-space:pre-wrap;font-family:inherit'>{text}</pre>"
+        "</div></body></html>"
+    )
+
+    if cfg is not None:
+        if cfg.email_enabled:
+            await _send_email(cfg, subject, html, text, event_type=evt_type)
+        if cfg.telegram_enabled:
+            await _send_telegram(cfg, text, event_type=evt_type)
+        if cfg.slack_enabled:
+            await _send_slack(cfg, subject, body=text, event_type=evt_type)
+        if cfg.webhook_enabled:
+            await _send_webhook(cfg, evt_type, {
+                "package": watch.package_name,
+                "event": event,
+                **detail,
+            })
+
+    await notify_destinations(evt_type, subject, text)
+
+
+# ---------------------------------------------------------------------------
 # Weekly patch digest (issue #58)
 # ---------------------------------------------------------------------------
 
