@@ -20,6 +20,12 @@ class User(Base):
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Last TOTP step counter accepted at login — blocks code replay (issue #62).
     totp_last_counter: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # SSO (issue #62). 'local' users authenticate with password_hash; 'oidc' users
+    # are provisioned just-in-time and carry the provider's stable subject claim.
+    # An OIDC user still has a password_hash column (it is NOT NULL) — it is filled
+    # with an unusable random value so password login can never succeed for them.
+    auth_provider: Mapped[str] = mapped_column(Text, default="local", nullable=False)
+    oidc_subject: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
 
 
 class MaintenanceWindow(Base):
@@ -462,3 +468,93 @@ class FleetSnapshot(Base):
     reboot_required: Mapped[int] = mapped_column(Integer, default=0)
     pending_packages_total: Mapped[int] = mapped_column(Integer, default=0)
     security_packages_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ---------------------------------------------------------------------------
+# Roadmap #62 — persistent job control plane, durable rollouts, package watches
+# ---------------------------------------------------------------------------
+
+class Task(Base):
+    """A long-running background operation, persisted so it survives a restart.
+
+    Replaces the module-global progress dicts and fire-and-forget ``gather``
+    calls: a Task row is the single source of truth for "what is running", which
+    lets the UI re-attach after a page reload and lets a restart reconcile work
+    that was interrupted. ``server_id`` is null for fleet-wide operations.
+    """
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_type: Mapped[str] = mapped_column(Text, nullable=False)   # upgrade / upgrade_all / reboot_all / check_all / autoremove_all / template_apply
+    # queued -> running -> success | error | cancelled | interrupted
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued", index=True)
+    server_id: Mapped[int | None] = mapped_column(ForeignKey("servers.id", ondelete="SET NULL"), nullable=True, index=True)
+    rollout_id: Mapped[int | None] = mapped_column(ForeignKey("rollouts.id", ondelete="SET NULL"), nullable=True, index=True)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    progress_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=0)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Rolling transcript so a re-attaching client can catch up on what it missed.
+    log_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Rollout(Base):
+    """A staged, ring-by-ring rollout that outlives the process that started it.
+
+    The auto-upgrade staging used an in-process ``await asyncio.sleep(24h)``, so a
+    restart silently dropped every pending ring. Persisting the plan lets
+    DateTrigger jobs drive each step and lets startup reconcile anything that was
+    due while the process was down.
+    """
+    __tablename__ = "rollouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)          # auto_upgrade / reboot_all
+    # pending -> running -> paused | complete | aborted | cancelled
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config_json: Mapped[str | None] = mapped_column(Text, nullable=True)   # action, reboot flags, ring wait, etc.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class RolloutStep(Base):
+    """One ring of a :class:`Rollout`, scheduled independently so a promote-now /
+    pause / abort decision can be applied between rings."""
+    __tablename__ = "rollout_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rollout_id: Mapped[int] = mapped_column(ForeignKey("rollouts.id", ondelete="CASCADE"), nullable=False, index=True)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    ring_name: Mapped[str] = mapped_column(Text, nullable=False)
+    # pending -> scheduled -> running -> success | error | skipped | cancelled
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", index=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    server_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON list of server ids in this ring
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PackageWatch(Base):
+    """Watch a package across the fleet and alert when its versions diverge or a
+    new version appears (issue #62). Evaluated after each fleet check."""
+    __tablename__ = "package_watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    package_name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_on_divergence: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_on_new_version: Mapped[bool] = mapped_column(Boolean, default=True)
+    # JSON {server_name: version} from the last evaluation — the comparison baseline.
+    last_versions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
