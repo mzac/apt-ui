@@ -336,8 +336,18 @@ async def provision_or_login_user(db, claims: dict[str, Any]):
             db.add(user)
             created = True
 
-    role_changed = (not created) and (user.is_admin != wants_admin)
-    user.is_admin = wants_admin
+    # Group->role mapping only applies when an admin group is actually configured.
+    # With OIDC_ADMIN_GROUP unset, `wants_admin` is always False, so assigning it
+    # unconditionally would demote — on every single login — any SSO user an
+    # administrator had deliberately promoted in the UI. Unset means "never
+    # auto-promote", not "continuously revoke". When it IS configured the mapping
+    # is authoritative in both directions, so revoking the group in the IdP takes
+    # effect at the next sign-in.
+    if config.OIDC_ADMIN_GROUP:
+        role_changed = (not created) and (user.is_admin != wants_admin)
+        user.is_admin = wants_admin
+    else:
+        role_changed = False
     user.last_login = datetime.now(timezone.utc)
 
     await db.commit()

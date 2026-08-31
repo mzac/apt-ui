@@ -323,6 +323,15 @@ def severity_cache_status() -> dict:
     }
 
 
+# Only one severity backfill may be in flight process-wide. Each call is already
+# bounded, but the trigger is per-request: two open dashboards would start two
+# backfills, select the same still-unknown packages, and duplicate every upstream
+# call — provoking exactly the rate-limiting this module is built to avoid. A
+# second concurrent caller returns immediately rather than queueing, since the
+# work is best-effort and the next request will pick up whatever is still missing.
+_severity_backfill_lock = asyncio.Lock()
+
+
 async def fetch_severities_for_packages(
     package_names: list[str],
     *,
@@ -345,6 +354,18 @@ async def fetch_severities_for_packages(
     Returns the number of CVE severity entries updated (0 if nothing needed fetching
     or every attempted fetch failed).
     """
+    if _severity_backfill_lock.locked():
+        logger.debug("CVE severity backfill already running — skipping this trigger")
+        return 0
+    async with _severity_backfill_lock:
+        return await _fetch_severities_for_packages(package_names, max_packages=max_packages)
+
+
+async def _fetch_severities_for_packages(
+    package_names: list[str],
+    *,
+    max_packages: int = _SEVERITY_MAX_PACKAGES_PER_CYCLE,
+) -> int:
     cache = _load_severity_cache()
     cves_out = cache.setdefault("cves", {})
     fetched_at = cache.setdefault("packages_fetched_at", {})

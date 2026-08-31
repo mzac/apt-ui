@@ -248,13 +248,35 @@ async def logout(response: Response):
 # SSO is enabled but misconfigured.
 # ---------------------------------------------------------------------------
 
+_SAFE_NEXT_RE = __import__("re").compile(r"^/(?![/\\])[^\s\x00-\x1f\\]*$")
+
+
 def _safe_next_path(next_param: str | None) -> str:
-    """Only accept a same-origin absolute path (no `//host` / `/\\host` open
-    redirect) — mirrors the ?next= handling in frontend/src/pages/Login.tsx."""
-    import re
-    if next_param and re.match(r"^/(?![/\\])", next_param):
+    r"""Only accept a same-origin absolute path — never an absolute URL, a
+    protocol-relative `//host`, a `/\host`, or anything carrying control
+    characters (which could smuggle a newline into the Location header).
+
+    Applied both when the ?next= is *stored* at login start and again when it is
+    *used* on callback: the stored value round-trips through the pending-state
+    store, so re-validating at the point of redirect is what actually guarantees
+    the redirect is same-origin (and is what makes that provable to a scanner).
+    Mirrors the ?next= handling in frontend/src/pages/Login.tsx.
+    """
+    if next_param and _SAFE_NEXT_RE.match(next_param):
         return next_param
     return "/"
+
+
+def _login_error_redirect(message: str) -> RedirectResponse:
+    """Bounce back to the login page with an error note.
+
+    The message can originate from the IdP (`error_description`), so it is
+    length-capped and fully percent-encoded with `safe=""` — the default `quote`
+    leaves `/` untouched, which is exactly the character that lets a value escape
+    the query string into the path.
+    """
+    safe_msg = quote(str(message)[:200], safe="")
+    return RedirectResponse(url=f"/login?sso_error={safe_msg}", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/sso/status")
@@ -273,7 +295,7 @@ async def sso_login(request: Request, next: str | None = Query(default=None)):
         url = await oidc.build_authorization_request(_safe_next_path(next))
     except oidc.OIDCError as exc:
         logger.warning("SSO login start failed: %s", exc)
-        return RedirectResponse(url=f"/login?sso_error={quote(str(exc))}", status_code=status.HTTP_302_FOUND)
+        return _login_error_redirect(str(exc))
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
 
 
@@ -292,7 +314,7 @@ async def sso_callback(
     ip = _client_ip(request)
 
     def _fail(message: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/login?sso_error={quote(message)}", status_code=status.HTTP_302_FOUND)
+        return _login_error_redirect(message)
 
     # The IdP itself can redirect back with an error instead of a code (e.g.
     # the user cancelled consent, or access_denied from a policy check).
@@ -332,7 +354,9 @@ async def sso_callback(
     await record_auth_event(db, "sso_login", username=info["username"], ip=ip, success=True)
 
     token = create_access_token(user.username)
-    redirect = RedirectResponse(url=pending.next_path, status_code=status.HTTP_302_FOUND)
+    # Re-validate at the point of use, not just when it was stored: this is what
+    # guarantees the post-login redirect can only ever be same-origin.
+    redirect = RedirectResponse(url=_safe_next_path(pending.next_path), status_code=status.HTTP_302_FOUND)
     redirect.set_cookie(
         key=COOKIE_NAME,
         value=token,

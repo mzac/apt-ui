@@ -803,7 +803,14 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         task_id = task.id
         await task_queue.start_task(db, task_id)
 
+        # Informational only — the Task row exists regardless. This send sits BEFORE
+    # the try/finally that finalises the task, so letting a disconnected client
+    # raise here would strand the task as permanently 'running' (and leak the log
+    # flusher), which is exactly what the reconciler then has to clean up.
+    try:
         await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    except Exception:
+        pass
         await websocket.send_json({"type": "status", "data": "connecting"})
 
         log_writer = task_queue.TaskLogWriter(task_id)
@@ -1044,7 +1051,14 @@ async def ws_upgrade_all(websocket: WebSocket):
         task_id = task.id
         await task_queue.start_task(db, task_id)
 
-    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    # Informational only — the Task row exists regardless. This send sits BEFORE
+    # the try/finally that finalises the task, so letting a disconnected client
+    # raise here would strand the task as permanently 'running' (and leak the log
+    # flusher), which is exactly what the reconciler then has to clean up.
+    try:
+        await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    except Exception:
+        pass
 
     semaphore = asyncio.Semaphore(concurrency)
     histories: list = []
@@ -1369,7 +1383,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     from datetime import datetime
-    from backend.routers.maintenance import get_active_window_for_server
+    from backend.routers.maintenance import window_block_reason
     from backend.upgrade_manager import _get_lock
     from backend.models import UpdateHistory
 
@@ -1385,9 +1399,12 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
         async with semaphore:
             # Respect maintenance windows — don't push a template install into a freeze.
             async with AsyncSessionLocal() as wdb:
-                window = await get_active_window_for_server(wdb, server.id)
-            if window is not None:
-                await send_fn({"type": "skipped", "data": f"Skipped — in maintenance window '{window.name}'"})
+                # Full block check, not the deny-only helper: allow-only windows
+                # block by *not* being open, which get_active_window_for_server
+                # cannot express.
+                block = await window_block_reason(wdb, server.id)
+            if block is not None:
+                await send_fn({"type": "skipped", "data": f"Skipped — {block}"})
                 # Record the skip in history so it's visible/auditable.
                 try:
                     async with AsyncSessionLocal() as sdb:
@@ -1618,7 +1635,14 @@ async def ws_autoremove_all(websocket: WebSocket):
         task_id = task.id
         await task_queue.start_task(db, task_id)
 
-    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    # Informational only — the Task row exists regardless. This send sits BEFORE
+    # the try/finally that finalises the task, so letting a disconnected client
+    # raise here would strand the task as permanently 'running' (and leak the log
+    # flusher), which is exactly what the reconciler then has to clean up.
+    try:
+        await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    except Exception:
+        pass
 
     semaphore = asyncio.Semaphore(concurrency)
     log_writer = task_queue.TaskLogWriter(task_id)
@@ -1908,7 +1932,14 @@ async def ws_reboot_all(websocket: WebSocket):
         except Exception:
             pass
 
-    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    # Informational only — the Task row exists regardless. This send sits BEFORE
+    # the try/finally that finalises the task, so letting a disconnected client
+    # raise here would strand the task as permanently 'running' (and leak the log
+    # flusher), which is exactly what the reconciler then has to clean up.
+    try:
+        await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+    except Exception:
+        pass
 
     # Graceful stop (issue #62). Reuses the existing ring-failure abort path
     # (aborted flag / "abort" message) rather than adding a parallel one — a

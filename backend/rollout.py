@@ -332,11 +332,13 @@ async def compute_next_window_opening(
     unchanged if no window currently applies, and ``None`` if every window
     covers the next 14 days solid (misconfiguration guard).
     """
-    from backend.routers.maintenance import is_in_window
-    from backend.models import MaintenanceWindow
+    from backend.routers.maintenance import _windows_for_server, is_blocked_at
 
-    res = await db.execute(select(MaintenanceWindow).where(MaintenanceWindow.enabled == True))
-    windows = [w for w in res.scalars().all() if w.server_id in (None, server_id)]
+    # Use the SAME predicate the enforcement path uses. Testing `is_in_window`
+    # directly treats every window as a deny window, which inverts allow-only
+    # mode: for an allow window the current (blocked) instant looks free, so the
+    # upgrade gets scheduled at a moment it is explicitly not permitted.
+    windows = await _windows_for_server(db, server_id)
 
     probe = after or now_local()
     if not windows:
@@ -345,7 +347,7 @@ async def compute_next_window_opening(
     # Maintenance windows are defined in whole minutes (start_minutes/
     # end_minutes), so stepping minute-by-minute cannot skip over an opening.
     for _ in range(14 * 24 * 60):
-        if not any(is_in_window(w, probe) for w in windows):
+        if is_blocked_at(windows, probe) is None:
             return probe
         probe = probe + timedelta(minutes=1)
     return None
@@ -636,6 +638,22 @@ async def reconcile_rollouts() -> dict:
 # Control operations (used by backend/routers/rollouts.py)
 # ---------------------------------------------------------------------------
 
+async def _running_step(db: AsyncSession, rollout_id: int) -> RolloutStep | None:
+    """The rollout's currently-executing ring, if any.
+
+    Staging is only meaningful if rings run one at a time: promoting or resuming
+    while a ring is mid-flight would run the next ring concurrently, defeating
+    both the sequential rollout and the canary gate that is supposed to stop a
+    bad ring from being promoted.
+    """
+    return (await db.execute(
+        select(RolloutStep).where(
+            RolloutStep.rollout_id == rollout_id,
+            RolloutStep.status == "running",
+        ).limit(1)
+    )).scalar_one_or_none()
+
+
 async def promote_now(db: AsyncSession, rollout_id: int, *, actor: str) -> Rollout:
     """Run the next scheduled/pending step immediately instead of waiting for
     its due time (admin override)."""
@@ -644,6 +662,12 @@ async def promote_now(db: AsyncSession, rollout_id: int, *, actor: str) -> Rollo
         raise ValueError("not_found")
     if rollout.status not in ("running", "paused"):
         raise ValueError(f"cannot promote a rollout in status '{rollout.status}'")
+
+    running = await _running_step(db, rollout_id)
+    if running is not None:
+        raise ValueError(
+            f"ring '{running.ring_name}' is still running — wait for it to finish before promoting"
+        )
 
     next_step = (await db.execute(
         select(RolloutStep).where(
@@ -697,6 +721,12 @@ async def resume_rollout(db: AsyncSession, rollout_id: int, *, actor: str) -> Ro
         raise ValueError("not_found")
     if rollout.status != "paused":
         raise ValueError(f"cannot resume a rollout in status '{rollout.status}'")
+
+    running = await _running_step(db, rollout_id)
+    if running is not None:
+        raise ValueError(
+            f"ring '{running.ring_name}' is still running — it will promote on its own when it finishes"
+        )
 
     rollout.status = "running"
     note = f"Resumed by {actor} at {utc_iso(datetime.utcnow())}"

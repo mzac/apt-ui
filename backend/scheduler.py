@@ -134,8 +134,16 @@ async def _job_auto_upgrade():
                     if getattr(cfg, "queue_for_next_window", False):
                         try:
                             from backend.rollout import queue_server_for_next_window
-                            queued_at = await queue_server_for_next_window(db, s.id)
-                            if queued_at:
+                            queued = await queue_server_for_next_window(
+                                db, s,
+                                action="upgrade",
+                                allow_phased=allow_phased,
+                                conffile_action=conffile_action,
+                                initiated_by="scheduled",
+                            )
+                            if queued:
+                                _, queued_step = queued
+                                queued_at = queued_step.scheduled_at
                                 queued_for_window += 1
                                 logger.info(
                                     "Auto-upgrade queued %s for the next opening of window '%s' (%s)",

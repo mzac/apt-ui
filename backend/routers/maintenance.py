@@ -42,18 +42,43 @@ def _mode(w: MaintenanceWindow) -> str:
 
 
 async def _windows_for_server(db: AsyncSession, server_id: int) -> list[MaintenanceWindow]:
-    """Enabled windows applying to *server_id*: per-server ones if any exist,
-    otherwise the global (server_id IS NULL) ones.
+    """Every enabled window applying to *server_id*: its own **and** the global
+    (``server_id IS NULL``) ones.
 
-    Per-server windows *replace* the global set rather than merging with it, so a
-    server with its own schedule is not also subject to the fleet-wide one.
+    They MERGE — a per-server window does not exempt a host from a fleet-wide
+    window. Making per-server windows replace the global set would mean adding
+    any per-server schedule silently cancels a fleet-wide emergency freeze for
+    that host, which is the opposite of what a freeze is for.
     """
     res = await db.execute(
         select(MaintenanceWindow).where(MaintenanceWindow.enabled == True)
     )
-    windows = list(res.scalars().all())
-    own = [w for w in windows if w.server_id == server_id]
-    return own or [w for w in windows if w.server_id is None]
+    return [w for w in res.scalars().all() if w.server_id in (None, server_id)]
+
+
+def is_blocked_at(windows: list[MaintenanceWindow], when: datetime) -> str | None:
+    """Reason *when* is blocked by *windows*, or None if the action may proceed.
+
+    THE single definition of what a window means, so callers can never drift:
+      * a deny window blocks while it is open, and always wins; and
+      * if any allow window applies, the action is permitted *only* while one of
+        them is open.
+
+    Pure and synchronous so a forward scan (see
+    ``backend.rollout.compute_next_window_opening``) can call it per candidate
+    minute without re-querying.
+    """
+    allow: list[MaintenanceWindow] = []
+    for w in windows:
+        if _mode(w) == "deny":
+            if is_in_window(w, when):
+                return f"blocked by maintenance window '{w.name}'"
+        else:
+            allow.append(w)
+    if allow and not any(is_in_window(w, when) for w in allow):
+        names = ", ".join(sorted(w.name for w in allow))
+        return f"outside the permitted maintenance window(s): {names}"
+    return None
 
 
 async def get_active_window_for_server(db: AsyncSession, server_id: int) -> MaintenanceWindow | None:
@@ -77,20 +102,7 @@ async def window_block_reason(db: AsyncSession, server_id: int, override: bool =
     if override:
         return None
 
-    # A deny window always wins: an emergency freeze must not be defeated by an
-    # overlapping allow period.
-    w = await get_active_window_for_server(db, server_id)
-    if w is not None:
-        return f"blocked by maintenance window '{w.name}'"
-
-    # Allow-mode windows invert the meaning: if any apply to this server, the
-    # action is permitted *only* while one of them is open.
-    now = _now_local()
-    allow_windows = [w for w in await _windows_for_server(db, server_id) if _mode(w) == "allow"]
-    if allow_windows and not any(is_in_window(w, now) for w in allow_windows):
-        names = ", ".join(sorted(w.name for w in allow_windows))
-        return f"outside the permitted maintenance window(s): {names}"
-    return None
+    return is_blocked_at(await _windows_for_server(db, server_id), _now_local())
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +239,14 @@ async def list_active(
     servers = res.scalars().all()
     blocked: dict[int, dict] = {}
     for s in servers:
-        w = await get_active_window_for_server(db, s.id)
-        if w:
-            blocked[s.id] = {"window_id": w.id, "name": w.name}
+        # Report what actually blocks, so allow-only windows (which block by NOT
+        # being open) show up here too rather than reading as "not blocked".
+        reason = is_blocked_at(await _windows_for_server(db, s.id), _now_local())
+        if reason:
+            w = await get_active_window_for_server(db, s.id)
+            blocked[s.id] = {
+                "window_id": w.id if w else None,
+                "name": w.name if w else None,
+                "reason": reason,
+            }
     return {"blocked": blocked, "checked_at": _now_local().isoformat()}

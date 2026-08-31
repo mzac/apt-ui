@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { security as securityApi, groups as groupsApi, tags as tagsApi, createSelectiveUpgradeWebSocket } from '@/api/client'
+import { security as securityApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, createSelectiveUpgradeWebSocket } from '@/api/client'
 import type { RemediationPlan, RemediationPlanServer, RemediationServerEntry, RemediationMatchedPackage } from '@/api/client'
 import type {
   CveInventoryRow,
@@ -628,12 +628,28 @@ function RemediateEverywhereModal({ identifier, servers, onClose }: {
   const [lines, setLines] = useState<Record<number, string[]>>({})
   const [started, setStarted] = useState(false)
   const socketsRef = useRef<WebSocket[]>([])
+  // Honour the fleet's configured upgrade concurrency. Opening one socket per
+  // server at once would run the whole fleet's upgrades simultaneously, which is
+  // exactly what upgrade_concurrency exists to prevent.
+  const [concurrency, setConcurrency] = useState(5)
+
+  useEffect(() => {
+    schedulerApi.status()
+      .then(c => { if (c.upgrade_concurrency > 0) setConcurrency(c.upgrade_concurrency) })
+      .catch(() => { /* fall back to the conservative default */ })
+  }, [])
 
   useEffect(() => () => { socketsRef.current.forEach(ws => ws.close()) }, [])
 
   function start() {
     setStarted(true)
-    for (const s of servers) {
+    // Simple worker pool: keep at most `concurrency` sockets open, starting the
+    // next server only as an earlier one closes.
+    const queue = [...servers]
+
+    const launchNext = () => {
+      const s = queue.shift()
+      if (!s) return
       setStates(prev => ({ ...prev, [s.server_id]: 'running' }))
       let sawTerminal = false
       const ws = createSelectiveUpgradeWebSocket(
@@ -654,10 +670,13 @@ function RemediateEverywhereModal({ identifier, servers, onClose }: {
         () => {
           if (!sawTerminal) setStates(prev => ({ ...prev, [s.server_id]: 'error' }))
           window.dispatchEvent(new CustomEvent('apt:refresh'))
+          launchNext()   // free the slot for the next queued server
         },
       )
       socketsRef.current.push(ws)
     }
+
+    for (let i = 0; i < Math.min(concurrency, queue.length); i++) launchNext()
   }
 
   const allSettled = started && Object.values(states).every(s => s === 'done' || s === 'error')
