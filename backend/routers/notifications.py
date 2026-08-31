@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import NotificationConfig, NotificationLog, User
+from backend.timeutil import utc_iso
 from backend.schemas import NotificationConfigOut, NotificationConfigUpdate, NotificationLogOut
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
@@ -199,12 +200,17 @@ async def get_notification_history(
     }
 
 
-@router.get("/telegram/detect-chat-id")
+@router.post("/telegram/detect-chat-id")
 async def detect_chat_id(
-    telegram_bot_token: str | None = Query(None, description="Unsaved candidate token from the form (issue #62)"),
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
+    # POST, not GET: the candidate bot token is a credential and must not ride in a
+    # query string, where reverse proxies and access logs would capture it. Admin-only
+    # to match the other config-testing endpoints — it dials out with a caller-supplied
+    # token, which a read-only user has no business doing.
+    telegram_bot_token = body.telegram_bot_token if body else None
     cfg = await _get_cfg(db)
     # Use the candidate token from the form if present; a masked placeholder (see
     # `_mask`) means the form field is untouched, so fall back to the stored value.
@@ -232,7 +238,7 @@ _DEST_TYPES = {"discord", "mattermost", "ntfy", "webhook", "pagerduty", "opsgeni
 
 def _dest_dict(d) -> dict:
     return {"id": d.id, "name": d.name, "type": d.type, "url": d.url,
-            "events": d.events, "enabled": d.enabled, "created_at": d.created_at}
+            "events": d.events, "enabled": d.enabled, "created_at": utc_iso(d.created_at)}
 
 
 @router.get("/destinations")

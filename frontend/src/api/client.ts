@@ -459,9 +459,11 @@ export const notifications = {
     post<{ detail: string; results: Record<'email' | 'telegram' | 'webhook' | 'slack', string> }>(
       '/api/notifications/test-weekly-digest', data
     ),
+  // POST: the candidate bot token is a credential and must not travel in a query string.
   detectChatId: (telegram_bot_token?: string) =>
-    get<{ chats: { id: number; title: string }[] }>(
-      `/api/notifications/telegram/detect-chat-id${telegram_bot_token ? `?telegram_bot_token=${encodeURIComponent(telegram_bot_token)}` : ''}`
+    post<{ chats: { id: number; title: string }[] }>(
+      '/api/notifications/telegram/detect-chat-id',
+      telegram_bot_token ? { telegram_bot_token } : undefined,
     ),
   history: (page = 1, limit = 50) =>
     get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(
