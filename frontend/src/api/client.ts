@@ -460,6 +460,10 @@ export interface MaintenanceWindow {
   end_minutes: number         // 0..1439
   days_of_week: number        // bitmask: bit 0=Mon ... bit 6=Sun
   enabled: boolean
+  // 'deny' (default) blocks actions *inside* the window; 'allow' inverts it —
+  // actions are permitted only inside, and blocked at all other times.
+  // A deny window always wins over an overlapping allow window.
+  mode: 'deny' | 'allow'
   created_at: string
 }
 

@@ -1387,12 +1387,11 @@ function formatDays(bitmask: number): string {
 // ---------------------------------------------------------------------------
 // Week-grid preview (issue #62)
 //
-// NOTE: the backend `MaintenanceWindow` model (backend/models.py) only has
-// `enabled` — there is no "allow-only" / inverted-meaning flag on it (checked
-// backend/models.py and backend/routers/maintenance.py: every window is a
-// deny window, full stop). The grid below distinguishes enabled vs disabled
-// only; an allow-only mode would need a backend column + migration entry
-// before this preview could represent it.
+// Windows carry a `mode`: 'deny' (the default) blocks actions *inside* the
+// window, while 'allow' inverts it — actions are permitted only inside, and
+// blocked at all other times. A deny window always wins over an overlapping
+// allow window, so an emergency freeze cannot be defeated by an allow period.
+// The grid draws the two modes distinctly, plus enabled vs disabled.
 // ---------------------------------------------------------------------------
 
 type DaySegment = {
@@ -1400,6 +1399,7 @@ type DaySegment = {
   name: string
   scopeLabel: string
   enabled: boolean
+  mode: 'deny' | 'allow'
   start: number   // minutes since midnight, 0..1440
   end: number
   color: string
@@ -1417,7 +1417,7 @@ function buildDaySegments(windows: MaintenanceWindow[], servers: Server[]): DayS
       : (servers.find(s => s.id === w.server_id)?.name ?? `server #${w.server_id}`)
     for (let d = 0; d < 7; d++) {
       if (!(w.days_of_week & (1 << d))) continue
-      const base = { windowId: w.id, name: w.name, scopeLabel, enabled: w.enabled, color }
+      const base = { windowId: w.id, name: w.name, scopeLabel, enabled: w.enabled, mode: w.mode ?? 'deny', color }
       if (w.start_minutes <= w.end_minutes) {
         days[d].push({ ...base, start: w.start_minutes, end: w.end_minutes })
       } else {
@@ -1539,7 +1539,7 @@ function MaintenanceWeekGrid({ windows, servers, timezone }: { windows: Maintena
                     border: seg.overlapping ? '1.5px solid #ef4444' : `1px solid ${seg.color}`,
                     boxSizing: 'border-box',
                   }}
-                  title={`${seg.name} — ${seg.scopeLabel} — ${minutesToHHMM(seg.start)}–${minutesToHHMM(seg.end)}${seg.overlapping ? ' — overlaps another window' : ''}`}
+                  title={`${seg.name} — ${seg.scopeLabel} — ${seg.mode === 'allow' ? 'ALLOW-only (blocked outside)' : 'deny (blocked inside)'} — ${minutesToHHMM(seg.start)}–${minutesToHHMM(seg.end)}${seg.overlapping ? ' — overlaps another window' : ''}`}
                 />
               ))}
             </div>
@@ -1604,6 +1604,7 @@ function MaintenanceWindowsSection() {
       end_minutes: 17 * 60,    // 17:00
       days_of_week: 0b0011111, // Mon-Fri
       enabled: true,
+      mode: 'deny',
     })
   }
 
@@ -1776,7 +1777,25 @@ function MaintenanceWindowsSection() {
               </p>
             </div>
 
-            {/* 5. Enabled */}
+            {/* 5. Mode — deny (freeze) vs allow-only (permitted period) */}
+            <div>
+              <label className="label">Mode</label>
+              <select
+                className="input text-sm w-full"
+                value={editing.mode ?? 'deny'}
+                onChange={e => setEditing({ ...editing, mode: e.target.value as 'deny' | 'allow' })}
+              >
+                <option value="deny">Deny — block changes during this window (freeze)</option>
+                <option value="allow">Allow-only — permit changes ONLY during this window</option>
+              </select>
+              <p className="text-xs text-text-muted mt-1">
+                {(editing.mode ?? 'deny') === 'allow'
+                  ? 'Inverted: upgrades and reboots are blocked at all other times. A deny window still wins where they overlap.'
+                  : 'Upgrades and reboots are blocked while this window is open. Admins can override per action.'}
+              </p>
+            </div>
+
+            {/* 6. Enabled */}
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="checkbox"

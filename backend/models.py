@@ -44,6 +44,12 @@ class MaintenanceWindow(Base):
     end_minutes: Mapped[int] = mapped_column(Integer, nullable=False)    # 0..1439
     days_of_week: Mapped[int] = mapped_column(Integer, default=127)      # bitmask: 127 = all days
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 'deny'  — the default: actions are blocked *inside* the window (a freeze).
+    # 'allow' — inverted: actions are permitted *only* inside the window, and
+    #           blocked at all other times (a permitted-maintenance period).
+    # A deny window still wins inside an allow window, so an emergency freeze
+    # cannot be defeated by an overlapping allow period.
+    mode: Mapped[str] = mapped_column(Text, default="deny", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
 
