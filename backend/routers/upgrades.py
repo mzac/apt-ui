@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user, get_current_user_ws
+from backend.auth import get_current_user, get_current_user_ws, require_admin
 from backend.actor import set_actor
 from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
@@ -1894,9 +1894,13 @@ async def validate_deb_url(
     server_id: int,
     body: DebUrlRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
-    """HEAD-request the URL from the dashboard container to validate it is a .deb file."""
+    """HEAD-request the URL from the dashboard container to validate it is a .deb file.
+
+    Admin-only: it makes the server issue an outbound request to a caller-supplied
+    URL, and it is the entry point of the admin-only .deb install flow.
+    """
     url = body.url.strip()
     if not url.lower().startswith(("http://", "https://")):
         return {"valid": False, "error": "URL must start with http:// or https://"}
@@ -1974,9 +1978,13 @@ async def upload_deb(
     server_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
-    """Receive a .deb file and copy it to /tmp/ on the target server via SFTP."""
+    """Receive a .deb file and copy it to /tmp/ on the target server via SFTP.
+
+    Admin-only: staging a .deb is the first half of installing one, whose
+    maintainer scripts run as root on the target.
+    """
     server = await _get_server(server_id, db)
 
     if not (file.filename or "").lower().endswith(".deb"):
@@ -2013,6 +2021,13 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
+            await websocket.close(code=1008)
+            return
+        # Admin-only: a .deb's maintainer scripts run as root, so installing one is
+        # arbitrary remote code execution. Authenticating alone would let any
+        # read-only account install a crafted package and take over every host.
+        if not user.is_admin:
+            await websocket.send_json({"type": "error", "data": "Installing packages requires an administrator account."})
             await websocket.close(code=1008)
             return
         set_actor(user.username)

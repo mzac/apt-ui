@@ -65,44 +65,72 @@ class AptRepoDeleteRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 # Read sources.list + all .list/.sources files in sources.list.d in one SSH call.
-# ===FILE==> markers separate file boundaries in the combined output.
+# ===FILE==> markers separate file boundaries in the combined output. ===BACKUP==> marks the
+# single-generation pre-save backup written by write_apt_repo() below (a ".apt-ui-bak"
+# sibling), when one exists, so a previous version survives a page reload — the backup
+# filename never matches _FILENAME_RE (it doesn't end in .list/.sources) so it's never
+# listed as an editable file of its own.
+_BACKUP_SUFFIX = ".apt-ui-bak"
+
 _READ_CMD = (
     "{ "
     "printf '===FILE==>/etc/apt/sources.list\\n'; "
     "cat /etc/apt/sources.list 2>/dev/null; "
+    "[ -f /etc/apt/sources.list" + _BACKUP_SUFFIX + " ] && { "
+    "printf '===BACKUP==>/etc/apt/sources.list\\n'; cat /etc/apt/sources.list" + _BACKUP_SUFFIX + " 2>/dev/null; }; "
     "for f in $(ls /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | sort); "
-    "do printf '===FILE==>%s\\n' \"$f\"; cat \"$f\" 2>/dev/null; done; "
+    "do printf '===FILE==>%s\\n' \"$f\"; cat \"$f\" 2>/dev/null; "
+    "[ -f \"$f" + _BACKUP_SUFFIX + "\" ] && { printf '===BACKUP==>%s\\n' \"$f\"; cat \"$f" + _BACKUP_SUFFIX + "\" 2>/dev/null; }; "
+    "done; "
     "} 2>/dev/null"
 )
 
 
 def _parse_files(output: str) -> list[dict]:
-    """Split SSH output at ===FILE==> markers into structured file records."""
-    files: list[dict] = []
+    """Split SSH output at ===FILE==>/===BACKUP==> markers into structured file records."""
+    file_content: dict[str, str] = {}
+    backup_content: dict[str, str] = {}
+    order: list[str] = []
+
     current_path: str | None = None
+    current_kind: str | None = None  # "file" | "backup"
     current_lines: list[str] = []
+
+    def _flush() -> None:
+        if current_path is None or current_kind is None:
+            return
+        text = "\n".join(current_lines).rstrip("\n")
+        if current_kind == "file":
+            file_content[current_path] = text
+            if current_path not in order:
+                order.append(current_path)
+        else:
+            backup_content[current_path] = text
 
     for line in output.splitlines(keepends=False):
         if line.startswith("===FILE==>"):
-            if current_path is not None:
-                files.append({
-                    "path": current_path,
-                    "content": "\n".join(current_lines).rstrip("\n"),
-                    "format": "deb822" if current_path.endswith(".sources") else "one-line",
-                    "deletable": _deletable_path(current_path),
-                })
+            _flush()
             current_path = line[len("===FILE==>"):]
+            current_kind = "file"
+            current_lines = []
+        elif line.startswith("===BACKUP==>"):
+            _flush()
+            current_path = line[len("===BACKUP==>"):]
+            current_kind = "backup"
             current_lines = []
         else:
             if current_path is not None:
                 current_lines.append(line)
+    _flush()
 
-    if current_path is not None:
+    files: list[dict] = []
+    for path in order:
         files.append({
-            "path": current_path,
-            "content": "\n".join(current_lines).rstrip("\n"),
-            "format": "deb822" if current_path.endswith(".sources") else "one-line",
-            "deletable": _deletable_path(current_path),
+            "path": path,
+            "content": file_content[path],
+            "format": "deb822" if path.endswith(".sources") else "one-line",
+            "deletable": _deletable_path(path),
+            "backup_content": backup_content.get(path),
         })
 
     return files
@@ -148,8 +176,28 @@ async def write_apt_repo(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
 
     safe_path = shlex.quote(body.path.strip())
+    safe_backup_path = shlex.quote(body.path.strip() + _BACKUP_SUFFIX)
+    sudo = sudo_prefix(server)
+
+    # Best-effort single-generation backup: snapshot whatever is currently on disk before we
+    # overwrite it, so a bad edit can be restored without retyping and without depending on
+    # session-only frontend state (issue #62). Not a version history — each save overwrites
+    # the previous backup. Silently skipped if the file doesn't exist yet (new file) or the
+    # read/write fails; it must never block the actual save. Read via `sudo cat` (some
+    # sources files may not be world-readable) and write via `sudo tee` with stdin, same
+    # idiom as the real write below — a shell redirection (`cat x > y`) would run as the
+    # unprivileged SSH user even under `sudo sh -c '...'`, since only the command sudo
+    # actually execs is privileged, not the calling shell's own redirection.
+    old_result = await run_command(server, f"{sudo}cat {safe_path} 2>/dev/null", timeout=15)
+    if old_result.exit_code == 0:
+        try:
+            async with asyncssh.connect(**_connect_options(server)) as backup_conn:
+                await backup_conn.run(f"{sudo}tee {safe_backup_path} > /dev/null", input=old_result.stdout)
+        except Exception:
+            logger.warning("Could not write pre-save backup for %s on server %d", body.path, server_id)
+
     # Pass content via stdin to tee — avoids any shell escaping issues with file contents
-    cmd = f"{sudo_prefix(server)}tee {safe_path} > /dev/null"
+    cmd = f"{sudo}tee {safe_path} > /dev/null"
     try:
         async with asyncssh.connect(**_connect_options(server)) as conn:
             proc_result = await conn.run(cmd, input=body.content)

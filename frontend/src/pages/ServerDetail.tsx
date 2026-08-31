@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
@@ -81,9 +81,12 @@ export default function ServerDetail() {
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
-  const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
+  // 'waiting'/'back'/'failed' track the post-reboot "did it come back" indicator (issue #62)
+  const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting' | 'waiting' | 'back' | 'failed'>('idle')
   const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
   const [rebootMsg, setRebootMsg] = useState<string | null>(null)
+  const [rebootStartedAt, setRebootStartedAt] = useState<number | null>(null)
+  const [rebootElapsedSec, setRebootElapsedSec] = useState(0)
   const [checkError, setCheckError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
   const { addJob, updateJob } = useJobStore()
@@ -141,17 +144,105 @@ export default function ServerDetail() {
     }
   }
 
+  // Post-reboot "back online" indicator (issue #62). The backend already schedules its own
+  // post-reboot check server-side (POST /api/servers/{id}/reboot -> schedule_reboot_check,
+  // see backend/scheduler.py) which polls SSH every 30s for up to 10 minutes and then runs a
+  // full update check. We can't add a dedicated WS/REST endpoint here (this agent only owns
+  // this file + backend/routers/apt_repos.py), so this reuses the existing lightweight
+  // `serversApi.test` SSH-connect probe and mirrors the cadence of ws_reboot_all's
+  // TCP-reachability loop in backend/routers/upgrades.py (15s initial delay, 10s poll
+  // interval, 10 min timeout) rather than inventing new polling behavior.
+  const REBOOT_INITIAL_DELAY_MS = 15_000
+  const REBOOT_POLL_INTERVAL_MS = 10_000
+  const REBOOT_TIMEOUT_MS = 10 * 60 * 1000
+
+  // setTimeout chain (not setInterval) driven by a cancel token, so a server switch or
+  // unmount can never leak a timer or fire a setState after this component is gone.
+  const rebootTrackRef = useRef<{ cancelled: boolean; timeoutId?: ReturnType<typeof setTimeout>; followupId?: ReturnType<typeof setTimeout> } | null>(null)
+
+  const stopRebootTracking = useCallback(() => {
+    const t = rebootTrackRef.current
+    if (t) {
+      t.cancelled = true
+      if (t.timeoutId) clearTimeout(t.timeoutId)
+      if (t.followupId) clearTimeout(t.followupId)
+    }
+    rebootTrackRef.current = null
+  }, [])
+
+  const startRebootTracking = useCallback(() => {
+    stopRebootTracking()
+    const token: { cancelled: boolean; timeoutId?: ReturnType<typeof setTimeout>; followupId?: ReturnType<typeof setTimeout> } = { cancelled: false }
+    rebootTrackRef.current = token
+    const startedAt = Date.now()
+    setRebootStartedAt(startedAt)
+    setRebootElapsedSec(0)
+    setRebootState('waiting')
+
+    const poll = async () => {
+      if (token.cancelled) return
+      if (Date.now() - startedAt >= REBOOT_TIMEOUT_MS) {
+        setRebootElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+        setRebootState('failed')
+        return
+      }
+      let reachable = false
+      try {
+        const res = await serversApi.test(serverId)
+        reachable = res.success
+      } catch {
+        reachable = false
+      }
+      if (token.cancelled) return
+      if (reachable) {
+        setRebootElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+        setRebootState('back')
+        // Refresh now, and once more shortly after — the backend's own scheduled
+        // post-reboot check (schedule_reboot_check) may still be finishing its full apt
+        // check even after SSH answers again, so a single immediate refresh can still show
+        // stale reboot_required.
+        load()
+        token.followupId = setTimeout(() => { if (!token.cancelled) load() }, 20_000)
+        return
+      }
+      token.timeoutId = setTimeout(poll, REBOOT_POLL_INTERVAL_MS)
+    }
+
+    token.timeoutId = setTimeout(poll, REBOOT_INITIAL_DELAY_MS)
+  }, [serverId, load, stopRebootTracking])
+
+  useEffect(() => stopRebootTracking, [stopRebootTracking])
+
+  // Elapsed-time ticker, only while actively waiting — frozen once 'back'/'failed' is set.
+  useEffect(() => {
+    if (rebootState !== 'waiting' || rebootStartedAt == null) return
+    const id = setInterval(() => {
+      setRebootElapsedSec(Math.floor((Date.now() - rebootStartedAt) / 1000))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [rebootState, rebootStartedAt])
+
   async function handleReboot() {
     setRebootState('rebooting')
     setRebootMsg(null)
     try {
       const res = await serversApi.reboot(serverId)
-      setRebootMsg(res.success ? 'Reboot command sent.' : res.detail)
+      if (res.success) {
+        startRebootTracking()
+      } else {
+        setRebootMsg(res.detail)
+        setRebootState('idle')
+      }
     } catch (err: unknown) {
       setRebootMsg((err as Error).message)
-    } finally {
       setRebootState('idle')
     }
+  }
+
+  function dismissRebootTracking() {
+    stopRebootTracking()
+    setRebootState('idle')
+    setRebootStartedAt(null)
   }
 
   if (!server) {
@@ -212,6 +303,24 @@ export default function ServerDetail() {
           )}
           {rebootState === 'rebooting' && (
             <span className="text-xs text-text-muted font-mono self-center">Sending reboot…</span>
+          )}
+          {rebootState === 'waiting' && (
+            <span className="text-xs text-amber font-mono self-center flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              Rebooting… waiting for {server.name} ({rebootElapsedSec}s)
+            </span>
+          )}
+          {rebootState === 'back' && (
+            <span className="text-xs text-green font-mono self-center flex items-center gap-1.5">
+              ✓ Back online ({rebootElapsedSec}s)
+              <button onClick={dismissRebootTracking} className="text-text-muted hover:text-text-primary" title="Dismiss">✕</button>
+            </span>
+          )}
+          {rebootState === 'failed' && (
+            <span className="text-xs text-red font-mono self-center flex items-center gap-1.5">
+              ✗ {server.name} did not come back within 10 minutes — check it manually.
+              <button onClick={dismissRebootTracking} className="text-text-muted hover:text-text-primary" title="Dismiss">✕</button>
+            </span>
           )}
           {rebootMsg && (
             <span className="text-xs text-text-muted font-mono self-center">{rebootMsg}</span>
@@ -2340,11 +2449,161 @@ function DpkgLogTab({ serverId }: { serverId: number }) {
 // Apt Repos Tab
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Apt Repos tab helpers — diff preview + syntax lint (issue #62)
+//
+// backend/routers/apt_repos.py's `AptRepoFile` (client.ts) doesn't yet declare
+// `backup_content` — the backend response includes it, but api/client.ts is owned by
+// another agent in this round, so the field is added locally here rather than there.
+// ---------------------------------------------------------------------------
+
+interface AptRepoFileWithBackup extends AptRepoFile {
+  backup_content?: string | null
+}
+
+type DiffOp = { type: 'same' | 'add' | 'del'; text: string }
+type DiffRow = DiffOp | { type: 'skip'; count: number }
+
+// Simple O(n*m) LCS-based line diff — no new dependency, and apt sources files are small
+// (typically tens of lines), so the naive DP table is more than fast enough.
+function computeLineDiff(oldText: string, newText: string): DiffOp[] {
+  const a = oldText.split('\n')
+  const b = newText.split('\n')
+  const n = a.length
+  const m = b.length
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const ops: DiffOp[] = []
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ type: 'same', text: a[i] }); i++; j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'del', text: a[i] }); i++
+    } else {
+      ops.push({ type: 'add', text: b[j] }); j++
+    }
+  }
+  while (i < n) { ops.push({ type: 'del', text: a[i] }); i++ }
+  while (j < m) { ops.push({ type: 'add', text: b[j] }); j++ }
+  return ops
+}
+
+// Collapse long unchanged runs to a couple of lines of context, like a normal unified diff,
+// so a one-line edit in a 100-line sources file doesn't bury the change.
+function buildDiffRows(ops: DiffOp[]): DiffRow[] {
+  const CONTEXT = 2
+  const rows: DiffRow[] = []
+  let i = 0
+  while (i < ops.length) {
+    if (ops[i].type !== 'same') { rows.push(ops[i]); i++; continue }
+    let j = i
+    while (j < ops.length && ops[j].type === 'same') j++
+    const runLen = j - i
+    if (runLen <= CONTEXT * 2) {
+      for (let k = i; k < j; k++) rows.push(ops[k])
+    } else {
+      for (let k = i; k < i + CONTEXT; k++) rows.push(ops[k])
+      rows.push({ type: 'skip', count: runLen - CONTEXT * 2 })
+      for (let k = j - CONTEXT; k < j; k++) rows.push(ops[k])
+    }
+    i = j
+  }
+  return rows
+}
+
+interface LintResult { errors: string[]; warnings: string[] }
+
+// One-line format: `deb [options] URI distribution [component1] [component2] ...`
+function lintOneLineSources(content: string): LintResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+  content.split('\n').forEach((raw, idx) => {
+    const line = raw.trim()
+    const n = idx + 1
+    if (line === '' || line.startsWith('#')) return
+    // Pull the bracketed [options] group out first (it may contain spaces, e.g.
+    // "[arch=amd64 signed-by=/path]") and strip those internal spaces so the group
+    // survives as a single token below instead of getting split into extra fields.
+    const masked = line.replace(/\[[^\]]*\]/, m => m.replace(/\s+/g, ''))
+    const tokens = masked.split(/\s+/).filter(Boolean)
+    const type = tokens[0]
+    if (type !== 'deb' && type !== 'deb-src') {
+      errors.push(`Line ${n}: does not start with "deb" or "deb-src" — apt will fail to parse this line.`)
+      return
+    }
+    const rest = tokens.slice(1)
+    const hasOptions = rest[0]?.startsWith('[')
+    const afterOptions = hasOptions ? rest.slice(1) : rest
+    if (afterOptions.length < 2) {
+      errors.push(`Line ${n}: expected a URI and a distribution after "${type}" — found ${afterOptions.length} field(s).`)
+      return
+    }
+    const uri = afterOptions[0]
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) {
+      warnings.push(`Line ${n}: "${uri}" doesn't look like a URI (expected a scheme like http:// or https://).`)
+    }
+    const dist = afterOptions[1]
+    const isFlat = dist.endsWith('/')
+    if (!isFlat && afterOptions.length < 3) {
+      warnings.push(`Line ${n}: no component listed after distribution "${dist}" — only valid for a flat repo (distribution ending in "/").`)
+    }
+  })
+  return { errors, warnings }
+}
+
+// deb822 (.sources) format: RFC822-style stanzas separated by blank lines, each requiring
+// Types/URIs/Suites (and Components unless it's a flat repo, i.e. Suites ends in "/").
+function lintDeb822Sources(content: string): LintResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+  const rawLines = content.split('\n')
+  const stanzas: { start: number; lines: string[] }[] = []
+  let current: { start: number; lines: string[] } | null = null
+  rawLines.forEach((line, idx) => {
+    if (line.trim() === '') { current = null; return }
+    if (!current) { current = { start: idx + 1, lines: [] }; stanzas.push(current) }
+    current.lines.push(line)
+  })
+  if (stanzas.length === 0) {
+    warnings.push('No stanzas found — file appears to be empty or all comments.')
+    return { errors, warnings }
+  }
+  const REQUIRED = ['Types', 'URIs', 'Suites']
+  stanzas.forEach(st => {
+    // Comment-only stanzas are allowed and ignored.
+    const contentLines = st.lines.filter(l => !l.trim().startsWith('#'))
+    if (contentLines.length === 0) return
+    const keys = new Set(
+      contentLines.filter(l => /^[A-Za-z-]+:/.test(l)).map(l => l.split(':')[0].trim())
+    )
+    for (const req of REQUIRED) {
+      if (!keys.has(req)) {
+        errors.push(`Stanza at line ${st.start}: missing required field "${req}:".`)
+      }
+    }
+    const suitesLine = contentLines.find(l => /^Suites:/.test(l))
+    const isFlat = suitesLine?.slice(suitesLine.indexOf(':') + 1).trim().endsWith('/')
+    if (!isFlat && !keys.has('Components')) {
+      warnings.push(`Stanza at line ${st.start}: no "Components:" field — only valid for a flat repo (Suites ending in "/").`)
+    }
+  })
+  return { errors, warnings }
+}
+
+function lintAptSource(content: string, format: 'one-line' | 'deb822'): LintResult {
+  return format === 'deb822' ? lintDeb822Sources(content) : lintOneLineSources(content)
+}
+
 function AptReposTab({ serverId }: { serverId: number }) {
   const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [files, setFiles] = useState<AptRepoFile[]>([])
+  const [files, setFiles] = useState<AptRepoFileWithBackup[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   // Tracks unsaved edits per file path — cleared on save
   const [pendingEdits, setPendingEdits] = useState<Record<string, string>>({})
@@ -2352,6 +2611,10 @@ function AptReposTab({ serverId }: { serverId: number }) {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Diff + lint preview gate (issue #62) — Save no longer writes directly, it opens this
+  // review step first. Errors block; warnings need an explicit override.
+  const [previewing, setPreviewing] = useState(false)
+  const [overrideWarnings, setOverrideWarnings] = useState(false)
 
   // New file form
   const [showNewForm, setShowNewForm] = useState(false)
@@ -2376,13 +2639,19 @@ function AptReposTab({ serverId }: { serverId: number }) {
   async function loadRepos() {
     setLoading(true)
     setError(null)
+    // A reload can only be reached from the same server's tab (this whole page remounts on
+    // server switch — see ServerDetailRoute's key={id} in App.tsx), but the previous
+    // preview/lint result was computed against the pre-reload content, so drop it.
+    setPreviewing(false)
+    setOverrideWarnings(false)
     try {
       const result = await serversApi.aptRepos(serverId)
-      setFiles(result.files)
+      const withBackup = result.files as AptRepoFileWithBackup[]
+      setFiles(withBackup)
       setSelectedPath(prev => {
         // Keep current selection if still present, otherwise pick first
-        if (prev && result.files.some(f => f.path === prev)) return prev
-        return result.files[0]?.path ?? null
+        if (prev && withBackup.some(f => f.path === prev)) return prev
+        return withBackup[0]?.path ?? null
       })
       setLoaded(true)
     } catch (e: unknown) {
@@ -2403,18 +2672,60 @@ function AptReposTab({ serverId }: { serverId: number }) {
     return pendingEdits[path] !== file?.content
   }
 
-  async function saveFile() {
+  // Diff preview + syntax lint (issue #62), recomputed whenever the selected file or its
+  // pending content changes.
+  const diffRows = useMemo(
+    () => (currentFile ? buildDiffRows(computeLineDiff(currentFile.content, currentContent)) : []),
+    [currentFile, currentContent]
+  )
+  const lint = useMemo(
+    () => (currentFile ? lintAptSource(currentContent, currentFile.format) : { errors: [], warnings: [] }),
+    [currentFile, currentContent]
+  )
+
+  function openPreview() {
+    setSaveError(null)
+    setSaveOk(false)
+    setOverrideWarnings(false)
+    setPreviewing(true)
+  }
+
+  function closePreview() {
+    setPreviewing(false)
+    setOverrideWarnings(false)
+  }
+
+  // One-click restore of the previous content (issue #62). Populates the editor from the
+  // server-side single-generation backup write_apt_repo() keeps (survives a page reload);
+  // still has to go through the same diff-preview + lint gate before it's actually written,
+  // same as any other edit.
+  function restorePrevious() {
+    if (!selectedPath || currentFile?.backup_content == null) return
+    setPendingEdits(prev => ({ ...prev, [selectedPath]: currentFile.backup_content as string }))
+    setSaveError(null)
+    setSaveOk(false)
+    setPreviewing(false)
+  }
+
+  async function commitSave() {
     if (!selectedPath) return
+    if (lint.errors.length > 0) return
+    if (lint.warnings.length > 0 && !overrideWarnings) return
     setSaving(true)
     setSaveError(null)
     setSaveOk(false)
     try {
       await serversApi.saveAptRepo(serverId, selectedPath, currentContent)
       setFiles(prev => prev.map(f =>
-        f.path === selectedPath ? { ...f, content: currentContent } : f
+        // The content we're replacing becomes the new "previous version" — mirrors the
+        // backup write_apt_repo() just wrote server-side, so Restore Previous stays correct
+        // without waiting for a reload.
+        f.path === selectedPath ? { ...f, content: currentContent, backup_content: f.content } : f
       ))
       setPendingEdits(prev => { const next = { ...prev }; delete next[selectedPath!]; return next })
       setSaveOk(true)
+      setPreviewing(false)
+      setOverrideWarnings(false)
       setTimeout(() => setSaveOk(false), 3000)
     } catch (e: unknown) {
       setSaveError(String(e))
@@ -2466,6 +2777,8 @@ function AptReposTab({ serverId }: { serverId: number }) {
     setNewFileError(null)
     setSaveError(null)
     setSaveOk(false)
+    setPreviewing(false)
+    setOverrideWarnings(false)
   }
 
   function runTest() {
@@ -2539,7 +2852,7 @@ function AptReposTab({ serverId }: { serverId: number }) {
               return (
                 <button
                   key={f.path}
-                  onClick={() => { setSelectedPath(f.path); setSaveError(null); setSaveOk(false) }}
+                  onClick={() => { setSelectedPath(f.path); setSaveError(null); setSaveOk(false); setPreviewing(false); setOverrideWarnings(false) }}
                   title={f.path}
                   className={`px-3 py-1.5 text-xs -mb-px border-b-2 transition-colors font-mono whitespace-nowrap ${
                     selectedPath === f.path
@@ -2611,30 +2924,115 @@ function AptReposTab({ serverId }: { serverId: number }) {
                   setSaveError(null)
                   setPendingEdits(prev => ({ ...prev, [selectedPath]: e.target.value }))
                 }}
+                readOnly={previewing}
                 rows={Math.max(8, (currentContent.match(/\n/g)?.length ?? 0) + 3)}
                 spellCheck={false}
-                className="w-full bg-black/40 border border-border rounded px-3 py-2 text-xs font-mono text-text-primary focus:outline-none focus:border-green resize-y"
+                className={`w-full bg-black/40 border border-border rounded px-3 py-2 text-xs font-mono text-text-primary focus:outline-none focus:border-green resize-y ${previewing ? 'opacity-60' : ''}`}
               />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={saveFile}
-                  disabled={saving || !isDirty(selectedPath)}
-                  className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-                {currentFile.deletable && (
+
+              {!previewing && (
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
-                    onClick={deleteFile}
-                    disabled={deleting}
-                    className="px-3 py-1 text-xs bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 rounded disabled:opacity-40"
+                    onClick={openPreview}
+                    disabled={saving || !isDirty(selectedPath)}
+                    className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    {deleting ? 'Deleting…' : 'Delete File'}
+                    Review &amp; Save…
                   </button>
-                )}
-                {saveOk && <span className="text-xs text-green">✓ Saved</span>}
-                {saveError && <span className="text-xs text-red-400">{saveError}</span>}
-              </div>
+                  {currentFile.backup_content != null && (
+                    <button
+                      onClick={restorePrevious}
+                      disabled={saving}
+                      className="btn-secondary text-xs py-1 disabled:opacity-40"
+                      title="Load the version saved before your last edit back into the editor"
+                    >
+                      ↺ Restore Previous
+                    </button>
+                  )}
+                  {currentFile.deletable && (
+                    <button
+                      onClick={deleteFile}
+                      disabled={deleting}
+                      className="px-3 py-1 text-xs bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 rounded disabled:opacity-40"
+                    >
+                      {deleting ? 'Deleting…' : 'Delete File'}
+                    </button>
+                  )}
+                  {saveOk && <span className="text-xs text-green">✓ Saved</span>}
+                  {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+                </div>
+              )}
+
+              {/* Diff preview + syntax lint — must be reviewed before Save actually writes
+                  anything (issue #62). Errors block Save outright; warnings need the
+                  explicit override checkbox below. */}
+              {previewing && (
+                <div className="space-y-3 border border-border rounded p-3 bg-black/20">
+                  <span className="text-xs font-mono text-text-muted uppercase tracking-wide">Review changes</span>
+
+                  <div className="bg-black rounded p-2 max-h-72 overflow-y-auto font-mono text-xs leading-relaxed">
+                    {diffRows.length === 0 ? (
+                      <p className="text-text-muted px-1 py-2">No changes.</p>
+                    ) : diffRows.map((row, i) => (
+                      row.type === 'skip' ? (
+                        <div key={i} className="text-text-muted/60 px-1">
+                          ⋯ {row.count} unchanged line{row.count === 1 ? '' : 's'} ⋯
+                        </div>
+                      ) : (
+                        <div
+                          key={i}
+                          className={`px-1 whitespace-pre-wrap break-all ${
+                            row.type === 'add' ? 'bg-green-500/10 text-green' :
+                            row.type === 'del' ? 'bg-red-500/10 text-red-400' :
+                            'text-text-muted'
+                          }`}
+                        >
+                          {row.type === 'add' ? '+ ' : row.type === 'del' ? '- ' : '  '}{row.text}
+                        </div>
+                      )
+                    ))}
+                  </div>
+
+                  {lint.errors.length > 0 && (
+                    <div className="bg-red-400/10 border border-red-400/30 rounded px-3 py-2 space-y-1">
+                      <p className="text-xs text-red-400 font-medium">✗ This will likely break apt — fix before saving:</p>
+                      {lint.errors.map((e, i) => <p key={i} className="text-xs text-red-400">{e}</p>)}
+                    </div>
+                  )}
+
+                  {lint.warnings.length > 0 && (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 space-y-2">
+                      <p className="text-xs text-amber-400 font-medium">⚠ Possible issues:</p>
+                      {lint.warnings.map((w, i) => <p key={i} className="text-xs text-amber-400">{w}</p>)}
+                      {lint.errors.length === 0 && (
+                        <label className="flex items-center gap-2 text-xs text-text-muted">
+                          <input
+                            type="checkbox"
+                            checked={overrideWarnings}
+                            onChange={e => setOverrideWarnings(e.target.checked)}
+                            className="w-3.5 h-3.5 accent-amber"
+                          />
+                          I&apos;ve reviewed these warnings — save anyway
+                        </label>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={commitSave}
+                      disabled={saving || lint.errors.length > 0 || (lint.warnings.length > 0 && !overrideWarnings)}
+                      className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {saving ? 'Saving…' : 'Confirm & Save'}
+                    </button>
+                    <button onClick={closePreview} disabled={saving} className="btn-secondary text-xs py-1 disabled:opacity-40">
+                      Back to Editor
+                    </button>
+                    {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
