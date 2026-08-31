@@ -192,5 +192,9 @@ See [TODO.md](TODO.md) for the backlog.
 | `STATUS_PAGE_SHOW_NAMES` | No | Include server names (not hostnames) in `/status.json`. Default: `false`. |
 | `STATUS_PAGE_TITLE` | No | Custom title for `/status.json`. Default: `apt-ui Fleet Status`. |
 | `TRUST_PROXY_HEADERS` | No | Set `true` only when apt-ui sits behind a trusted reverse proxy, so client-IP attribution (auth-event log, brute-force lockout) trusts `X-Forwarded-For` / `X-Real-IP`. Default: `false` (uses the socket peer; prevents IP spoofing). |
+| `OIDC_ENABLED` | No | Enable OIDC/OAuth2 SSO. Inert unless this **and** `OIDC_ISSUER`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`/`OIDC_REDIRECT_URL` are all set. Local password login always keeps working as break-glass. |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_REDIRECT_URL` | No | Provider config; endpoints discovered from the issuer's `/.well-known/openid-configuration`. |
+| `OIDC_SCOPES` / `OIDC_GROUPS_CLAIM` / `OIDC_ADMIN_GROUP` | No | Default `openid profile email` / `groups` / unset. Group→role mapping is re-evaluated on every login. |
+| `OIDC_LINK_EXISTING_USERS` | No | Default `false`. Allows an SSO login to adopt a same-named **local** account — off by default because username-only linking is an account-takeover vector. |
 
 Notification settings, schedule config, and user accounts are managed entirely through the UI and stored in the DB — not environment variables.

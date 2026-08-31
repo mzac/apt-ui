@@ -307,6 +307,15 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 | `STATUS_PAGE_SHOW_NAMES` | `false` | Include server names (not hostnames) in `/status.json`. |
 | `STATUS_PAGE_TITLE` | `apt-ui Fleet Status` | Custom title returned by `/status.json`. |
 | `TRUST_PROXY_HEADERS` | `false` | Set `true` only when behind a trusted reverse proxy so client-IP attribution (auth log, lockout) trusts `X-Forwarded-For` / `X-Real-IP`. Otherwise the socket peer is used, preventing IP spoofing. |
+| `OIDC_ENABLED` | `false` | Enable OIDC/OAuth2 single sign-on. SSO stays fully inert unless this **and** issuer/client id/secret/redirect are all set, so a half-configured deployment behaves as disabled rather than broken. |
+| `OIDC_ISSUER` | – | Issuer URL, e.g. `https://auth.example.com/realms/main`. Endpoints are read from its `/.well-known/openid-configuration`. |
+| `OIDC_CLIENT_ID` | – | OAuth2 client ID. |
+| `OIDC_CLIENT_SECRET` | – | OAuth2 client secret. Never returned by any API. |
+| `OIDC_REDIRECT_URL` | – | Callback URL registered with the IdP, e.g. `https://apt-ui.example.com/api/auth/sso/callback`. |
+| `OIDC_SCOPES` | `openid profile email` | Scopes requested at authorization. |
+| `OIDC_GROUPS_CLAIM` | `groups` | ID-token claim carrying group membership, used for role mapping. |
+| `OIDC_ADMIN_GROUP` | – | Membership of this group grants admin. Re-evaluated on **every** login, so revoking it in the IdP takes effect at the next sign-in. Unset means every SSO user is read-only. |
+| `OIDC_LINK_EXISTING_USERS` | `false` | Allow an SSO login to adopt an existing **local** account with the same username. Off by default: linking on username alone is an account-takeover vector, so a collision is refused and the local account left untouched. |
 
 ---
 
