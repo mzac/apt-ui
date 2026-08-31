@@ -115,7 +115,19 @@ async def _job_auto_upgrade():
             )
             chk = chk_res.scalar_one_or_none()
             if chk and chk.status == "success" and chk.packages_available > 0:
-                # Skip servers currently in a maintenance window (issue #40)
+                # Skip servers currently in a maintenance window (issue #40).
+                #
+                # "Queue for next window opening" instead of a hard skip is
+                # available for the user-triggered flows — see
+                # ws_upgrade_all's/ws_upgrade's `queue_for_window` param in
+                # backend/routers/upgrades.py and
+                # backend.rollout.queue_server_for_next_window (issue #62).
+                # It is intentionally NOT wired into this unattended cron path:
+                # there is no ScheduleConfig column to opt in/out per the
+                # scheduled run, and silently changing this job's long-standing
+                # "skip and log" behaviour with no off-switch would itself be a
+                # regression for anyone relying on it staying hands-off during
+                # a deny window.
                 window = await get_active_window_for_server(db, s.id)
                 if window:
                     skipped_for_maintenance += 1
@@ -124,35 +136,6 @@ async def _job_auto_upgrade():
                 to_upgrade.append(s)
         if skipped_for_maintenance:
             logger.info("Auto-upgrade: skipped %d server(s) inside maintenance windows", skipped_for_maintenance)
-
-        # Group by ring tag for staged rollout (issue #41), and within each ring sort
-        # by an optional order:N tag (lower first) so dependency-ordered hosts — e.g. a
-        # DB replica before its primary, or HA members one at a time — patch in a safe
-        # sequence (issue #62). Servers without order:N default to 100.
-        rings: dict[str, list[Server]] = {}
-        if staged:
-            from backend.models import Tag, ServerTag
-            from sqlalchemy import select as _sel
-            order_of: dict[int, int] = {}
-            for s in to_upgrade:
-                tag_res = await db.execute(
-                    _sel(Tag.name)
-                    .join(ServerTag, ServerTag.tag_id == Tag.id)
-                    .where(ServerTag.server_id == s.id, Tag.name.like("ring:%") | Tag.name.like("order:%"))
-                )
-                names = [r for (r,) in tag_res.all()]
-                ring_tags = [n for n in names if n.startswith("ring:")]
-                order_tags = [n for n in names if n.startswith("order:")]
-                ring = ring_tags[0] if ring_tags else "ring:default"
-                try:
-                    order_of[s.id] = int(order_tags[0].split(":", 1)[1]) if order_tags else 100
-                except (ValueError, IndexError):
-                    order_of[s.id] = 100
-                rings.setdefault(ring, []).append(s)
-            for ring_name in rings:
-                rings[ring_name].sort(key=lambda srv: (order_of.get(srv.id, 100), srv.name))
-        else:
-            rings = {"all": to_upgrade}
 
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -168,87 +151,33 @@ async def _job_auto_upgrade():
                     initiated_by="scheduled",
                 )
 
-    async def _failed_units(server) -> set[str]:
-        """Return the set of failed systemd units (empty if the probe is unavailable)."""
-        from backend.ssh_manager import run_command, sudo_prefix
-        sudo = sudo_prefix(server)
-        res = await run_command(
-            server,
-            f"{sudo}systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{{print $1}}'",
-            timeout=30,
-        )
-        if res.exit_code != 0:
-            return set()  # probe unavailable — don't manufacture a degradation
-        return {ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()}
-
     if not staged:
         await asyncio.gather(*[_do(s) for s in to_upgrade])
         return
 
-    # Staged rollout: process rings in alphabetical order, with delays between
-    ring_names = sorted(rings.keys())
-    logger.info("Staged rollout: %d rings to process — %s", len(ring_names), ring_names)
-
-    for i, ring_name in enumerate(ring_names):
-        ring_servers = rings[ring_name]
-        logger.info("Staged rollout: starting %s (%d servers)", ring_name, len(ring_servers))
-        # Capture a pre-upgrade baseline of failed units so the canary aborts only on
-        # NEW degradation, not on units that were already failing.
-        baseline: dict[int, set[str]] = {}
-        if canary:
-            for s in ring_servers:
-                baseline[s.id] = await _failed_units(s)
-        if canary and len(ring_servers) > 1:
-            # Canary: upgrade the first server, verify no new failures, then promote the rest.
-            canary_srv, rest = ring_servers[0], ring_servers[1:]
-            await _do(canary_srv)
-            new = await _failed_units(canary_srv) - baseline.get(canary_srv.id, set())
-            if new:
-                logger.error("Canary %s degraded (new failed units: %s); aborting %s and further rings",
-                             canary_srv.name, ", ".join(sorted(new)), ring_name)
-                return
-            await asyncio.gather(*[_do(s) for s in rest])
-        else:
-            await asyncio.gather(*[_do(s) for s in ring_servers])
-
-        # Check for failures in this ring's upgrade history
-        async with AsyncSessionLocal() as db:
-            from backend.models import UpdateHistory
-            from sqlalchemy import select as _sel
-            from datetime import timedelta
-            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
-            ring_server_ids = [s.id for s in ring_servers]
-            if ring_server_ids:
-                fail_res = await db.execute(
-                    _sel(UpdateHistory).where(
-                        UpdateHistory.server_id.in_(ring_server_ids),
-                        UpdateHistory.started_at >= cutoff,
-                        UpdateHistory.status == "error",
-                    )
-                )
-                failures = list(fail_res.scalars().all())
-                if failures:
-                    logger.error(
-                        "Staged rollout: %s had %d failure(s); aborting promotion to remaining rings",
-                        ring_name, len(failures),
-                    )
-                    return
-
-        # Health-verify the whole ring before promoting — abort only on NEW failed
-        # units vs the pre-upgrade baseline (success != just apt exit code).
-        if canary:
-            for s in ring_servers:
-                new = await _failed_units(s) - baseline.get(s.id, set())
-                if new:
-                    logger.error("Staged rollout: %s degraded after upgrade (new failed units: %s); aborting promotion",
-                                 s.name, ", ".join(sorted(new)))
-                    return
-
-        # If not the last ring, wait the configured delay before promoting
-        if i < len(ring_names) - 1:
-            sleep_seconds = ring_delay * 3600
-            logger.info("Staged rollout: waiting %dh before next ring", ring_delay)
-            await asyncio.sleep(sleep_seconds)
+    # Staged rollout (issue #62): persist the plan and let APScheduler
+    # DateTrigger jobs drive ring promotion instead of sleeping in-process for
+    # `ring_delay` hours between rings — a container restart used to silently
+    # drop every ring still waiting on that sleep, with no record a rollout
+    # was even in progress. Ring grouping (ring:*/order:* tags) and the
+    # canary/history-error health gate now live in backend/rollout.py, the
+    # single shared implementation also used by ws_reboot_all in
+    # backend/routers/upgrades.py. See backend/rollout.py's module docstring
+    # and backend/routers/rollouts.py for the durability + control-plane story.
+    from backend.rollout import start_auto_upgrade_rollout
+    async with AsyncSessionLocal() as rdb:
+        rollout = await start_auto_upgrade_rollout(
+            rdb, to_upgrade,
+            action="upgrade", allow_phased=allow_phased, conffile_action=conffile_action,
+            canary=canary, ring_delay_hours=ring_delay, initiated_by="scheduled",
+        )
+    if rollout is None:
+        logger.info("Staged rollout: nothing to upgrade")
+    else:
+        logger.info(
+            "Staged rollout: started rollout %d for %d server(s) — see /api/rollouts/%d for ring-by-ring status",
+            rollout.id, len(to_upgrade), rollout.id,
+        )
 
 
 async def _send_event_notifications():

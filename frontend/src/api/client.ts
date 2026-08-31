@@ -629,7 +629,47 @@ export interface CveListParams {
   until?: string            // ISO date
 }
 
+// --- CVE remediation planner (issue #62) -----------------------------------
+export interface RemediationMatchedPackage {
+  name: string
+  current_version: string
+  available_version: string
+  required_fixed_version: string
+}
+
+export interface RemediationServerEntry {
+  server_id: number
+  name: string
+  hostname: string
+  ubuntu_codename: string | null
+  status: 'fix_pending' | 'not_pending'
+  version_confidence: 'exact' | 'approximate' | null
+  matched_packages: RemediationMatchedPackage[]
+  note: string | null
+}
+
+export interface RemediationPlanServer {
+  server_id: number
+  name: string
+  packages: string[]
+}
+
+export interface RemediationPlan {
+  identifier: string
+  found: boolean
+  message?: string
+  cve_id?: string | null
+  usn_ids?: string[]
+  expected_packages?: string[]
+  affected_servers?: RemediationServerEntry[]
+  pending_count?: number
+  not_pending_count?: number
+  remediation_plan?: RemediationPlanServer[]
+}
+
 export const security = {
+  remediation: (identifier: string) =>
+    get<RemediationPlan>(`/api/security/remediation/${encodeURIComponent(identifier)}`),
   list: (params?: CveListParams) => {
     const q = new URLSearchParams()
     if (params?.status) q.set('status', params.status)

@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { security as securityApi, groups as groupsApi, tags as tagsApi } from '@/api/client'
+import { security as securityApi, groups as groupsApi, tags as tagsApi, createSelectiveUpgradeWebSocket } from '@/api/client'
+import type { RemediationPlan, RemediationPlanServer, RemediationServerEntry, RemediationMatchedPackage } from '@/api/client'
 import type {
   CveInventoryRow,
   CveSeverity,
@@ -9,6 +10,35 @@ import type {
   Tag,
 } from '@/types'
 import { formatDate } from '@/utils/datetime'
+import Convert from 'ansi-to-html'
+
+const ansiConvert = new Convert({ escapeXML: true })
+
+// ---------------------------------------------------------------------------
+// Remediation planner (issue #62) types + fetch helper
+//
+// These extend the shared CveInventoryRow/CveSummary shapes (frontend/src/types/index.ts)
+// with fields backend/routers/security.py now returns (mttr_hours, mttr_note,
+// median_mttr_hours, mttr_sample_size) and the new GET /api/security/remediation/{id}
+// response. Declared locally rather than in types/index.ts / api/client.ts since another
+// change is landing in those files in parallel with this one — the runtime payload already
+// carries these fields, this just describes them for this page.
+// ---------------------------------------------------------------------------
+
+type CveRow = CveInventoryRow & {
+  mttr_hours: number | null
+  mttr_note: string | null
+}
+
+type SummaryExt = CveSummary & {
+  median_mttr_hours: number | null
+  mttr_sample_size: number
+}
+
+function formatMttr(hours: number): string {
+  if (hours < 24) return `${hours}h`
+  return `${(hours / 24).toFixed(1)}d`
+}
 
 type StatusFilter = 'pending' | 'fixed' | 'all'
 type ViewMode = 'cve' | 'server'
@@ -65,8 +95,8 @@ function StatusBadge({ status }: { status: 'pending' | 'partial' | 'fixed' }) {
 
 export default function Security() {
   const [view, setView] = useState<ViewMode>('cve')
-  const [data, setData] = useState<CveInventoryRow[] | null>(null)
-  const [summary, setSummary] = useState<CveSummary | null>(null)
+  const [data, setData] = useState<CveRow[] | null>(null)
+  const [summary, setSummary] = useState<SummaryExt | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -85,7 +115,7 @@ export default function Security() {
   useEffect(() => {
     groupsApi.list().then(setGroups).catch(() => {})
     tagsApi.list().then(setTags).catch(() => {})
-    securityApi.summary().then(setSummary).catch(() => {})
+    securityApi.summary().then(s => setSummary(s as unknown as SummaryExt)).catch(() => {})
   }, [])
 
   // `cancelled` guards against an out-of-order response: rapidly toggling
@@ -105,7 +135,7 @@ export default function Security() {
         since: since || undefined,
         until: until || undefined,
       })
-      .then(rows => { if (!cancelled) setData(rows) })
+      .then(rows => { if (!cancelled) setData(rows as unknown as CveRow[]) })
       .catch(e => {
         if (cancelled) return
         setError(e instanceof Error ? e.message : 'Failed to load CVEs')
@@ -142,7 +172,7 @@ export default function Security() {
       </div>
 
       {/* Header counters */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <CounterTile label="Open CVEs" value={summary?.open_total ?? '—'} accent="text-text-primary" />
         <CounterTile
           label="Critical"
@@ -158,6 +188,16 @@ export default function Security() {
           label="Fixed last 7d"
           value={summary?.fixed_last_7d ?? '—'}
           accent={summary && summary.fixed_last_7d > 0 ? 'text-green' : 'text-text-muted'}
+        />
+        <CounterTile
+          label="Median MTTR"
+          value={summary?.median_mttr_hours != null ? formatMttr(summary.median_mttr_hours) : '—'}
+          accent="text-cyan"
+          title={
+            summary && summary.mttr_sample_size > 0
+              ? `Based on ${summary.mttr_sample_size} resolved CVE${summary.mttr_sample_size !== 1 ? 's' : ''} with provable resolution times`
+              : 'No resolved CVEs with a provable resolution time in the retention window yet'
+          }
         />
       </div>
 
@@ -286,9 +326,9 @@ export default function Security() {
   )
 }
 
-function CounterTile({ label, value, accent }: { label: string; value: number | string; accent: string }) {
+function CounterTile({ label, value, accent, title }: { label: string; value: number | string; accent: string; title?: string }) {
   return (
-    <div className="card p-3">
+    <div className="card p-3" title={title}>
       <div className="text-[10px] text-text-muted uppercase tracking-wide font-mono">{label}</div>
       <div className={`text-2xl font-mono mt-0.5 ${accent}`}>{value}</div>
     </div>
@@ -299,7 +339,7 @@ function CounterTile({ label, value, accent }: { label: string; value: number | 
 // CVE → Servers table (default view)
 // ---------------------------------------------------------------------------
 
-function CveTable({ rows }: { rows: CveInventoryRow[] }) {
+function CveTable({ rows }: { rows: CveRow[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   function toggle(key: string) {
@@ -348,7 +388,7 @@ function CveTable({ rows }: { rows: CveInventoryRow[] }) {
 function ExpandableCveRow({
   row, rowKey, isOpen, onToggle,
 }: {
-  row: CveInventoryRow
+  row: CveRow
   rowKey: string
   isOpen: boolean
   onToggle: () => void
@@ -356,6 +396,8 @@ function ExpandableCveRow({
   const cveLink = row.cve_id.startsWith('CVE-')
     ? `https://ubuntu.com/security/${row.cve_id}`
     : row.url
+  // The remediation endpoint accepts either form; prefer the real CVE id when we have one.
+  const remediationIdentifier = row.cve_id.startsWith('CVE-') ? row.cve_id : (row.usn_ids[0] || row.cve_id)
 
   return (
     <>
@@ -399,6 +441,15 @@ function ExpandableCveRow({
         <td className="px-3 py-1.5 text-text-muted">{row.fixed_version || '—'}</td>
         <td className="px-3 py-1.5 text-text-muted">
           {formatDate(row.first_seen_in_fleet)}
+          {row.status === 'fixed' && (
+            row.mttr_hours != null ? (
+              <span className="ml-1.5 text-green/80 text-[10px]" title="Time to remediate — first seen to fully resolved fleet-wide">
+                ✓ {formatMttr(row.mttr_hours)}
+              </span>
+            ) : row.mttr_note ? (
+              <span className="ml-1.5 text-text-muted/50 text-[10px]" title={row.mttr_note}>MTTR n/a</span>
+            ) : null
+          )}
         </td>
         <td className="px-3 py-1.5 text-center"><StatusBadge status={row.status} /></td>
         <td className="px-3 py-1.5 text-right">
@@ -456,10 +507,220 @@ function ExpandableCveRow({
                 </table>
               </div>
             )}
+
+            {row.status !== 'fixed' && (
+              <RemediationPanel identifier={remediationIdentifier} rowKey={rowKey} />
+            )}
           </td>
         </tr>
       )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Remediation planner (issue #62)
+//
+// Per-server "which pending packages actually fix this CVE/USN, and is that fix even
+// available in what apt currently sees as pending" — computed by
+// GET /api/security/remediation/{identifier}. "Remediate everywhere" reuses the existing
+// per-server selective-upgrade WebSocket (createSelectiveUpgradeWebSocket ->
+// /api/ws/upgrade-selective/{server_id} -> backend/upgrade_manager.py:
+// upgrade_packages_selective) — no new upgrade path.
+// ---------------------------------------------------------------------------
+
+function RemediationPanel({ identifier, rowKey }: { identifier: string; rowKey: string }) {
+  const [plan, setPlan] = useState<RemediationPlan | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showRemediate, setShowRemediate] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    securityApi.remediation(identifier)
+      .then(p => { if (!cancelled) setPlan(p) })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load remediation plan') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [identifier])
+
+  return (
+    <div className="mt-4 pt-3 border-t border-border/40">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[10px] text-text-muted uppercase tracking-wide">Remediation plan</div>
+        {plan?.found && (plan.remediation_plan?.length ?? 0) > 0 && (
+          <button onClick={() => setShowRemediate(true)} className="btn-amber text-xs px-2 py-1">
+            Remediate everywhere ({plan.remediation_plan!.length})
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="text-text-muted text-xs">Loading plan…</p>
+      ) : error ? (
+        <p className="text-red text-xs">{error}</p>
+      ) : !plan?.found ? (
+        <p className="text-text-muted text-xs">{plan?.message || 'No remediation data available.'}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs font-mono">
+            <thead>
+              <tr className="text-text-muted/80 border-b border-border/40">
+                <th className="text-left px-2 py-1 font-normal">Server</th>
+                <th className="text-left px-2 py-1 font-normal">Fix status</th>
+                <th className="text-left px-2 py-1 font-normal">Packages / required version</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(plan.affected_servers ?? []).map(s => (
+                <tr key={`${rowKey}-rem-${s.server_id}`} className="border-b border-border/20 last:border-0 align-top">
+                  <td className="px-2 py-1 text-text-primary whitespace-nowrap">{s.name}</td>
+                  <td className="px-2 py-1 whitespace-nowrap">
+                    {s.status === 'fix_pending' ? (
+                      <span className="text-green">
+                        fix pending{s.version_confidence === 'approximate' ? ' (approx. version)' : ''}
+                      </span>
+                    ) : (
+                      <span className="text-text-muted" title={s.note || ''}>blocked / not pending</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1 text-text-muted">
+                    {s.matched_packages.length > 0 ? (
+                      s.matched_packages.map(p => (
+                        <div key={p.name}>
+                          <span className="text-text-primary">{p.name}</span>
+                          {' '}→ {p.required_fixed_version || '—'}
+                        </div>
+                      ))
+                    ) : (
+                      <span className="text-text-muted/60">{s.note}</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showRemediate && plan?.remediation_plan && (
+        <RemediateEverywhereModal
+          identifier={identifier}
+          servers={plan.remediation_plan}
+          onClose={() => setShowRemediate(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+function RemediateEverywhereModal({ identifier, servers, onClose }: {
+  identifier: string
+  servers: RemediationPlanServer[]
+  onClose: () => void
+}) {
+  type ServerRunState = 'queued' | 'running' | 'done' | 'error'
+  const [states, setStates] = useState<Record<number, ServerRunState>>(
+    () => Object.fromEntries(servers.map(s => [s.server_id, 'queued'])),
+  )
+  const [lines, setLines] = useState<Record<number, string[]>>({})
+  const [started, setStarted] = useState(false)
+  const socketsRef = useRef<WebSocket[]>([])
+
+  useEffect(() => () => { socketsRef.current.forEach(ws => ws.close()) }, [])
+
+  function start() {
+    setStarted(true)
+    for (const s of servers) {
+      setStates(prev => ({ ...prev, [s.server_id]: 'running' }))
+      let sawTerminal = false
+      const ws = createSelectiveUpgradeWebSocket(
+        s.server_id,
+        { packages: s.packages, allow_phased: false },
+        (msg) => {
+          if (msg.type === 'output') {
+            setLines(prev => ({ ...prev, [s.server_id]: [...(prev[s.server_id] || []), msg.data as string] }))
+          } else if (msg.type === 'error' || msg.type === 'skipped') {
+            sawTerminal = true
+            setStates(prev => ({ ...prev, [s.server_id]: 'error' }))
+          } else if (msg.type === 'complete') {
+            sawTerminal = true
+            const d = msg.data as { success: boolean }
+            setStates(prev => ({ ...prev, [s.server_id]: d.success ? 'done' : 'error' }))
+          }
+        },
+        () => {
+          if (!sawTerminal) setStates(prev => ({ ...prev, [s.server_id]: 'error' }))
+          window.dispatchEvent(new CustomEvent('apt:refresh'))
+        },
+      )
+      socketsRef.current.push(ws)
+    }
+  }
+
+  const allSettled = started && Object.values(states).every(s => s === 'done' || s === 'error')
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface border border-border rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <h2 className="font-mono text-sm text-text-primary">Remediate {identifier} everywhere</h2>
+          <button onClick={onClose} className="text-text-muted hover:text-red">✕</button>
+        </div>
+        <div className="p-4 space-y-3 overflow-y-auto">
+          {!started ? (
+            <>
+              <p className="text-xs text-text-muted">
+                This will run a selective upgrade of exactly the fixing package(s) on each server
+                below, using each server's own maintenance-window / override rules.
+              </p>
+              <div className="card p-3 max-h-56 overflow-y-auto space-y-1">
+                {servers.map(s => (
+                  <div key={s.server_id} className="font-mono text-xs text-text-muted">
+                    <span className="text-text-primary">{s.name}</span> — {s.packages.join(', ')}
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={start} className="btn-amber">
+                  Remediate {servers.length} server{servers.length !== 1 ? 's' : ''}
+                </button>
+                <button onClick={onClose} className="btn-secondary">Cancel</button>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              {servers.map(s => (
+                <div key={s.server_id} className="card p-2">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-text-primary">{s.name}</span>
+                    <span className={
+                      states[s.server_id] === 'done' ? 'text-green'
+                      : states[s.server_id] === 'error' ? 'text-red'
+                      : 'text-cyan animate-pulse'
+                    }>
+                      {states[s.server_id] === 'done' ? '✓ done'
+                        : states[s.server_id] === 'error' ? '✗ error'
+                        : '● running'}
+                    </span>
+                  </div>
+                  {(lines[s.server_id] || []).length > 0 && (
+                    <div className="mt-1 max-h-24 overflow-y-auto bg-bg border border-border rounded p-1.5 font-mono text-[10px] text-text-primary">
+                      {(lines[s.server_id] || []).slice(-40).map((line, i) => (
+                        <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {allSettled && <button onClick={onClose} className="btn-primary">Done</button>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 

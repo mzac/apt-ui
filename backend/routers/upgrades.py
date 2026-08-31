@@ -22,6 +22,7 @@ from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
 from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
+from backend.timeutil import utc_iso
 from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
 from backend import task_queue
 
@@ -753,11 +754,36 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         conffile_action = params.get("conffile_action", "confdef_confold")
         reboot_if_required = params.get("reboot_if_required", False)
         override_window = bool(params.get("override_window", False))
+        # "Queue for next window opening" (issue #62) — opt-in, default False so
+        # the existing block-with-error behaviour is unchanged unless a client
+        # explicitly asks for it.
+        queue_for_window = bool(params.get("queue_for_window", False))
 
         # Maintenance-window gate (admins may override)
         from backend.routers.maintenance import window_block_reason
         block = await window_block_reason(db, server_id, override=override_window and user.is_admin)
         if block:
+            if queue_for_window:
+                try:
+                    from backend import rollout as rollout_mod
+                    queued = await rollout_mod.queue_server_for_next_window(
+                        db, server, action=action, allow_phased=allow_phased,
+                        conffile_action=conffile_action, initiated_by=user.username,
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "queue_server_for_next_window failed for %s", server.name
+                    )
+                    queued = None
+                if queued is not None:
+                    _, qstep = queued
+                    await websocket.send_json({
+                        "type": "queued",
+                        "data": f"Upgrade {block}. Queued for the next window opening at {utc_iso(qstep.scheduled_at)}.",
+                        "rollout_id": qstep.rollout_id,
+                    })
+                    await websocket.close()
+                    return
             await websocket.send_json({"type": "error", "data": f"Upgrade {block}. An admin can override."})
             await websocket.close()
             return
@@ -918,6 +944,10 @@ async def ws_upgrade_all(websocket: WebSocket):
         # we fall back to every enabled server, preserving the original behaviour.
         explicit_ids = params.get("server_ids") or None
         override_window = bool(params.get("override_window", False)) and user.is_admin
+        # "Queue for next window opening" (issue #62) — opt-in, default False so
+        # a window-blocked server is skipped exactly as before unless a client
+        # explicitly asks to queue it instead.
+        queue_for_window = bool(params.get("queue_for_window", False))
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
@@ -936,13 +966,22 @@ async def ws_upgrade_all(websocket: WebSocket):
         srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
 
-        async def _send_skipped(server_id: int, server_name: str | None, reason: str, *, cancelled: bool = False) -> None:
+        async def _send_skipped(
+            server_id: int, server_name: str | None, reason: str, *,
+            cancelled: bool = False, queued_until: str | None = None, rollout_id: int | None = None,
+        ) -> None:
             try:
+                data = f"Skipped — {reason}."
+                if queued_until:
+                    data = f"Skipped — {reason}; queued for the next window opening at {queued_until}."
                 payload = {"type": "skipped", "server_id": server_id,
                            "server_name": server_name,
-                           "data": f"Skipped — {reason}."}
+                           "data": data}
                 if cancelled:
                     payload["cancelled"] = True
+                if queued_until:
+                    payload["queued_until"] = queued_until
+                    payload["rollout_id"] = rollout_id
                 await websocket.send_json(payload)
             except Exception:
                 pass
@@ -975,6 +1014,22 @@ async def ws_upgrade_all(websocket: WebSocket):
                 continue
             block = await window_block_reason(db, s.id, override=override_window)
             if block:
+                if queue_for_window:
+                    try:
+                        from backend import rollout as rollout_mod
+                        queued = await rollout_mod.queue_server_for_next_window(
+                            db, s, action=action, allow_phased=allow_phased,
+                            conffile_action=conffile_action, initiated_by=user.username,
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "queue_server_for_next_window failed for %s", s.name
+                        )
+                        queued = None
+                    if queued is not None:
+                        _, qstep = queued
+                        await _send_skipped(s.id, s.name, block, queued_until=utc_iso(qstep.scheduled_at), rollout_id=qstep.rollout_id)
+                        continue
                 await _send_skipped(s.id, s.name, block)
                 continue
             to_upgrade.append(s)
@@ -1716,22 +1771,17 @@ async def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
 
 async def _group_servers_by_ring(servers: list[Server], db: AsyncSession) -> dict[str, list[Server]]:
     """Group *servers* by their ``ring:*`` tag (alphabetical), defaulting to
-    ``ring:default`` when no ring tag is present. Mirrors the helper used by the
-    auto-upgrade staged-rollout job in ``backend/scheduler.py`` (issue #41).
-    """
-    from backend.models import Tag, ServerTag
+    ``ring:default`` when no ring tag is present.
 
-    rings: dict[str, list[Server]] = {}
-    for s in servers:
-        tag_res = await db.execute(
-            select(Tag.name)
-            .join(ServerTag, ServerTag.tag_id == Tag.id)
-            .where(ServerTag.server_id == s.id, Tag.name.like("ring:%"))
-        )
-        ring_tags = sorted([r for (r,) in tag_res.all()])
-        ring = ring_tags[0] if ring_tags else "ring:default"
-        rings.setdefault(ring, []).append(s)
-    return rings
+    Thin wrapper around ``backend.rollout.group_servers_by_ring`` — the single
+    shared implementation (issue #62) that replaced this function's own inline
+    grouping and the near-identical copy that used to live in
+    ``backend/scheduler.py``'s auto-upgrade staged-rollout job (issue #41).
+    Rebooting doesn't have an ``order:N`` dependency-ordering concept the way
+    upgrades do, so order-tag sorting is left off here.
+    """
+    from backend.rollout import group_servers_by_ring
+    return await group_servers_by_ring(db, servers, apply_order_tag=False)
 
 
 @router.websocket("/api/ws/reboot-all")

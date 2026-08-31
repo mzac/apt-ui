@@ -316,6 +316,7 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 | `OIDC_GROUPS_CLAIM` | `groups` | ID-token claim carrying group membership, used for role mapping. |
 | `OIDC_ADMIN_GROUP` | – | Membership of this group grants admin. Re-evaluated on **every** login, so revoking it in the IdP takes effect at the next sign-in. Unset means every SSO user is read-only. |
 | `OIDC_LINK_EXISTING_USERS` | `false` | Allow an SSO login to adopt an existing **local** account with the same username. Off by default: linking on username alone is an account-takeover vector, so a collision is refused and the local account left untouched. |
+| `CVE_SEVERITY_CACHE_PATH` | `/data/cve_severity_cache.json` | Where CVE severity ratings fetched from Ubuntu's security API are cached. Lives on the data volume so it survives restarts; the API is rate-limit-prone, so a stale cache is preferred over refetching. |
 
 ---
 

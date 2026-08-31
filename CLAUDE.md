@@ -196,5 +196,6 @@ See [TODO.md](TODO.md) for the backlog.
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_REDIRECT_URL` | No | Provider config; endpoints discovered from the issuer's `/.well-known/openid-configuration`. |
 | `OIDC_SCOPES` / `OIDC_GROUPS_CLAIM` / `OIDC_ADMIN_GROUP` | No | Default `openid profile email` / `groups` / unset. Group→role mapping is re-evaluated on every login. |
 | `OIDC_LINK_EXISTING_USERS` | No | Default `false`. Allows an SSO login to adopt a same-named **local** account — off by default because username-only linking is an account-takeover vector. |
+| `CVE_SEVERITY_CACHE_PATH` | No | Default `/data/cve_severity_cache.json`. CVE severity is fetched from Ubuntu's security API (the USN feed carries none) and cached on the data volume; that API is rate-limit-prone, so fetches are bounded per cycle and a stale cache is preferred over hammering it. |
 
 Notification settings, schedule config, and user accounts are managed entirely through the UI and stored in the DB — not environment variables.

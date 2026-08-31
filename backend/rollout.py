@@ -53,7 +53,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.actor import get_actor, set_actor
-from backend.config import TZ, now_local
+from backend.config import now_local
 from backend.database import AsyncSessionLocal
 from backend.models import Rollout, RolloutStep, Server, Tag, ServerTag, UpdateHistory
 from backend.timeutil import utc_iso
