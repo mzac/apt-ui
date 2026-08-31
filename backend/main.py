@@ -141,6 +141,18 @@ async def lifespan(app: FastAPI):
     from backend.scheduler import start_scheduler, stop_scheduler
     await start_scheduler()
 
+    # Staged rollouts are persisted, so steps that came due while this process was
+    # down must be re-scheduled or run now — otherwise a restart silently strands
+    # every pending ring (the bug the durable rollout work exists to fix). Runs
+    # after the scheduler starts because it registers DateTrigger jobs on it.
+    from backend.rollout import reconcile_rollouts
+    try:
+        rc = await reconcile_rollouts()
+        if rc:
+            logger.info("Rollout reconciliation: %s", rc)
+    except Exception:
+        logger.exception("Rollout reconciliation failed")
+
     yield
 
     stop_scheduler()
@@ -175,6 +187,7 @@ from backend.routers import security as security_router
 from backend.routers import api_v1 as api_v1_router
 from backend.routers import tasks as tasks_router
 from backend.routers import exports as exports_router
+from backend.routers import rollouts as rollouts_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -202,6 +215,7 @@ app.include_router(security_router.router)
 app.include_router(api_v1_router.router)
 app.include_router(tasks_router.router)
 app.include_router(exports_router.router)
+app.include_router(rollouts_router.router)
 
 
 @app.get("/api/config/features")

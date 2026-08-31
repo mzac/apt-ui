@@ -12,6 +12,7 @@ import Templates from '@/pages/Templates'
 import Compare from '@/pages/Compare'
 import Search from '@/pages/Search'
 import Reports from '@/pages/Reports'
+import Rollouts from '@/pages/Rollouts'
 import Security from '@/pages/Security'
 import Run from '@/pages/Run'
 
@@ -112,6 +113,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Reports />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/rollouts"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Rollouts />
               </Layout>
             </RequireAuth>
           }
