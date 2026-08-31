@@ -8,6 +8,7 @@ from backend.auth import get_current_user
 from backend.database import get_db
 from backend.models import Server, UpdateCheck, User
 from backend.schemas import UpdateCheckOut, PackageInfo
+from backend.timeutil import utc_iso
 from backend.update_checker import check_server
 
 router = APIRouter(prefix="/api/servers", tags=["updates"])
@@ -86,4 +87,19 @@ async def get_packages(
         except Exception:
             pass
 
-    return {"packages": packages, "held": held, "autoremove": autoremove, "checked_at": check.checked_at}
+    # A held package is still recorded in packages_json — that is the only cached copy
+    # of its upgrade candidate, so an unhold can restore it (see `_sync_hold_cache`) —
+    # but it must never be offered as upgradable while the hold is in place.
+    if held and isinstance(packages, list):
+        held_set = {h for h in held if isinstance(h, str)}
+        packages = [
+            p for p in packages
+            if not (isinstance(p, dict) and p.get("name") in held_set)
+        ]
+
+    return {
+        "packages": packages,
+        "held": held,
+        "autoremove": autoremove,
+        "checked_at": utc_iso(check.checked_at),
+    }

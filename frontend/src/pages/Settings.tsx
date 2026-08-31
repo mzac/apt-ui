@@ -1228,6 +1228,11 @@ function ScheduleTab() {
     try {
       const updated = await schedulerApi.update(form)
       setCfg(updated)
+      // Re-seed the form from the saved row too. The server recomputes derived
+      // fields (next_check_time), so leaving `form` stale makes formDiffers() true
+      // forever — every tab switch would prompt "Discard unsaved changes?" and a
+      // reload would fire the leave-site warning with nothing actually unsaved.
+      setForm(updated)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       refreshHealth()   // reconcile the banner after the scheduler reconfigures
@@ -2017,6 +2022,7 @@ function PreferencesTab() {
     try {
       const updated = await schedulerApi.update(form)
       setCfg(updated)
+      setForm(updated)   // keep the form in step with the saved row (see Schedule tab)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err: unknown) {

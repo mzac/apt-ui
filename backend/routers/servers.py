@@ -1203,8 +1203,12 @@ async def _sync_hold_cache(db: AsyncSession, server_id: int, pkg: str, hold: boo
     package stays listed as upgradable (and absent from the held list) until the
     next full Check Now — making hold/unhold look like a no-op.
 
-    Unhold does *not* re-add the package to ``packages_json``: the cached row has
-    no upgrade candidate for it any more. The next check restores it.
+    ``packages_json`` is deliberately left intact: it is the only cached record of
+    the package's upgrade candidate, so dropping the entry on hold would make an
+    immediate unhold unable to restore it — the package would be neither upgradable
+    nor held until the next full check. Held packages are instead filtered out of
+    the upgradable list when the row is read (see ``get_packages``), and excluded
+    from the counts below, which keeps hold and unhold exactly symmetric.
     """
     res = await db.execute(
         select(UpdateCheck)
@@ -1235,24 +1239,25 @@ async def _sync_hold_cache(db: AsyncSession, server_id: int, pkg: str, hold: boo
     check.held_packages_list = json.dumps(sorted(held))
     check.held_packages = len(held)
 
-    if hold:
-        # A held package is no longer offered as an upgrade.
-        packages: list[dict] = []
-        if check.packages_json:
-            try:
-                parsed_pkgs = json.loads(check.packages_json)
-                if isinstance(parsed_pkgs, list):
-                    packages = [p for p in parsed_pkgs if isinstance(p, dict)]
-            except Exception:
-                packages = []
-        remaining = [p for p in packages if p.get("name") != pkg]
-        if len(remaining) != len(packages):
-            check.packages_json = json.dumps(remaining)
-            check.packages_available = sum(1 for p in remaining if not p.get("is_new"))
-            check.security_packages = sum(1 for p in remaining if p.get("is_security"))
-            check.regular_packages = sum(
-                1 for p in remaining if not p.get("is_new") and not p.get("is_security")
-            )
+    # Recompute the cached counts over everything that is still actually upgradable,
+    # i.e. packages_json minus the held set. Runs for both hold and unhold so the two
+    # are symmetric — holding then unholding returns the row to where it started.
+    packages: list[dict] = []
+    if check.packages_json:
+        try:
+            parsed_pkgs = json.loads(check.packages_json)
+            if isinstance(parsed_pkgs, list):
+                packages = [p for p in parsed_pkgs if isinstance(p, dict)]
+        except Exception:
+            packages = []
+
+    held_set = set(held)
+    upgradable = [p for p in packages if p.get("name") not in held_set]
+    check.packages_available = sum(1 for p in upgradable if not p.get("is_new"))
+    check.security_packages = sum(1 for p in upgradable if p.get("is_security"))
+    check.regular_packages = sum(
+        1 for p in upgradable if not p.get("is_new") and not p.get("is_security")
+    )
 
     await db.commit()
 

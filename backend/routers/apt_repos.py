@@ -249,7 +249,12 @@ async def delete_apt_repo(
 async def ws_apt_repos_test(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token") or websocket.query_params.get("token")
+    # Cookie only, like every other WebSocket handler. A session JWT must never be
+    # accepted from the query string: it is replayable for the cookie's full 24h and
+    # query strings are captured by reverse-proxy access logs and browser history.
+    # (The iCal feed's `?token=` is a different thing — a scoped API token, for
+    # calendar clients that cannot send headers.)
+    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
