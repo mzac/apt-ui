@@ -3,13 +3,14 @@ import type { Server, ScheduleConfig } from '@/types'
 import { createRebootAllWebSocket, scheduler as schedulerApi } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { confirmDialog } from '@/hooks/useConfirm'
 
 interface Props {
   servers: Server[]
   onClose: () => void
 }
 
-type RebootPhase = 'pending' | 'rebooting' | 'waiting' | 'back' | 'failed' | 'error' | 'skipped'
+type RebootPhase = 'pending' | 'rebooting' | 'waiting' | 'back' | 'failed' | 'error' | 'skipped' | 'cancelled'
 
 interface ServerProgress {
   phase: RebootPhase
@@ -18,7 +19,7 @@ interface ServerProgress {
 
 // Phases a server can't move back out of — a late 'status' message must not
 // reset a host that already came back / timed out / errored.
-const TERMINAL_PHASES: RebootPhase[] = ['back', 'failed', 'error', 'skipped']
+const TERMINAL_PHASES: RebootPhase[] = ['back', 'failed', 'error', 'skipped', 'cancelled']
 
 // Group servers by their first ring:* tag (or "ring:default") — mirrors the
 // backend grouping used by /api/ws/reboot-all so the confirm step shows the
@@ -50,6 +51,8 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   const [waitingSeconds, setWaitingSeconds] = useState(0)
   const [aborted, setAborted] = useState(false)
   const [abortReason, setAbortReason] = useState<string | null>(null)
+  const [cancelled, setCancelled] = useState(false)
+  const [cancelRequested, setCancelRequested] = useState(false)
   const [logs, setLogs] = useState<string[]>([])
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -148,10 +151,19 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
         abortedRef.current = true
         stopWaitTick()
         setWaitingSeconds(0)
-        setAborted(true)
-        setAbortReason(data.reason)
-        setLogs(l => [...l, `[abort] ring ${data.ring}: ${data.reason}`])
-        updateJob('reboot-all', { status: 'error', completedAt: Date.now() })
+        // A deliberate "Stop after current" reuses this same abort path (backend
+        // reason "cancelled") but must never read as a failure: distinct state,
+        // distinct log line, and the job bell is marked complete, not error.
+        if (data.reason === 'cancelled') {
+          setCancelled(true)
+          setLogs(l => [...l, `[cancelled] ring ${data.ring}: stopped by admin request`])
+          updateJob('reboot-all', { status: 'complete', completedAt: Date.now() })
+        } else {
+          setAborted(true)
+          setAbortReason(data.reason)
+          setLogs(l => [...l, `[abort] ring ${data.ring}: ${data.reason}`])
+          updateJob('reboot-all', { status: 'error', completedAt: Date.now() })
+        }
         return
       }
       if (t === 'complete' && !sid) {
@@ -179,10 +191,13 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
         setProgress(p => ({ ...p, [sid]: { phase: 'error', message: msg.data as string } }))
         completedIdsRef.current.add(sid)
       } else if (t === 'skipped') {
-        // The backend drops disabled servers and hosts that need no reboot, and
-        // says so explicitly. Terminal, but NOT a failure — without this the
-        // socket-close repair below would redden them and fail the whole job.
-        setProgress(p => ({ ...p, [sid]: { phase: 'skipped', message: msg.data as string } }))
+        // The backend drops disabled servers, hosts that need no reboot, and — once
+        // a "Stop after current" request lands — servers that never got dispatched.
+        // Terminal, but NOT a failure — without this the socket-close repair below
+        // would redden them and fail the whole job. The 'cancelled' flag on the
+        // latter distinguishes it so it renders distinctly from a plain skip.
+        const phase: RebootPhase = msg.cancelled ? 'cancelled' : 'skipped'
+        setProgress(p => ({ ...p, [sid]: { phase, message: msg.data as string } }))
         completedIdsRef.current.add(sid)
       }
     }, (ev) => {
@@ -214,10 +229,30 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
     onClose()
   }
 
+  // "Stop after current" — asks for confirmation, then sends a cancel frame over
+  // the already-open socket. cancelRequested guards against double-submit; the
+  // button itself is also hidden once the run finishes.
+  async function handleStop() {
+    if (cancelRequested) return
+    const ok = await confirmDialog({
+      message: 'Stop this rolling reboot? The current batch will finish coming back; servers not yet started will be skipped.',
+      confirmLabel: 'Stop',
+      danger: true,
+    })
+    if (!ok) return
+    setCancelRequested(true)
+    try {
+      wsRef.current?.send(JSON.stringify({ action: 'cancel' }))
+    } catch {
+      // socket already closed — nothing to do, the run has already ended
+    }
+  }
+
   const phaseColor = (phase: RebootPhase): string => {
     switch (phase) {
       case 'back': return '#22c55e'        // green
       case 'skipped': return '#6b7280'     // gray
+      case 'cancelled': return '#6b7280'   // gray
       case 'rebooting':
       case 'waiting': return '#06b6d4'     // cyan
       case 'failed':
@@ -228,19 +263,31 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
   }
 
   const phaseIcon = (phase: RebootPhase): string =>
-    ({ pending: '⏳', rebooting: '↻', waiting: '⌛', back: '✓', failed: '✗', error: '✗', skipped: '⊘' }[phase])
+    ({ pending: '⏳', rebooting: '↻', waiting: '⌛', back: '✓', failed: '✗', error: '✗', skipped: '⊘', cancelled: '⏹️' }[phase])
 
   const phaseLabel = (phase: RebootPhase): string =>
-    ({ pending: 'pending', rebooting: 'rebooting', waiting: 'waiting', back: 'back', failed: 'timed out', error: 'error', skipped: 'skipped' }[phase])
+    ({ pending: 'pending', rebooting: 'rebooting', waiting: 'waiting', back: 'back', failed: 'timed out', error: 'error', skipped: 'skipped', cancelled: 'cancelled' }[phase])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
       <div className="bg-surface border border-border rounded-lg w-full max-w-3xl max-h-[90vh] flex flex-col">
         <div className="p-4 border-b border-border flex items-center justify-between">
           <h2 className="font-mono text-sm text-text-primary">Rolling Reboot</h2>
-          {(!started || done) && (
-            <button onClick={handleClose} className="text-text-muted hover:text-red">✕</button>
-          )}
+          <div className="flex items-center gap-2">
+            {started && !done && (
+              <button
+                onClick={handleStop}
+                disabled={cancelRequested}
+                className="btn-secondary text-xs text-red disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Stop after the current batch comes back"
+              >
+                {cancelRequested ? 'Stopping…' : 'Stop after current'}
+              </button>
+            )}
+            {(!started || done) && (
+              <button onClick={handleClose} className="text-text-muted hover:text-red">✕</button>
+            )}
+          </div>
         </div>
 
         {!started ? (
@@ -295,7 +342,8 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
                 <span className="text-cyan">waiting {Math.floor(waitingSeconds / 60)}m {waitingSeconds % 60}s</span>
               )}
               {aborted && <span className="text-red">aborted ({abortReason})</span>}
-              {done && !aborted && <span className="text-green">complete</span>}
+              {cancelled && <span className="text-text-muted">⏹️ stopped by admin request</span>}
+              {done && !aborted && !cancelled && <span className="text-green">complete</span>}
             </div>
 
             <div className="flex flex-wrap gap-2">
