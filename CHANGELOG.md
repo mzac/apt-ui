@@ -4,9 +4,11 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.08.31-01] — 2026-08-31
 
-A second GUI flow audit ([#80](https://github.com/mzac/apt-ui/issues/80)) — 47 verified bugs across the React frontend and the backend endpoints behind it — plus the next tranche of the enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)).
+**Security release — upgrade promptly if any non-administrator can log in.** Two privilege-escalation holes let *any* authenticated user, including a read-only account, execute arbitrary code as root on every managed host: installing a `.deb` (whose maintainer scripts run as root) and — with `ENABLE_TERMINAL=true` — opening an interactive shell. Neither required administrator rights. Two stored credentials were also exposed. Details in **Security** below.
+
+Also fixes a second GUI flow audit ([#80](https://github.com/mzac/apt-ui/issues/80)) — 47 verified bugs across the React frontend and the backend endpoints behind it, headlined by **every timestamp in the UI being shifted by the viewer's UTC offset** — plus the next tranche of the enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)), including a graceful stop for fleet operations and apt-repo edit safety rails.
 
 ### Security
 
