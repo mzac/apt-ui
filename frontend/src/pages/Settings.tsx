@@ -2314,19 +2314,16 @@ function NotificationsTab() {
     }
   }
 
-  // Test/detect endpoints read the persisted DB config, so save the current form
-  // first — otherwise they silently test stale or empty saved credentials. The
-  // backend ignores masked secret placeholders, so unchanged secrets are preserved.
-  async function persistForm() {
-    const updated = await notifApi.updateConfig(form)
-    setCfg(updated)
-    setForm(updated)
-  }
-
+  // Test/detect endpoints send the current (unsaved) form values as a candidate
+  // config, so testing new credentials before saving exercises what's actually on
+  // screen rather than the last-saved (possibly stale or empty) DB row. This used to
+  // save the form first as a workaround, which was a footgun — it persisted
+  // credentials the user might not want saved, with no way to undo a guess. The
+  // backend falls back to the stored config for any field omitted, and to the real
+  // stored secret when a field still holds the masked placeholder.
   async function sendTestEmail() {
     try {
-      await persistForm()
-      await notifApi.testEmail()
+      await notifApi.testEmail(form)
       setTestMsg(m => ({ ...m, email: '✓ Test email sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, email: `✗ ${(err as Error).message}` }))
@@ -2335,8 +2332,7 @@ function NotificationsTab() {
 
   async function sendTestTelegram() {
     try {
-      await persistForm()
-      await notifApi.testTelegram()
+      await notifApi.testTelegram(form)
       setTestMsg(m => ({ ...m, telegram: '✓ Test message sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, telegram: `✗ ${(err as Error).message}` }))
@@ -2345,8 +2341,7 @@ function NotificationsTab() {
 
   async function sendTestSlack() {
     try {
-      await persistForm()
-      await notifApi.testSlack()
+      await notifApi.testSlack(form)
       setTestMsg(m => ({ ...m, slack: '✓ Test message sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, slack: `✗ ${(err as Error).message}` }))
@@ -2356,8 +2351,7 @@ function NotificationsTab() {
   async function sendTestWeeklyDigest() {
     setTestMsg(m => ({ ...m, weekly: '… sending' }))
     try {
-      await persistForm()
-      const r = await notifApi.testWeeklyDigest()
+      const r = await notifApi.testWeeklyDigest(form)
       const parts = Object.entries(r.results).map(([ch, status]) => `${ch}:${status}`).join('  ')
       setTestMsg(m => ({ ...m, weekly: `✓ ${parts}` }))
     } catch (err: unknown) {
@@ -2367,8 +2361,7 @@ function NotificationsTab() {
 
   async function detectChatId() {
     try {
-      await persistForm()
-      const result = await notifApi.detectChatId()
+      const result = await notifApi.detectChatId(form.telegram_bot_token ?? undefined)
       setChatIds(result.chats)
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, telegram: `✗ ${(err as Error).message}` }))
@@ -2738,7 +2731,102 @@ function NotificationsTab() {
 // Users tab — multi-user management (issue #39)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Password policy (issue #62) — configurable minimum length, enforced
+// server-side in create-user / admin-reset / self-service change-password.
+// Shared by UsersTab (admin control + create/reset forms) and AccountTab
+// (self-service change-password form) so all three stay in sync with the
+// backend-configured value instead of a hardcoded "4".
+// ---------------------------------------------------------------------------
+function usePasswordMinLength(): [number, (n: number) => void] {
+  const [minLength, setMinLength] = useState(4)
+  useEffect(() => {
+    auth.getPasswordPolicy().then(p => setMinLength(p.min_length)).catch(() => {})
+  }, [])
+  return [minLength, setMinLength]
+}
+
+// Simple length + character-variety heuristic — not a real entropy estimate,
+// just a friendly nudge so users aren't surprised by a round-trip rejection.
+function passwordStrength(pw: string): { label: string; pct: number; color: string } | null {
+  if (!pw) return null
+  let score = 0
+  if (pw.length >= 8) score++
+  if (pw.length >= 12) score++
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++
+  if (/[0-9]/.test(pw)) score++
+  if (/[^A-Za-z0-9]/.test(pw)) score++
+  if (score <= 1) return { label: 'Weak', pct: 33, color: 'bg-red' }
+  if (score <= 3) return { label: 'Okay', pct: 66, color: 'bg-amber' }
+  return { label: 'Strong', pct: 100, color: 'bg-green' }
+}
+
+function PasswordStrengthMeter({ password }: { password: string }) {
+  const strength = passwordStrength(password)
+  if (!strength) return null
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <div className="flex-1 h-1 rounded-full bg-border overflow-hidden">
+        <div className={`h-full ${strength.color} transition-all`} style={{ width: `${strength.pct}%` }} />
+      </div>
+      <span className="text-[10px] text-text-muted w-10 shrink-0">{strength.label}</span>
+    </div>
+  )
+}
+
+function PasswordPolicySection({ minLength, onChange }: { minLength: number; onChange: (n: number) => void }) {
+  const [value, setValue] = useState(minLength)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  // Keep the input in sync once the fetched policy lands (it starts at the default 4).
+  useEffect(() => { setValue(minLength) }, [minLength])
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true)
+    setMsg(null)
+    try {
+      const r = await auth.updatePasswordPolicy(value)
+      onChange(r.min_length)
+      setMsg('Saved')
+      setTimeout(() => setMsg(null), 1500)
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card p-4 space-y-2">
+      <h3 className="text-xs uppercase tracking-wide text-text-muted">Password Policy</h3>
+      <p className="text-xs text-text-muted">
+        Applies to new users, admin password resets, and self-service password changes.
+      </p>
+      <form onSubmit={save} className="flex items-end gap-3 pt-1">
+        <div>
+          <label className="label">Minimum length</label>
+          <input
+            type="number"
+            min={1}
+            max={128}
+            value={value}
+            onChange={e => setValue(Math.max(1, Math.min(128, parseInt(e.target.value) || 1)))}
+            className="input text-sm w-24"
+          />
+        </div>
+        <button type="submit" disabled={saving || value === minLength} className="btn-secondary text-sm">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {msg && <span className={`text-xs ${msg === 'Saved' ? 'text-green' : 'text-red'}`}>{msg}</span>}
+      </form>
+    </div>
+  )
+}
+
 function UsersTab() {
+  const [minPasswordLength, setMinPasswordLength] = usePasswordMinLength()
   const { user: currentUser } = useAuthStore()
   const [users, setUsers] = useState<import('@/api/client').UserSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -2775,6 +2863,10 @@ function UsersTab() {
     setError(null)
     if (!newUser.username.trim() || !newUser.password) {
       setError('Username and password required')
+      return
+    }
+    if (newUser.password.length < minPasswordLength) {
+      setError(`Password must be at least ${minPasswordLength} characters`)
       return
     }
     if (newUser.password !== newUser.confirm) {
@@ -2819,6 +2911,10 @@ function UsersTab() {
     e.preventDefault()
     setResetMsg(null)
     if (!resetPwFor) return
+    if (resetPw.password.length < minPasswordLength) {
+      setResetMsg(`Password must be at least ${minPasswordLength} characters`)
+      return
+    }
     if (!resetPw.password || resetPw.password !== resetPw.confirm) {
       setResetMsg('Passwords do not match')
       return
@@ -2846,6 +2942,8 @@ function UsersTab() {
       </div>
 
       {error && <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono">{error}</div>}
+
+      <PasswordPolicySection minLength={minPasswordLength} onChange={setMinPasswordLength} />
 
       {/* User list */}
       <div className="card overflow-hidden">
@@ -2932,6 +3030,8 @@ function UsersTab() {
               onChange={e => setNewUser({ ...newUser, password: e.target.value })}
               className="input text-sm"
             />
+            <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+            <PasswordStrengthMeter password={newUser.password} />
           </div>
 
           <div>
@@ -2991,6 +3091,8 @@ function UsersTab() {
                   className="input text-sm"
                   autoFocus
                 />
+                <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+                <PasswordStrengthMeter password={resetPw.password} />
               </div>
 
               <div>
@@ -3025,6 +3127,7 @@ function UsersTab() {
 // ---------------------------------------------------------------------------
 function AccountTab() {
   const { user, logout } = useAuthStore()
+  const [minPasswordLength] = usePasswordMinLength()
   const [form, setForm] = useState({ current_password: '', new_password: '', confirm: '' })
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
@@ -3035,6 +3138,10 @@ function AccountTab() {
     if (saving) return
     setMsg('')
     setError('')
+    if (form.new_password.length < minPasswordLength) {
+      setError(`Password must be at least ${minPasswordLength} characters`)
+      return
+    }
     if (form.new_password !== form.confirm) {
       setError('New passwords do not match')
       return
@@ -3062,7 +3169,12 @@ function AccountTab() {
         <h2 className="text-sm font-medium text-text-primary mb-4">Change Password</h2>
         <form onSubmit={handleChangePassword} className="space-y-3">
           <div><label className="label">Current Password</label><input type="password" className="input" value={form.current_password} onChange={e => setForm(f => ({ ...f, current_password: e.target.value }))} /></div>
-          <div><label className="label">New Password</label><input type="password" className="input" value={form.new_password} onChange={e => setForm(f => ({ ...f, new_password: e.target.value }))} /></div>
+          <div>
+            <label className="label">New Password</label>
+            <input type="password" className="input" value={form.new_password} onChange={e => setForm(f => ({ ...f, new_password: e.target.value }))} />
+            <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+            <PasswordStrengthMeter password={form.new_password} />
+          </div>
           <div><label className="label">Confirm New Password</label><input type="password" className="input" value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} /></div>
           {error && <p className="text-red text-sm">{error}</p>}
           {msg && <p className="text-green text-sm">{msg}</p>}

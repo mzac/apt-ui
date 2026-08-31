@@ -175,6 +175,10 @@ export const auth = {
     get<{ total: number; page: number; limit: number; items: AuthEvent[] }>(
       `/api/auth/events?page=${page}&limit=${limit}`
     ),
+  // Password policy (issue #62) — configurable minimum length
+  getPasswordPolicy: () => get<{ min_length: number }>('/api/auth/password-policy'),
+  updatePasswordPolicy: (min_length: number) =>
+    put<{ min_length: number }>('/api/auth/password-policy', { min_length }),
 }
 
 export interface AuthEvent {
@@ -445,14 +449,20 @@ export const notifications = {
   getConfig: () => get<NotificationConfig>('/api/notifications/config'),
   updateConfig: (data: Partial<NotificationConfig>) =>
     put<NotificationConfig>('/api/notifications/config', data),
-  testEmail: () => post('/api/notifications/test/email'),
-  testTelegram: () => post('/api/notifications/test/telegram'),
-  testSlack: () => post('/api/notifications/test/slack'),
-  testWeeklyDigest: () =>
+  // Test endpoints accept the current (unsaved) form values so "Send Test" exercises
+  // what's on screen rather than the last-saved DB row (issue #62). The backend falls
+  // back to the stored config for any field omitted, and for a masked secret placeholder.
+  testEmail: (data?: Partial<NotificationConfig>) => post('/api/notifications/test/email', data),
+  testTelegram: (data?: Partial<NotificationConfig>) => post('/api/notifications/test/telegram', data),
+  testSlack: (data?: Partial<NotificationConfig>) => post('/api/notifications/test/slack', data),
+  testWeeklyDigest: (data?: Partial<NotificationConfig>) =>
     post<{ detail: string; results: Record<'email' | 'telegram' | 'webhook' | 'slack', string> }>(
-      '/api/notifications/test-weekly-digest'
+      '/api/notifications/test-weekly-digest', data
     ),
-  detectChatId: () => get<{ chats: { id: number; title: string }[] }>('/api/notifications/telegram/detect-chat-id'),
+  detectChatId: (telegram_bot_token?: string) =>
+    get<{ chats: { id: number; title: string }[] }>(
+      `/api/notifications/telegram/detect-chat-id${telegram_bot_token ? `?telegram_bot_token=${encodeURIComponent(telegram_bot_token)}` : ''}`
+    ),
   history: (page = 1, limit = 50) =>
     get<{ total: number; page: number; limit: number; items: NotificationLog[] }>(
       `/api/notifications/history?page=${page}&limit=${limit}`

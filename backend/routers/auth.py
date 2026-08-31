@@ -17,7 +17,7 @@ from backend.auth import (
     verify_password,
 )
 from backend.database import get_db
-from backend.models import ApiToken, AuthEventLog, User
+from backend.models import ApiToken, AppConfig, AuthEventLog, User
 from backend.schemas import ChangePasswordRequest, LoginRequest, UserOut
 from backend.timeutil import utc_iso
 
@@ -26,6 +26,29 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_NAME = "apt_ui_token"
 COOKIE_MAX_AGE = 60 * 60 * 24  # 24 hours
+
+# ---------------------------------------------------------------------------
+# Password policy (issue #62) — configurable minimum length, enforced on
+# create-user, admin reset, and self-service change-password alike. Stored in
+# the generic AppConfig key/value table (same pattern used for jwt_secret /
+# encryption_key) rather than a new column, so there's nothing to migrate.
+# Default stays at the previous hardcoded minimum (4) so existing deployments
+# aren't locked out until an admin deliberately raises it.
+# ---------------------------------------------------------------------------
+PASSWORD_MIN_LENGTH_KEY = "password_min_length"
+DEFAULT_PASSWORD_MIN_LENGTH = 4
+
+
+async def get_password_min_length(db: AsyncSession) -> int:
+    result = await db.execute(select(AppConfig).where(AppConfig.key == PASSWORD_MIN_LENGTH_KEY))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return DEFAULT_PASSWORD_MIN_LENGTH
+    try:
+        return max(1, int(row.value))
+    except (TypeError, ValueError):
+        return DEFAULT_PASSWORD_MIN_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # Brute-force protection (issue #62) — in-memory per (username, ip) tracker.
@@ -235,10 +258,11 @@ async def change_password(
         )
 
     # Same minimum the admin create/reset paths enforce
-    if len(body.new_password) < 4:
+    min_length = await get_password_min_length(db)
+    if len(body.new_password) < min_length:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password must be at least 4 characters",
+            detail=f"Password must be at least {min_length} characters",
         )
 
     # Re-fetch within this session to allow update
@@ -248,6 +272,38 @@ async def change_password(
     await db.commit()
 
     return {"detail": "Password changed successfully"}
+
+
+@router.get("/password-policy")
+async def get_password_policy(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Expose the configured minimum password length so the create-user, admin-reset,
+    and change-password forms can validate client-side before the round trip."""
+    return {"min_length": await get_password_min_length(db)}
+
+
+@router.put("/password-policy")
+async def update_password_policy(
+    body: dict,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    min_length = body.get("min_length")
+    if not isinstance(min_length, int) or isinstance(min_length, bool) or min_length < 1 or min_length > 128:
+        raise HTTPException(status_code=400, detail="min_length must be an integer between 1 and 128")
+
+    result = await db.execute(select(AppConfig).where(AppConfig.key == PASSWORD_MIN_LENGTH_KEY))
+    row = result.scalar_one_or_none()
+    if row is None:
+        db.add(AppConfig(key=PASSWORD_MIN_LENGTH_KEY, value=str(min_length)))
+    else:
+        row.value = str(min_length)
+    await db.commit()
+    await record_auth_event(db, "password_policy_updated", username=current_user.username,
+                            actor=current_user.username, detail=f"min_length={min_length}")
+    return {"min_length": min_length}
 
 
 # ---------------------------------------------------------------------------
@@ -481,8 +537,9 @@ async def create_user(
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password required")
-    if len(password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    min_length = await get_password_min_length(db)
+    if len(password) < min_length:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
     if len(username) > 100:
         raise HTTPException(status_code=400, detail="Username too long")
 
@@ -529,8 +586,9 @@ async def update_user(
 
     # Update password (admin reset)
     if body.get("password"):
-        if len(body["password"]) < 4:
-            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        min_length = await get_password_min_length(db)
+        if len(body["password"]) < min_length:
+            raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
         user.password_hash = hash_password(body["password"])
 
     await db.commit()
