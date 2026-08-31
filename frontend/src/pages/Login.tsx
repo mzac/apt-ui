@@ -3,6 +3,18 @@ import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { auth } from '@/api/client'
 import { useAuthStore } from '@/hooks/useAuth'
 
+// The backend sends a fixed code, never IdP-supplied text — see _SSO_ERROR_CODES
+// in backend/routers/auth.py. The full detail is in the auth event log.
+const SSO_ERROR_MESSAGES: Record<string, string> = {
+  sso_disabled: 'Single sign-on is not enabled on this server.',
+  sso_provider_error: 'The identity provider rejected or cancelled the sign-in.',
+  sso_bad_callback: 'The sign-in response was incomplete. Please try again.',
+  sso_state_invalid: 'This sign-in attempt expired or was already used. Please try again.',
+  sso_token_invalid: 'The identity provider\'s response could not be verified.',
+  sso_account_conflict: 'An account with that username already exists and is not linked to SSO. Ask an administrator to resolve the conflict.',
+  sso_failed: 'Sign-in failed unexpectedly. Please try again or contact an administrator.',
+}
+
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -108,7 +120,7 @@ export default function Login() {
 
           {ssoError && (
             <div className="mb-4 px-3 py-2 bg-red/10 border border-red/30 rounded text-red text-sm">
-              SSO sign-in failed: {ssoError}
+              SSO sign-in failed: {SSO_ERROR_MESSAGES[ssoError] ?? SSO_ERROR_MESSAGES.sso_failed}
             </div>
           )}
 

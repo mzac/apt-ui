@@ -267,16 +267,27 @@ def _safe_next_path(next_param: str | None) -> str:
     return "/"
 
 
-def _login_error_redirect(message: str) -> RedirectResponse:
-    """Bounce back to the login page with an error note.
+# Fixed set of SSO failure codes. The redirect carries only one of these — never
+# IdP-supplied text. Reflecting `error_description` back into the URL put an
+# externally-controlled string into a redirect target (and into the page the
+# browser then renders); percent-encoding made that safe in practice but left a
+# value no part of this system controls flowing to the user. The real detail is
+# recorded in the auth event log, which is where an operator should look.
+_SSO_ERROR_CODES = frozenset({
+    "sso_disabled",
+    "sso_provider_error",
+    "sso_bad_callback",
+    "sso_state_invalid",
+    "sso_token_invalid",
+    "sso_account_conflict",
+    "sso_failed",
+})
 
-    The message can originate from the IdP (`error_description`), so it is
-    length-capped and fully percent-encoded with `safe=""` — the default `quote`
-    leaves `/` untouched, which is exactly the character that lets a value escape
-    the query string into the path.
-    """
-    safe_msg = quote(str(message)[:200], safe="")
-    return RedirectResponse(url=f"/login?sso_error={safe_msg}", status_code=status.HTTP_302_FOUND)
+
+def _login_error_redirect(code: str) -> RedirectResponse:
+    """Bounce back to the login page with a fixed, allow-listed failure code."""
+    safe_code = code if code in _SSO_ERROR_CODES else "sso_failed"
+    return RedirectResponse(url=f"/login?sso_error={safe_code}", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/sso/status")
@@ -295,7 +306,7 @@ async def sso_login(request: Request, next: str | None = Query(default=None)):
         url = await oidc.build_authorization_request(_safe_next_path(next))
     except oidc.OIDCError as exc:
         logger.warning("SSO login start failed: %s", exc)
-        return _login_error_redirect(str(exc))
+        return _login_error_redirect("sso_provider_error")
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
 
 
@@ -313,33 +324,39 @@ async def sso_callback(
 
     ip = _client_ip(request)
 
-    def _fail(message: str) -> RedirectResponse:
-        return _login_error_redirect(message)
+    def _fail(code: str) -> RedirectResponse:
+        return _login_error_redirect(code)
 
     # The IdP itself can redirect back with an error instead of a code (e.g.
     # the user cancelled consent, or access_denied from a policy check).
     if error:
         detail = error_description or error
         await record_auth_event(db, "sso_login_failed", ip=ip, detail=detail, success=False)
-        return _fail(detail)
+        return _fail("sso_provider_error")
 
     if not code or not state:
         await record_auth_event(db, "sso_login_failed", ip=ip, detail="missing code/state", success=False)
-        return _fail("SSO callback was missing required parameters")
+        return _fail("sso_bad_callback")
 
     try:
         pending = oidc.pop_pending(state)
         tokens = await oidc.exchange_code_for_tokens(code, pending.code_verifier)
         claims = await oidc.verify_id_token(tokens["id_token"], pending.nonce)
         user, info = await oidc.provision_or_login_user(db, claims)
+    except oidc.OIDCAccountConflict as exc:
+        # Surfaced distinctly: this is a name collision an admin must resolve,
+        # not a token problem. Full detail goes to the audit log.
+        logger.warning("SSO account conflict: %s", exc)
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=str(exc), success=False)
+        return _fail("sso_account_conflict")
     except oidc.OIDCError as exc:
         logger.warning("SSO login failed: %s", exc)
         await record_auth_event(db, "sso_login_failed", ip=ip, detail=str(exc), success=False)
-        return _fail(str(exc))
+        return _fail("sso_token_invalid")
     except Exception as exc:  # defensive — never leak internals, still audit the failure
         logger.exception("Unexpected SSO login failure")
         await record_auth_event(db, "sso_login_failed", ip=ip, detail="unexpected error", success=False)
-        return _fail("Sign-in failed unexpectedly. Please try again or contact an admin.")
+        return _fail("sso_failed")
 
     if info["created"]:
         await record_auth_event(

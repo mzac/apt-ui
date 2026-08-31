@@ -61,6 +61,14 @@ class OIDCError(Exception):
     """Raised for any SSO flow failure with a message safe to show the user."""
 
 
+class OIDCAccountConflict(OIDCError):
+    """An SSO identity collided with an existing local account.
+
+    Distinct from a generic auth failure so the login page can say *why* — an
+    admin debugging this needs to know it is a name collision, not a bad token.
+    """
+
+
 @dataclass
 class _PendingAuth:
     code_verifier: str
@@ -311,14 +319,14 @@ async def provision_or_login_user(db, claims: dict[str, Any]):
         existing = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
         if existing is not None:
             if existing.auth_provider == "local" and not config.OIDC_LINK_EXISTING_USERS:
-                raise OIDCError(
+                raise OIDCAccountConflict(
                     f"An account named '{username}' already exists and is not linked to SSO. "
                     "Ask an admin to rename the local account, or set "
                     "OIDC_LINK_EXISTING_USERS=true to allow linking by username."
                 )
             if existing.auth_provider == "oidc" and existing.oidc_subject and existing.oidc_subject != subject:
                 # Two different IdP subjects resolved to the same username claim.
-                raise OIDCError(f"Username '{username}' is already linked to a different SSO identity")
+                raise OIDCAccountConflict(f"Username '{username}' is already linked to a different SSO identity")
             user = existing
             user.auth_provider = "oidc"
             user.oidc_subject = subject
