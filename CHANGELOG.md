@@ -4,11 +4,44 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.08.31-02] — 2026-08-31
+
+Completes the enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)) — including the four architectural items that had been deferred — and fixes `.deb` installation, which has been broken at runtime for several releases.
+
+### Fixed
+
+- **Installing a `.deb` failed immediately with a `NameError`.** `ws_install_deb` called `run_command_stream` with neither a module-level nor a local import, so the install WebSocket raised the moment it tried to run anything. Present since at least `2026.07.13-01`, including `2026.08.31-01`. Both the URL-download and pre-uploaded paths are affected; both now work.
+
+### Added
+
+- **Durable, observable staged rollouts.** Ring-by-ring rollouts are now persisted (`rollouts` / `rollout_steps`) and driven by scheduled jobs instead of an in-process `sleep`, which silently dropped every pending ring whenever the container restarted. Startup reconciliation re-arms steps that are still in the future and handles any that came due while the process was down. A new **Rollouts** page shows each ring's status and timing, with admin promote-now / pause / resume / abort. Ring grouping now lives in exactly one place rather than being duplicated between the auto-upgrade job and rolling reboot.
+- **Persistent job control plane.** Long-running fleet operations are recorded as `tasks` rows with progress, an initiator, and a stored transcript, exposed at `/api/tasks` with incremental log tailing and an admin-gated cancel that stops after the in-flight server rather than interrupting a running apt transaction. Work orphaned by a restart is marked **interrupted** — never reported as success.
+- **Reattach to operations already in progress.** The job bell now hydrates from the server on load, so refreshing the page (or opening it on another machine) re-adopts runs that are still executing instead of showing nothing. A log viewer streams a task's stored output from where you left off.
+- **OIDC/OAuth2 single sign-on**, with Authorization Code + PKCE, JWKS-verified ID tokens, just-in-time provisioning that defaults to **read-only**, and group→role mapping re-evaluated at every login so revoking a group in the IdP takes effect at the next sign-in. Local password login always keeps working as break-glass, and SSO stays completely inert unless it is configured. A username collision with an existing **local** account is refused by default rather than silently taking that account over. See the `OIDC_*` variables in the README.
+- **CVE remediation planner, with real severity.** Severity never worked: the USN feed carries only a flat list of CVE ids, so every CVE sat at "unknown" and there was nothing to rank. Severity is now sourced from Ubuntu's security API and cached on the data volume (`CVE_SEVERITY_CACHE_PATH`); that API is rate-limit-prone, so it is fetched in bounded batches, backed off, and degrades to "unknown" rather than failing. On top of that, a per-CVE/USN plan reports which servers are affected, the exact packages that fix them, whether the fix is actually available on each host, and a "remediate everywhere" action that drives the existing selective-upgrade engine — bounded by `upgrade_concurrency`.
+- **Allow-only maintenance windows.** A window can now *invert* its meaning: `deny` (the default) blocks changes while it is open, `allow` permits changes **only** while it is open. A deny window always wins over an overlapping allow window, so an emergency freeze cannot be defeated by adding an allow period. This mode had been documented for some time but never actually existed.
+- **Queue for the next maintenance window** instead of skipping. A window-blocked server can be scheduled for the window's next opening rather than dropped from the run. Opt-in for the unattended auto-upgrade via a new setting; the long-standing skip-and-log behaviour remains the default.
+- **Package version watches.** Watch a package across the fleet and get alerted through the existing notification channels when versions diverge or a new version appears, deduplicated so a persistent state doesn't re-alert every cycle.
+- **Server-side filtered exports** for upgrade history and the SSH audit log, in CSV or Markdown, honouring the active filters and streaming the **full** result set — previous exports were built in the browser from a single page.
+- **Bookmarkable audit views.** The History page's sub-tab, filters and page now live in the URL, so a view can be shared or reloaded without resetting.
+- **Maintenance week-grid preview** — a 7×24 view of every configured window, labelled with the server timezone and highlighting overlaps.
+- **API token scope presets** — one-click *Calendar feed*, *CI read-only* and *Automation* scopes, with an explicit warning that selecting no scopes grants full access.
+
+### Changed
+
+- Password minimum length is now enforced from a single configurable policy across self-service change, admin reset and user creation.
+
+---
+
 ## [2026.08.31-01] — 2026-08-31
 
 **Security release — upgrade promptly if any non-administrator can log in.** Two privilege-escalation holes let *any* authenticated user, including a read-only account, execute arbitrary code as root on every managed host: installing a `.deb` (whose maintainer scripts run as root) and — with `ENABLE_TERMINAL=true` — opening an interactive shell. Neither required administrator rights. Two stored credentials were also exposed. Details in **Security** below.
 
 Also fixes a second GUI flow audit ([#80](https://github.com/mzac/apt-ui/issues/80)) — 47 verified bugs across the React frontend and the backend endpoints behind it, headlined by **every timestamp in the UI being shifted by the viewer's UTC offset** — plus the next tranche of the enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)), including a graceful stop for fleet operations and apt-repo edit safety rails.
+
+### Build
+
+- **Release images build ~10x faster from a cold cache.** The frontend stage had no `--platform` pin, so buildx rebuilt the React bundle once per target architecture — running the whole `npm ci` + vite build under QEMU emulation for `linux/arm64`. A warm buildx layer cache hid this (releases took ~4 minutes), but GitHub evicts Actions caches after 7 days, so the first release cut more than a week after the previous one took over an hour. The stage is now pinned to `$BUILDPLATFORM`; the bundle is architecture-independent and is built once, natively, then copied into each per-arch image.
 
 ### Security
 
