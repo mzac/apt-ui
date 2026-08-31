@@ -20,6 +20,38 @@ export interface DpkgLogEntry {
   new_version: string
 }
 
+// Persistent job / control-plane Task (issue #62) — backend/routers/tasks.py.
+// `task_type` is a free-form string (upgrade / upgrade_all / reboot_all /
+// autoremove_all today; the model docstring reserves check_all / template_apply
+// for later), so it's typed loosely rather than as a union — render it
+// defensively (fall back to the raw string) rather than assuming a closed set.
+export interface Task {
+  id: number
+  task_type: string
+  status: 'queued' | 'running' | 'success' | 'error' | 'cancelled' | 'interrupted'
+  server_id: number | null
+  server_name: string | null
+  rollout_id: number | null
+  label: string | null
+  initiated_by: string | null
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  progress_done: number
+  progress_total: number
+  detail: string | null
+  cancel_requested: boolean
+}
+
+// GET /api/tasks/{id} shape: the base Task plus an incremental log slice —
+// `log` is only the new text since the `log_offset` that was requested, and
+// `log_next_offset` is the offset to pass next time to fetch just the delta.
+export interface TaskDetail extends Task {
+  log: string
+  log_length: number
+  log_next_offset: number
+}
+
 // ---------------------------------------------------------------------------
 // Core fetch wrapper
 // ---------------------------------------------------------------------------
@@ -619,6 +651,29 @@ export const sshAudit = {
       `/api/servers/audit-log${q.toString() ? '?' + q : ''}`
     )
   },
+}
+
+// ---------------------------------------------------------------------------
+// Persistent task queue / reattach-to-in-flight-operations (issue #62)
+// ---------------------------------------------------------------------------
+
+export const tasks = {
+  list: (params?: { status?: string; task_type?: string; server_id?: number; page?: number; per_page?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.task_type) q.set('task_type', params.task_type)
+    if (params?.server_id != null) q.set('server_id', String(params.server_id))
+    if (params?.page) q.set('page', String(params.page))
+    if (params?.per_page) q.set('per_page', String(params.per_page))
+    return get<{ total: number; page: number; per_page: number; items: Task[] }>(
+      `/api/tasks${q.toString() ? '?' + q : ''}`
+    )
+  },
+  // `log_offset` defaults to 0 (full transcript); pass the previous response's
+  // `log_next_offset` to fetch only what's new since then.
+  get: (id: number, logOffset = 0) =>
+    get<TaskDetail>(`/api/tasks/${id}?log_offset=${logOffset}`),
+  cancel: (id: number) => post<Task>(`/api/tasks/${id}/cancel`),
 }
 
 export const aptcache = {
