@@ -264,6 +264,16 @@ async def _send_event_notifications():
             await notify_security_updates_found(cfg, db)
             await notify_reboot_required(cfg, db)
 
+        # Package version watches (issue #62) — evaluated off the cached check data
+        # written moments ago, so this adds no SSH round-trips. Isolated in its own
+        # try/except: a watch failure must not suppress the security/reboot alerts
+        # above, which are the higher-priority notifications.
+        try:
+            from backend.package_watch import evaluate_package_watches
+            await evaluate_package_watches(db)
+        except Exception:
+            logger.exception("Package watch evaluation failed")
+
 
 async def _send_daily_summary():
     from backend.database import AsyncSessionLocal

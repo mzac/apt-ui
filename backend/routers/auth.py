@@ -1,13 +1,16 @@
 import logging
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import bcrypt
 
+from backend import oidc
 from backend.auth import (
     create_access_token,
     generate_api_token,
@@ -236,6 +239,108 @@ async def login(
 async def logout(response: Response):
     response.delete_cookie(key=COOKIE_NAME)
     return {"detail": "Logged out"}
+
+
+# ---------------------------------------------------------------------------
+# OIDC / OAuth2 SSO (issue #62) — entirely optional; see backend/oidc.py for
+# the protocol implementation and backend/config.py for the env vars. Local
+# password login (above) is untouched and remains the break-glass path if
+# SSO is enabled but misconfigured.
+# ---------------------------------------------------------------------------
+
+def _safe_next_path(next_param: str | None) -> str:
+    """Only accept a same-origin absolute path (no `//host` / `/\\host` open
+    redirect) — mirrors the ?next= handling in frontend/src/pages/Login.tsx."""
+    import re
+    if next_param and re.match(r"^/(?![/\\])", next_param):
+        return next_param
+    return "/"
+
+
+@router.get("/sso/status")
+async def sso_status():
+    """Public — reports ONLY whether SSO is configured/enabled, never any
+    secret or config detail, so the login page can decide whether to show
+    the SSO button before the user has authenticated."""
+    return {"enabled": oidc.is_enabled()}
+
+
+@router.get("/sso/login")
+async def sso_login(request: Request, next: str | None = Query(default=None)):
+    if not oidc.is_enabled():
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+    try:
+        url = await oidc.build_authorization_request(_safe_next_path(next))
+    except oidc.OIDCError as exc:
+        logger.warning("SSO login start failed: %s", exc)
+        return RedirectResponse(url=f"/login?sso_error={quote(str(exc))}", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/sso/callback")
+async def sso_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+):
+    if not oidc.is_enabled():
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+
+    ip = _client_ip(request)
+
+    def _fail(message: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/login?sso_error={quote(message)}", status_code=status.HTTP_302_FOUND)
+
+    # The IdP itself can redirect back with an error instead of a code (e.g.
+    # the user cancelled consent, or access_denied from a policy check).
+    if error:
+        detail = error_description or error
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=detail, success=False)
+        return _fail(detail)
+
+    if not code or not state:
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail="missing code/state", success=False)
+        return _fail("SSO callback was missing required parameters")
+
+    try:
+        pending = oidc.pop_pending(state)
+        tokens = await oidc.exchange_code_for_tokens(code, pending.code_verifier)
+        claims = await oidc.verify_id_token(tokens["id_token"], pending.nonce)
+        user, info = await oidc.provision_or_login_user(db, claims)
+    except oidc.OIDCError as exc:
+        logger.warning("SSO login failed: %s", exc)
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail=str(exc), success=False)
+        return _fail(str(exc))
+    except Exception as exc:  # defensive — never leak internals, still audit the failure
+        logger.exception("Unexpected SSO login failure")
+        await record_auth_event(db, "sso_login_failed", ip=ip, detail="unexpected error", success=False)
+        return _fail("Sign-in failed unexpectedly. Please try again or contact an admin.")
+
+    if info["created"]:
+        await record_auth_event(
+            db, "sso_provisioned", username=info["username"], ip=ip,
+            detail="admin" if info["is_admin"] else "user", success=True,
+        )
+    elif info["role_changed"]:
+        await record_auth_event(
+            db, "sso_role_change", username=info["username"], ip=ip,
+            detail=f"is_admin={info['is_admin']} (group mapping)", success=True,
+        )
+    await record_auth_event(db, "sso_login", username=info["username"], ip=ip, success=True)
+
+    token = create_access_token(user.username)
+    redirect = RedirectResponse(url=pending.next_path, status_code=status.HTTP_302_FOUND)
+    redirect.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=COOKIE_MAX_AGE,
+    )
+    return redirect
 
 
 @router.get("/me", response_model=UserOut)

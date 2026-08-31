@@ -131,6 +131,13 @@ async def lifespan(app: FastAPI):
     await seed_defaults()
     await warn_unreadable_ssh_keys()
 
+    # Any Task still marked running/queued belongs to a process that is gone —
+    # mark it interrupted before the scheduler starts creating new ones (issue #62).
+    from backend.task_queue import reconcile_interrupted_tasks
+    interrupted = await reconcile_interrupted_tasks()
+    if interrupted:
+        logger.warning("Marked %d task(s) as interrupted after restart", interrupted)
+
     from backend.scheduler import start_scheduler, stop_scheduler
     await start_scheduler()
 
@@ -166,6 +173,8 @@ from backend.routers import reports as reports_router
 from backend.routers import calendar as calendar_router
 from backend.routers import security as security_router
 from backend.routers import api_v1 as api_v1_router
+from backend.routers import tasks as tasks_router
+from backend.routers import exports as exports_router
 
 app.include_router(auth_router.router)
 app.include_router(servers_router.router)
@@ -191,6 +200,8 @@ app.include_router(reports_router.router)
 app.include_router(calendar_router.router)
 app.include_router(security_router.router)
 app.include_router(api_v1_router.router)
+app.include_router(tasks_router.router)
+app.include_router(exports_router.router)
 
 
 @app.get("/api/config/features")

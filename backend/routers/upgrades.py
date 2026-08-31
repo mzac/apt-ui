@@ -23,6 +23,7 @@ from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
 from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
 from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
+from backend import task_queue
 
 router = APIRouter(tags=["upgrades"])
 
@@ -615,18 +616,61 @@ async def start_upgrade(
     server_id: int,
     body: UpgradeRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     server = await _get_server(server_id, db)
     cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = cfg_res.scalar_one_or_none()
     run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
-    # Fire and forget — client connects via WebSocket for live output
-    asyncio.create_task(
-        upgrade_server(server, db, action=body.action, allow_phased=body.allow_phased,
-                       conffile_action=body.conffile_action, run_apt_update=run_apt_update)
+
+    # Task row (issue #62) — this endpoint is fire-and-forget with no attached
+    # WebSocket, so without a Task there was previously no durable record at all
+    # of "an upgrade is running" between the 202-style response and the next
+    # history poll. actor/username captured now, before the background task runs.
+    task = await task_queue.create_task(
+        db, "upgrade", server_id=server_id,
+        label=f"Upgrade {server.name} ({body.action})",
+        initiated_by=user.username, progress_total=1,
     )
-    return {"detail": "Upgrade started", "server_id": server_id}
+    task_id = task.id
+    actor = user.username
+    server_name = server.name
+
+    async def _run():
+        set_actor(actor)
+        async with AsyncSessionLocal() as tdb:
+            await task_queue.start_task(tdb, task_id)
+        try:
+            # Fresh session — the request-scoped `db` above closes once this
+            # endpoint returns, before this background task gets to run it.
+            async with AsyncSessionLocal() as udb:
+                srv = await udb.get(Server, server_id)
+                if srv is None:
+                    async with AsyncSessionLocal() as tdb2:
+                        await task_queue.finish_task(tdb2, task_id, "error", detail="Server not found")
+                    return
+                history = await upgrade_server(
+                    srv, udb, action=body.action, allow_phased=body.allow_phased,
+                    conffile_action=body.conffile_action, run_apt_update=run_apt_update,
+                )
+            async with AsyncSessionLocal() as tdb2:
+                if history.log_output:
+                    await task_queue.append_task_log(tdb2, task_id, history.log_output)
+                await task_queue.update_task_progress(tdb2, task_id, done=1)
+                final_status = "success" if history.status == "success" else "error"
+                await task_queue.finish_task(
+                    tdb2, task_id, final_status,
+                    detail=None if final_status == "success" else f"Upgrade failed on {server_name} — see log",
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Background upgrade task %d failed", task_id)
+            async with AsyncSessionLocal() as tdb2:
+                await task_queue.finish_task(tdb2, task_id, "error", detail=str(exc))
+
+    # Fire and forget — client connects via WebSocket for live output; the Task
+    # row is the durable fallback for a client that reloads instead.
+    asyncio.create_task(_run())
+    return {"detail": "Upgrade started", "server_id": server_id, "task_id": task_id}
 
 
 @router.post("/api/servers/upgrade-all")
@@ -722,16 +766,33 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         cfg = cfg_res.scalar_one_or_none()
         run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
+        # Task row (issue #62) — durable record of this run so a client that
+        # reloads mid-upgrade can re-attach via GET /api/tasks/{id} instead of
+        # only ever seeing "stream ended" on the dropped socket.
+        task = await task_queue.create_task(
+            db, "upgrade", server_id=server_id,
+            label=f"Upgrade {server.name} ({action})",
+            initiated_by=user.username, progress_total=1,
+        )
+        task_id = task.id
+        await task_queue.start_task(db, task_id)
+
+        await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
         await websocket.send_json({"type": "status", "data": "connecting"})
 
+        log_writer = task_queue.TaskLogWriter(task_id)
+        log_writer.start()
+
         async def send_fn(msg: dict):
+            log_writer.write(task_queue.format_task_log_line(msg))
             try:
                 await websocket.send_json(msg)
             except Exception:
                 pass
 
+        history = None
         try:
-            await upgrade_server(
+            history = await upgrade_server(
                 server, db,
                 action=action,
                 allow_phased=allow_phased,
@@ -745,6 +806,14 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         except Exception as exc:
             await send_fn({"type": "error", "data": str(exc)})
         finally:
+            await log_writer.close()
+            final_status = "success" if history is not None and history.status == "success" else "error"
+            final_detail = None if final_status == "success" else (
+                "Client disconnected before the upgrade finished" if history is None else "Upgrade failed — see log"
+            )
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.update_task_progress(tdb, task_id, done=1)
+                await task_queue.finish_task(tdb, task_id, final_status, detail=final_detail)
             try:
                 await websocket.close()
             except Exception:
@@ -910,8 +979,22 @@ async def ws_upgrade_all(websocket: WebSocket):
                 continue
             to_upgrade.append(s)
 
+        # Task row (issue #62) — durable record of this fleet run, independent of
+        # the WebSocket. Created with the final to_upgrade count as progress_total
+        # so a reconnecting client can compute "N of M done" from GET /api/tasks/{id}.
+        task = await task_queue.create_task(
+            db, "upgrade_all", label=f"Upgrade fleet ({action})",
+            initiated_by=user.username, progress_total=len(to_upgrade),
+        )
+        task_id = task.id
+        await task_queue.start_task(db, task_id)
+
+    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+
     semaphore = asyncio.Semaphore(concurrency)
     histories: list = []
+    log_writer = task_queue.TaskLogWriter(task_id)
+    log_writer.start()
 
     # Graceful stop (issue #62). The client can send {"action":"cancel"} at any
     # point over this same socket. Semantics: stop after the in-flight server
@@ -925,6 +1008,13 @@ async def ws_upgrade_all(websocket: WebSocket):
     # not-yet-started work to skip itself.
     cancel_event = asyncio.Event()
     cancel_actor = user.username
+
+    async def _mark_task_cancel_requested():
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.request_cancel(tdb, task_id)
+        except Exception:
+            pass
 
     async def _listen_for_cancel():
         try:
@@ -940,6 +1030,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                         "Upgrade-all cancelled by %s (%d server(s) targeted)",
                         cancel_actor, len(to_upgrade),
                     )
+                    asyncio.create_task(_mark_task_cancel_requested())
                     try:
                         await websocket.send_json({"type": "status", "data": "cancelling"})
                     except Exception:
@@ -950,6 +1041,9 @@ async def ws_upgrade_all(websocket: WebSocket):
             pass
 
     listener_task = asyncio.create_task(_listen_for_cancel())
+    # Also honor POST /api/tasks/{id}/cancel from a client that no longer holds
+    # this socket (e.g. it reloaded and re-attached by task id) — same cancel_event.
+    cancel_watcher = task_queue.watch_task_cancel(task_id, cancel_event)
 
     async def _do_tracked(server: Server):
         async with semaphore:
@@ -960,6 +1054,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                 async def send_fn(msg: dict):
                     msg["server_id"] = server.id
                     msg["server_name"] = server.name
+                    log_writer.write(task_queue.format_task_log_line(msg))
                     try:
                         await websocket.send_json(msg)
                     except Exception:
@@ -976,6 +1071,11 @@ async def ws_upgrade_all(websocket: WebSocket):
                     reboot_if_required=reboot_if_required,
                 )
                 histories.append((server, h))
+                try:
+                    async with AsyncSessionLocal() as pdb:
+                        await task_queue.increment_task_progress(pdb, task_id)
+                except Exception:
+                    pass
 
     try:
         await asyncio.gather(*[_do_tracked(s) for s in to_upgrade], return_exceptions=True)
@@ -983,8 +1083,13 @@ async def ws_upgrade_all(websocket: WebSocket):
         pass
     finally:
         listener_task.cancel()
+        cancel_watcher.cancel()
         try:
             await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await cancel_watcher
         except (asyncio.CancelledError, Exception):
             pass
         if cancel_event.is_set():
@@ -994,6 +1099,29 @@ async def ws_upgrade_all(websocket: WebSocket):
                 await websocket.send_json({"type": "complete", "data": {"cancelled": True}})
             except Exception:
                 pass
+
+        # Task row terminal status (issue #62) — mirrors the histories list
+        # already built up for the summary notification below.
+        await log_writer.close()
+        success_count = sum(1 for _, h in histories if h.status == "success")
+        error_count = sum(1 for _, h in histories if h.status == "error")
+        skipped_count = max(0, len(to_upgrade) - len(histories))
+        if cancel_event.is_set():
+            task_final_status = "cancelled"
+        elif error_count > 0:
+            task_final_status = "error"
+        else:
+            task_final_status = "success"
+        task_detail = (
+            f"{success_count} succeeded, {error_count} failed, {skipped_count} skipped "
+            f"(of {len(to_upgrade)} targeted)"
+        )
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.finish_task(tdb, task_id, task_final_status, detail=task_detail)
+        except Exception:
+            logging.getLogger(__name__).warning("Could not finalize task %s for upgrade-all", task_id)
+
         # Send one summary email/telegram for the whole batch
         try:
             from backend.models import NotificationConfig
@@ -1427,7 +1555,20 @@ async def ws_autoremove_all(websocket: WebSocket):
             if chk and (chk.autoremove_count or 0) > 0:
                 to_clean.append(s)
 
+        # Task row (issue #62) — durable record of this fleet run.
+        task = await task_queue.create_task(
+            db, "autoremove_all", label="Autoremove fleet",
+            initiated_by=user.username, progress_total=len(to_clean),
+        )
+        task_id = task.id
+        await task_queue.start_task(db, task_id)
+
+    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
+
     semaphore = asyncio.Semaphore(concurrency)
+    log_writer = task_queue.TaskLogWriter(task_id)
+    log_writer.start()
+    histories: list = []
 
     # Graceful stop (issue #62) — same pattern as ws_upgrade_all: a server task
     # only checks cancel_event right after acquiring the semaphore, before
@@ -1448,6 +1589,13 @@ async def ws_autoremove_all(websocket: WebSocket):
         except Exception:
             pass
 
+    async def _mark_task_cancel_requested():
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.request_cancel(tdb, task_id)
+        except Exception:
+            pass
+
     async def _listen_for_cancel():
         try:
             while True:
@@ -1462,6 +1610,7 @@ async def ws_autoremove_all(websocket: WebSocket):
                         "Autoremove-all cancelled by %s (%d server(s) targeted)",
                         cancel_actor, len(to_clean),
                     )
+                    asyncio.create_task(_mark_task_cancel_requested())
                     try:
                         await websocket.send_json({"type": "status", "data": "cancelling"})
                     except Exception:
@@ -1472,6 +1621,7 @@ async def ws_autoremove_all(websocket: WebSocket):
             pass
 
     listener_task = asyncio.create_task(_listen_for_cancel())
+    cancel_watcher = task_queue.watch_task_cancel(task_id, cancel_event)
 
     async def _do(server: Server):
         async with semaphore:
@@ -1482,13 +1632,20 @@ async def ws_autoremove_all(websocket: WebSocket):
                 async def send_fn(msg: dict):
                     msg["server_id"] = server.id
                     msg["server_name"] = server.name
+                    log_writer.write(task_queue.format_task_log_line(msg))
                     try:
                         await websocket.send_json(msg)
                     except Exception:
                         pass
 
                 from backend.upgrade_manager import run_autoremove
-                await run_autoremove(server, session, packages=None, send_fn=send_fn)
+                h = await run_autoremove(server, session, packages=None, send_fn=send_fn)
+                histories.append((server, h))
+                try:
+                    async with AsyncSessionLocal() as pdb:
+                        await task_queue.increment_task_progress(pdb, task_id)
+                except Exception:
+                    pass
 
     try:
         await asyncio.gather(*[_do(s) for s in to_clean])
@@ -1496,8 +1653,13 @@ async def ws_autoremove_all(websocket: WebSocket):
         pass
     finally:
         listener_task.cancel()
+        cancel_watcher.cancel()
         try:
             await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await cancel_watcher
         except (asyncio.CancelledError, Exception):
             pass
         if cancel_event.is_set():
@@ -1505,6 +1667,27 @@ async def ws_autoremove_all(websocket: WebSocket):
                 await websocket.send_json({"type": "complete", "data": {"cancelled": True}})
             except Exception:
                 pass
+
+        await log_writer.close()
+        success_count = sum(1 for _, h in histories if h.status == "success")
+        error_count = sum(1 for _, h in histories if h.status == "error")
+        skipped_count = max(0, len(to_clean) - len(histories))
+        if cancel_event.is_set():
+            task_final_status = "cancelled"
+        elif error_count > 0:
+            task_final_status = "error"
+        else:
+            task_final_status = "success"
+        task_detail = (
+            f"{success_count} succeeded, {error_count} failed, {skipped_count} skipped "
+            f"(of {len(to_clean)} targeted)"
+        )
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.finish_task(tdb, task_id, task_final_status, detail=task_detail)
+        except Exception:
+            logging.getLogger(__name__).warning("Could not finalize task %s for autoremove-all", task_id)
+
         try:
             await websocket.close()
         except Exception:
@@ -1655,13 +1838,27 @@ async def ws_reboot_all(websocket: WebSocket):
 
         rings = await _group_servers_by_ring(servers, db)
 
+        # Task row (issue #62) — durable record of this rolling reboot.
+        task = await task_queue.create_task(
+            db, "reboot_all", label="Rolling reboot",
+            initiated_by=user.username, progress_total=len(servers),
+        )
+        task_id = task.id
+        await task_queue.start_task(db, task_id)
+
     ring_names = sorted(rings.keys())
+    log_writer = task_queue.TaskLogWriter(task_id)
+    log_writer.start()
+    done_count = 0
 
     async def send(msg: dict):
+        log_writer.write(task_queue.format_task_log_line(msg))
         try:
             await websocket.send_json(msg)
         except Exception:
             pass
+
+    await websocket.send_json({"type": "task", "data": {"task_id": task_id}})
 
     # Graceful stop (issue #62). Reuses the existing ring-failure abort path
     # (aborted flag / "abort" message) rather than adding a parallel one — a
@@ -1674,6 +1871,13 @@ async def ws_reboot_all(websocket: WebSocket):
     # aborts in-flight work.
     cancel_event = asyncio.Event()
     cancel_actor = user.username
+
+    async def _mark_task_cancel_requested():
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.request_cancel(tdb, task_id)
+        except Exception:
+            pass
 
     async def _listen_for_cancel():
         try:
@@ -1689,6 +1893,7 @@ async def ws_reboot_all(websocket: WebSocket):
                         "Rolling reboot cancelled by %s (%d server(s) targeted)",
                         cancel_actor, len(servers),
                     )
+                    asyncio.create_task(_mark_task_cancel_requested())
                     try:
                         await websocket.send_json({"type": "status", "data": "cancelling"})
                     except Exception:
@@ -1699,6 +1904,7 @@ async def ws_reboot_all(websocket: WebSocket):
             pass
 
     listener_task = asyncio.create_task(_listen_for_cancel())
+    cancel_watcher = task_queue.watch_task_cancel(task_id, cancel_event)
 
     await send({
         "type": "plan",
@@ -1714,6 +1920,7 @@ async def ws_reboot_all(websocket: WebSocket):
     })
 
     aborted = False
+    abort_reason: str | None = None
 
     async def _reboot_one(server: Server):
         """Trigger reboot via SSH and stream the per-server phases."""
@@ -1799,6 +2006,7 @@ async def ws_reboot_all(websocket: WebSocket):
                 break
             if cancel_event.is_set():
                 aborted = True
+                abort_reason = "cancelled"
                 await send({"type": "abort", "data": {"ring": ring_name, "reason": "cancelled"}})
                 break
             ring_servers = rings[ring_name]
@@ -1815,6 +2023,7 @@ async def ws_reboot_all(websocket: WebSocket):
                     break
                 if cancel_event.is_set():
                     aborted = True
+                    abort_reason = "cancelled"
                     await send({"type": "abort", "data": {"ring": ring_name, "reason": "cancelled"}})
                     break
                 batch = ring_servers[batch_start:batch_start + batch_size]
@@ -1831,13 +2040,20 @@ async def ws_reboot_all(websocket: WebSocket):
                 # Inspect update_history for errors on the just-rebooted servers
                 history_failed = await _check_recent_history_errors([s.id for s in batch])
 
+                done_count += len(batch)
+                try:
+                    async with AsyncSessionLocal() as pdb:
+                        await task_queue.update_task_progress(pdb, task_id, done=done_count)
+                except Exception:
+                    pass
+
                 if batch_failed or history_failed:
-                    await send({"type": "abort", "data": {
-                        "ring": ring_name,
-                        "reason": "history_errors" if history_failed and not batch_failed
-                                  else ("reboot_timeout" if batch_failed and not history_failed
-                                        else "reboot_timeout_and_history_errors"),
-                    }})
+                    abort_reason = (
+                        "history_errors" if history_failed and not batch_failed
+                        else ("reboot_timeout" if batch_failed and not history_failed
+                              else "reboot_timeout_and_history_errors")
+                    )
+                    await send({"type": "abort", "data": {"ring": ring_name, "reason": abort_reason}})
                     aborted = True
                     break
 
@@ -1866,15 +2082,41 @@ async def ws_reboot_all(websocket: WebSocket):
         await send({"type": "complete", "data": {"success": not aborted, "aborted": aborted}})
 
     except WebSocketDisconnect:
-        pass
+        aborted = True
+        abort_reason = abort_reason or "disconnected"
     except Exception as exc:
+        aborted = True
+        abort_reason = abort_reason or "error"
         await send({"type": "error", "data": str(exc)})
     finally:
         listener_task.cancel()
+        cancel_watcher.cancel()
         try:
             await listener_task
         except (asyncio.CancelledError, Exception):
             pass
+        try:
+            await cancel_watcher
+        except (asyncio.CancelledError, Exception):
+            pass
+
+        await log_writer.close()
+        if abort_reason == "cancelled":
+            task_final_status = "cancelled"
+        elif aborted:
+            task_final_status = "error"
+        else:
+            task_final_status = "success"
+        task_detail = (
+            f"Completed {done_count} of {len(servers)} targeted server(s)"
+            if not aborted else f"Aborted ({abort_reason}) after {done_count} of {len(servers)} server(s)"
+        )
+        try:
+            async with AsyncSessionLocal() as tdb:
+                await task_queue.finish_task(tdb, task_id, task_final_status, detail=task_detail)
+        except Exception:
+            logger_local.warning("Could not finalize task %s for reboot-all", task_id)
+
         try:
             await websocket.close()
         except Exception:
@@ -2054,6 +2296,8 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
         source = params.get("source", "url")  # "url" | "remote"
 
         try:
+            from backend.ssh_manager import run_command_stream
+
             if source == "url":
                 url = params.get("url", "").strip()
                 if not url.lower().startswith(("http://", "https://")):
