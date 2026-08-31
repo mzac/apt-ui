@@ -273,7 +273,9 @@ function NotificationHistory() {
         <span className="text-sm text-text-muted font-mono">{total} total entries</span>
       </div>
 
-      {loading ? (
+      {error ? (
+        <LoadError message={error} onRetry={() => setReload(n => n + 1)} />
+      ) : loading ? (
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-text-muted text-sm">No notifications sent yet.</div>
@@ -365,6 +367,8 @@ function SshAuditHistory() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
   const [serverList, setServerList] = useState<Server[]>([])
   const [filterServerId, setFilterServerId] = useState<number | undefined>(undefined)
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -374,13 +378,29 @@ function SshAuditHistory() {
     serversApi.list().then(setServerList).catch(() => {})
   }, [])
 
+  // `cancelled` guards against an out-of-order response (see UpdateHistory above) —
+  // otherwise a slow page N response could land after a faster page N+1 one and
+  // paint stale rows under the new page number, or an error could leave the old
+  // page's rows on screen with no indication anything failed.
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
+    setError(null)
     sshAuditApi.list({ server_id: filterServerId, page, limit })
-      .then(r => { setItems(r.items); setTotal(r.total) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [page, filterServerId])
+      .then(r => {
+        if (cancelled) return
+        setItems(r.items)
+        setTotal(r.total)
+      })
+      .catch(e => {
+        if (cancelled) return
+        setItems([])
+        setTotal(0)
+        setError(errMsg(e, 'Failed to load SSH audit log'))
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [page, filterServerId, reload])
 
   const totalPages = Math.ceil(total / limit)
 
@@ -398,7 +418,9 @@ function SshAuditHistory() {
         </select>
       </div>
 
-      {loading ? (
+      {error ? (
+        <LoadError message={error} onRetry={() => setReload(n => n + 1)} />
+      ) : loading ? (
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-text-muted text-sm">No SSH commands recorded yet.</div>
@@ -417,9 +439,8 @@ function SshAuditHistory() {
               </thead>
               <tbody className="divide-y divide-border/30">
                 {items.map(entry => (
-                  <>
+                  <Fragment key={entry.id}>
                     <tr
-                      key={entry.id}
                       className="hover:bg-surface/50 cursor-pointer"
                       onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
                     >
@@ -437,17 +458,23 @@ function SshAuditHistory() {
                       </td>
                       <td className="px-3 py-1.5 text-text-muted">{entry.duration_ms != null ? `${entry.duration_ms} ms` : '—'}</td>
                     </tr>
-                    {expanded === entry.id && entry.output_excerpt && (
+                    {expanded === entry.id && (
                       <tr className="border-b border-border bg-bg">
                         <td colSpan={5} className="px-3 py-2">
-                          <p className="text-text-muted text-[10px] uppercase tracking-wide mb-1">Output (first 4 KB)</p>
-                          <pre className="bg-bg/50 rounded p-2 text-[11px] text-text-primary overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto">
-                            {entry.output_excerpt}
-                          </pre>
+                          {entry.output_excerpt ? (
+                            <>
+                              <p className="text-text-muted text-[10px] uppercase tracking-wide mb-1">Output (first 4 KB)</p>
+                              <pre className="bg-bg/50 rounded p-2 text-[11px] text-text-primary overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto">
+                                {entry.output_excerpt}
+                              </pre>
+                            </>
+                          ) : (
+                            <p className="text-text-muted text-xs">No output captured.</p>
+                          )}
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -489,22 +516,41 @@ function AuthEventsHistory() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
   const limit = 100
 
+  // See UpdateHistory above: `cancelled` avoids an out-of-order response
+  // painting stale rows under a since-changed page, and a failed load clears
+  // the old rows instead of leaving them displayed under the new page number.
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
+    setError(null)
     authApi.events(page, limit)
-      .then(r => { setItems(r.items); setTotal(r.total) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [page])
+      .then(r => {
+        if (cancelled) return
+        setItems(r.items)
+        setTotal(r.total)
+      })
+      .catch(e => {
+        if (cancelled) return
+        setItems([])
+        setTotal(0)
+        setError(errMsg(e, 'Failed to load auth events'))
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [page, reload])
 
   const totalPages = Math.ceil(total / limit)
 
   return (
     <div className="space-y-4">
       <span className="text-sm text-text-muted font-mono">{total} events</span>
-      {loading ? (
+      {error ? (
+        <LoadError message={error} onRetry={() => setReload(n => n + 1)} />
+      ) : loading ? (
         <div className="text-center py-12 text-text-muted text-sm">Loading…</div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-text-muted text-sm">No auth events recorded yet.</div>
