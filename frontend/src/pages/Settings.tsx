@@ -28,6 +28,36 @@ function pickDistinctColor(existingColors: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Unsaved-changes guard
+//
+// Tab panels are conditionally rendered, so switching tabs unmounts the active
+// form. Without a guard a half-edited Schedule / Notifications / server row was
+// discarded with no warning — including when a command-palette deep link rewrote
+// ?tab= from outside. Each editable section registers its own dirty flag here;
+// the tab switch and the beforeunload handler consult the registry.
+// ---------------------------------------------------------------------------
+const dirtySections = new Map<string, boolean>()
+
+function useDirtyGuard(key: string, dirty: boolean) {
+  useEffect(() => {
+    dirtySections.set(key, dirty)
+    return () => { dirtySections.delete(key) }
+  }, [key, dirty])
+}
+
+function hasUnsavedChanges(): boolean {
+  for (const dirty of dirtySections.values()) if (dirty) return true
+  return false
+}
+
+/** Shallow "differs from what the server gave us" check for the `form` vs `cfg`
+ *  pattern shared by the Schedule / Preferences / Notifications tabs. */
+function formDiffers<T extends object>(base: T | null, form: Partial<T>): boolean {
+  if (!base) return false
+  return (Object.keys(form) as (keyof T)[]).some(k => form[k] !== base[k])
+}
+
+// ---------------------------------------------------------------------------
 // Main Settings page
 // ---------------------------------------------------------------------------
 export default function Settings() {
@@ -38,20 +68,60 @@ export default function Settings() {
   // navigate() to /settings?tab=Users while already on /settings left the tab stuck.
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
-  const tab: Tab = (tabParam && (TABS as readonly string[]).includes(tabParam)) ? (tabParam as Tab) : 'Servers'
-  const setTab = (t: Tab) => {
+  const urlTab: Tab = (tabParam && (TABS as readonly string[]).includes(tabParam)) ? (tabParam as Tab) : 'Servers'
+
+  // The rendered tab trails the URL by one confirmation: when the current tab has
+  // unsaved edits we ask before discarding them and put the URL back if the user
+  // declines. Routing every switch through the URL means the tab bar and an
+  // external ?tab= change share one guard.
+  const [tab, setTab] = useState<Tab>(urlTab)
+
+  const applyTabToUrl = useCallback((t: Tab) => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
       next.set('tab', t)
       return next
     }, { replace: true })
-  }
+  }, [setSearchParams])
+
+  useEffect(() => {
+    if (urlTab === tab) return
+    if (!hasUnsavedChanges()) { setTab(urlTab); return }
+    let cancelled = false
+    confirmDialog({
+      title: 'Discard unsaved changes?',
+      message: 'This tab has changes you have not saved. Leaving it discards them.',
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep editing',
+      danger: true,
+    }).then(ok => {
+      if (cancelled) return
+      if (ok) setTab(urlTab)
+      else applyTabToUrl(tab)
+    })
+    return () => { cancelled = true }
+  }, [urlTab, tab, applyTabToUrl])
+
+  // Browser close / reload — the only discard path an in-app confirm can't cover.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges()) return
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
 
   // Hide admin-only tabs for read-only users
   const visibleTabs = TABS.filter(t => {
     if (t === 'Users' && !user?.is_admin) return false
     return true
   })
+
+  // An admin can demote themselves out of the Users tab — fall back instead of
+  // rendering an empty page.
+  const activeTab: Tab = visibleTabs.includes(tab) ? tab : 'Servers'
 
   return (
     <div className="max-w-5xl mx-auto">
@@ -60,9 +130,9 @@ export default function Settings() {
         {visibleTabs.map(t => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => applyTabToUrl(t)}
             className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 ${
-              tab === t
+              activeTab === t
                 ? 'border-green text-text-primary'
                 : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
@@ -72,20 +142,20 @@ export default function Settings() {
         ))}
       </div>
 
-      {tab === 'Servers' && <ServersTab />}
-      {tab === 'Schedule' && (
+      {activeTab === 'Servers' && <ServersTab />}
+      {activeTab === 'Schedule' && (
         <div className="space-y-6">
           <ScheduleTab />
           <MaintenanceWindowsSection />
           <UpgradeHooksSection />
         </div>
       )}
-      {tab === 'Preferences' && <PreferencesTab />}
-      {tab === 'Notifications' && <NotificationsTab />}
-      {tab === 'Infrastructure' && <InfrastructureTab />}
-      {tab === 'Users' && <UsersTab />}
-      {tab === 'Account' && <AccountTab />}
-      {tab === 'Backup' && <BackupTab />}
+      {activeTab === 'Preferences' && <PreferencesTab />}
+      {activeTab === 'Notifications' && <NotificationsTab />}
+      {activeTab === 'Infrastructure' && <InfrastructureTab />}
+      {activeTab === 'Users' && <UsersTab />}
+      {activeTab === 'Account' && <AccountTab />}
+      {activeTab === 'Backup' && <BackupTab />}
     </div>
   )
 }
@@ -172,6 +242,12 @@ function ServersTab() {
 
   useEffect(() => { load() }, [load])
 
+  useDirtyGuard(
+    'servers',
+    editingServer !== null || editingGroup !== null || editingTag !== null ||
+    (showAddServer && !!(form.name || form.hostname || form.username || form.ssh_private_key || form.notes)),
+  )
+
   function startEditServer(s: Server) {
     setEditingServer(s.id)
     setEditForm({
@@ -204,7 +280,9 @@ function ServersTab() {
         group_ids: editForm.group_ids,
         is_enabled: editForm.is_enabled,
         tag_ids: editForm.tagIds,
-        notes: editForm.notes.trim() || undefined,
+        // Send "" rather than undefined: JSON.stringify drops undefined keys, so
+        // clearing the notes box never reached the backend and the old note stuck.
+        notes: editForm.notes.trim(),
       })
       setEditingServer(null)
       load()
@@ -296,6 +374,13 @@ function ServersTab() {
     try {
       const result = await serversApi.test(id)
       setTestResults(r => ({ ...r, [id]: result }))
+      if (!result.success) toast.error(`Connection failed: ${result.detail}`)
+    } catch (err: unknown) {
+      // A rejected test used to leave an unhandled promise rejection and a button
+      // that just went back to saying "Test".
+      const detail = err instanceof Error ? err.message : String(err)
+      setTestResults(r => ({ ...r, [id]: { success: false, detail } }))
+      toast.error(`Connection test failed: ${detail}`)
     } finally {
       setTesting(null)
     }
@@ -309,15 +394,25 @@ function ServersTab() {
   }
 
   async function handleBulkDelete() {
-    const count = selectedIds.size
+    const ids = [...selectedIds]
+    const count = ids.length
     if (!await confirmDialog({ message: `Delete ${count} server${count === 1 ? '' : 's'} and all their history? This cannot be undone.`, confirmLabel: 'Delete', danger: true })) return
     setBulkDeleting(true)
     try {
-      await Promise.all([...selectedIds].map(id => serversApi.remove(id)))
-      setSelectedIds(new Set())
-      load()
+      // Promise.all short-circuits on the first rejection, so partial failures went
+      // unreported and the selection/list were left stale. Settle them all instead.
+      const results = await Promise.allSettled(ids.map(id => serversApi.remove(id)))
+      const failed = results.filter(r => r.status === 'rejected') as PromiseRejectedResult[]
+      if (failed.length) {
+        const reason = failed[0].reason
+        toast.error(`${failed.length} of ${count} could not be deleted: ${reason instanceof Error ? reason.message : String(reason)}`)
+      } else {
+        toast.success(`Deleted ${count} server${count === 1 ? '' : 's'}`)
+      }
     } finally {
+      setSelectedIds(new Set())
       setBulkDeleting(false)
+      load()
     }
   }
 
@@ -532,14 +627,18 @@ function ServersTab() {
           <button
             className="btn-secondary text-xs"
             onClick={async () => {
-              const res = await configApi.exportCsv()
-              const blob = await res.blob()
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url
-              a.download = `apt-ui-servers-${new Date().toISOString().slice(0, 10)}.csv`
-              a.click()
-              URL.revokeObjectURL(url)
+              try {
+                const res = await configApi.exportCsv()
+                const blob = await res.blob()
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `apt-ui-servers-${new Date().toISOString().slice(0, 10)}.csv`
+                a.click()
+                URL.revokeObjectURL(url)
+              } catch (err: unknown) {
+                toast.error('Export failed: ' + (err instanceof Error ? err.message : String(err)))
+              }
             }}
           >
             Export CSV
@@ -1119,6 +1218,8 @@ function ScheduleTab() {
 
   const cronInvalid = !!form.check_cron && !isValidCron(form.check_cron)
 
+  useDirtyGuard('schedule', formDiffers(cfg, form))
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
     if (cronInvalid) { setError('Fix the cron expression before saving.'); return }
@@ -1127,6 +1228,11 @@ function ScheduleTab() {
     try {
       const updated = await schedulerApi.update(form)
       setCfg(updated)
+      // Re-seed the form from the saved row too. The server recomputes derived
+      // fields (next_check_time), so leaving `form` stale makes formDiffers() true
+      // forever — every tab switch would prompt "Discard unsaved changes?" and a
+      // reload would fire the leave-site warning with nothing actually unsaved.
+      setForm(updated)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       refreshHealth()   // reconcile the banner after the scheduler reconfigures
@@ -1284,6 +1390,9 @@ function MaintenanceWindowsSection() {
   const [editing, setEditing] = useState<Partial<MaintenanceWindow> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showSubscribe, setShowSubscribe] = useState(false)
+  // Window times are evaluated in the *server's* configured TZ, not the browser's —
+  // an admin in another timezone would otherwise set the wrong freeze hours.
+  const [timezone, setTimezone] = useState<string | null>(null)
 
   async function reload() {
     try {
@@ -1294,7 +1403,12 @@ function MaintenanceWindowsSection() {
       setError((e as Error).message)
     }
   }
-  useEffect(() => { reload() }, [])
+  useEffect(() => {
+    reload()
+    schedulerApi.status().then(c => setTimezone(c.timezone)).catch(() => {})
+  }, [])
+
+  useDirtyGuard('maintenance-window', editing !== null)
 
   function newWindow() {
     setEditing({
@@ -1467,6 +1581,11 @@ function MaintenanceWindowsSection() {
                   <span className="text-xs text-amber font-mono">wraps midnight</span>
                 )}
               </div>
+              <p className="text-[10px] text-text-muted mt-1">
+                Evaluated in the apt-ui server timezone
+                {timezone && <> — <span className="font-mono text-text-primary">{timezone}</span></>}
+                , not your browser's.
+              </p>
             </div>
 
             {/* 5. Enabled */}
@@ -1536,7 +1655,10 @@ function CalendarSubscribeModal({ onClose }: { onClose: () => void }) {
     }
     setCreating(true)
     try {
-      const t = await auth.createToken(newName.trim())
+      // Least privilege: this token is handed to Google/Apple calendar servers in a
+      // query string. The string form of createToken() sends no scopes at all, and
+      // the backend reads empty scopes as full admin access.
+      const t = await auth.createToken({ name: newName.trim(), scopes: ['calendar'] })
       setCreatedToken(t.token)
       await reload()
     } catch (err: unknown) {
@@ -1900,6 +2022,7 @@ function PreferencesTab() {
     try {
       const updated = await schedulerApi.update(form)
       setCfg(updated)
+      setForm(updated)   // keep the form in step with the saved row (see Schedule tab)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err: unknown) {
@@ -2197,19 +2320,16 @@ function NotificationsTab() {
     }
   }
 
-  // Test/detect endpoints read the persisted DB config, so save the current form
-  // first — otherwise they silently test stale or empty saved credentials. The
-  // backend ignores masked secret placeholders, so unchanged secrets are preserved.
-  async function persistForm() {
-    const updated = await notifApi.updateConfig(form)
-    setCfg(updated)
-    setForm(updated)
-  }
-
+  // Test/detect endpoints send the current (unsaved) form values as a candidate
+  // config, so testing new credentials before saving exercises what's actually on
+  // screen rather than the last-saved (possibly stale or empty) DB row. This used to
+  // save the form first as a workaround, which was a footgun — it persisted
+  // credentials the user might not want saved, with no way to undo a guess. The
+  // backend falls back to the stored config for any field omitted, and to the real
+  // stored secret when a field still holds the masked placeholder.
   async function sendTestEmail() {
     try {
-      await persistForm()
-      await notifApi.testEmail()
+      await notifApi.testEmail(form)
       setTestMsg(m => ({ ...m, email: '✓ Test email sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, email: `✗ ${(err as Error).message}` }))
@@ -2218,8 +2338,7 @@ function NotificationsTab() {
 
   async function sendTestTelegram() {
     try {
-      await persistForm()
-      await notifApi.testTelegram()
+      await notifApi.testTelegram(form)
       setTestMsg(m => ({ ...m, telegram: '✓ Test message sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, telegram: `✗ ${(err as Error).message}` }))
@@ -2228,8 +2347,7 @@ function NotificationsTab() {
 
   async function sendTestSlack() {
     try {
-      await persistForm()
-      await notifApi.testSlack()
+      await notifApi.testSlack(form)
       setTestMsg(m => ({ ...m, slack: '✓ Test message sent' }))
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, slack: `✗ ${(err as Error).message}` }))
@@ -2239,8 +2357,7 @@ function NotificationsTab() {
   async function sendTestWeeklyDigest() {
     setTestMsg(m => ({ ...m, weekly: '… sending' }))
     try {
-      await persistForm()
-      const r = await notifApi.testWeeklyDigest()
+      const r = await notifApi.testWeeklyDigest(form)
       const parts = Object.entries(r.results).map(([ch, status]) => `${ch}:${status}`).join('  ')
       setTestMsg(m => ({ ...m, weekly: `✓ ${parts}` }))
     } catch (err: unknown) {
@@ -2250,8 +2367,7 @@ function NotificationsTab() {
 
   async function detectChatId() {
     try {
-      await persistForm()
-      const result = await notifApi.detectChatId()
+      const result = await notifApi.detectChatId(form.telegram_bot_token ?? undefined)
       setChatIds(result.chats)
     } catch (err: unknown) {
       setTestMsg(m => ({ ...m, telegram: `✗ ${(err as Error).message}` }))
@@ -2621,7 +2737,102 @@ function NotificationsTab() {
 // Users tab — multi-user management (issue #39)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Password policy (issue #62) — configurable minimum length, enforced
+// server-side in create-user / admin-reset / self-service change-password.
+// Shared by UsersTab (admin control + create/reset forms) and AccountTab
+// (self-service change-password form) so all three stay in sync with the
+// backend-configured value instead of a hardcoded "4".
+// ---------------------------------------------------------------------------
+function usePasswordMinLength(): [number, (n: number) => void] {
+  const [minLength, setMinLength] = useState(4)
+  useEffect(() => {
+    auth.getPasswordPolicy().then(p => setMinLength(p.min_length)).catch(() => {})
+  }, [])
+  return [minLength, setMinLength]
+}
+
+// Simple length + character-variety heuristic — not a real entropy estimate,
+// just a friendly nudge so users aren't surprised by a round-trip rejection.
+function passwordStrength(pw: string): { label: string; pct: number; color: string } | null {
+  if (!pw) return null
+  let score = 0
+  if (pw.length >= 8) score++
+  if (pw.length >= 12) score++
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++
+  if (/[0-9]/.test(pw)) score++
+  if (/[^A-Za-z0-9]/.test(pw)) score++
+  if (score <= 1) return { label: 'Weak', pct: 33, color: 'bg-red' }
+  if (score <= 3) return { label: 'Okay', pct: 66, color: 'bg-amber' }
+  return { label: 'Strong', pct: 100, color: 'bg-green' }
+}
+
+function PasswordStrengthMeter({ password }: { password: string }) {
+  const strength = passwordStrength(password)
+  if (!strength) return null
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <div className="flex-1 h-1 rounded-full bg-border overflow-hidden">
+        <div className={`h-full ${strength.color} transition-all`} style={{ width: `${strength.pct}%` }} />
+      </div>
+      <span className="text-[10px] text-text-muted w-10 shrink-0">{strength.label}</span>
+    </div>
+  )
+}
+
+function PasswordPolicySection({ minLength, onChange }: { minLength: number; onChange: (n: number) => void }) {
+  const [value, setValue] = useState(minLength)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  // Keep the input in sync once the fetched policy lands (it starts at the default 4).
+  useEffect(() => { setValue(minLength) }, [minLength])
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true)
+    setMsg(null)
+    try {
+      const r = await auth.updatePasswordPolicy(value)
+      onChange(r.min_length)
+      setMsg('Saved')
+      setTimeout(() => setMsg(null), 1500)
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card p-4 space-y-2">
+      <h3 className="text-xs uppercase tracking-wide text-text-muted">Password Policy</h3>
+      <p className="text-xs text-text-muted">
+        Applies to new users, admin password resets, and self-service password changes.
+      </p>
+      <form onSubmit={save} className="flex items-end gap-3 pt-1">
+        <div>
+          <label className="label">Minimum length</label>
+          <input
+            type="number"
+            min={1}
+            max={128}
+            value={value}
+            onChange={e => setValue(Math.max(1, Math.min(128, parseInt(e.target.value) || 1)))}
+            className="input text-sm w-24"
+          />
+        </div>
+        <button type="submit" disabled={saving || value === minLength} className="btn-secondary text-sm">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {msg && <span className={`text-xs ${msg === 'Saved' ? 'text-green' : 'text-red'}`}>{msg}</span>}
+      </form>
+    </div>
+  )
+}
+
 function UsersTab() {
+  const [minPasswordLength, setMinPasswordLength] = usePasswordMinLength()
   const { user: currentUser } = useAuthStore()
   const [users, setUsers] = useState<import('@/api/client').UserSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -2658,6 +2869,10 @@ function UsersTab() {
     setError(null)
     if (!newUser.username.trim() || !newUser.password) {
       setError('Username and password required')
+      return
+    }
+    if (newUser.password.length < minPasswordLength) {
+      setError(`Password must be at least ${minPasswordLength} characters`)
       return
     }
     if (newUser.password !== newUser.confirm) {
@@ -2702,6 +2917,10 @@ function UsersTab() {
     e.preventDefault()
     setResetMsg(null)
     if (!resetPwFor) return
+    if (resetPw.password.length < minPasswordLength) {
+      setResetMsg(`Password must be at least ${minPasswordLength} characters`)
+      return
+    }
     if (!resetPw.password || resetPw.password !== resetPw.confirm) {
       setResetMsg('Passwords do not match')
       return
@@ -2729,6 +2948,8 @@ function UsersTab() {
       </div>
 
       {error && <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono">{error}</div>}
+
+      <PasswordPolicySection minLength={minPasswordLength} onChange={setMinPasswordLength} />
 
       {/* User list */}
       <div className="card overflow-hidden">
@@ -2815,6 +3036,8 @@ function UsersTab() {
               onChange={e => setNewUser({ ...newUser, password: e.target.value })}
               className="input text-sm"
             />
+            <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+            <PasswordStrengthMeter password={newUser.password} />
           </div>
 
           <div>
@@ -2874,6 +3097,8 @@ function UsersTab() {
                   className="input text-sm"
                   autoFocus
                 />
+                <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+                <PasswordStrengthMeter password={resetPw.password} />
               </div>
 
               <div>
@@ -2908,6 +3133,7 @@ function UsersTab() {
 // ---------------------------------------------------------------------------
 function AccountTab() {
   const { user, logout } = useAuthStore()
+  const [minPasswordLength] = usePasswordMinLength()
   const [form, setForm] = useState({ current_password: '', new_password: '', confirm: '' })
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
@@ -2918,6 +3144,10 @@ function AccountTab() {
     if (saving) return
     setMsg('')
     setError('')
+    if (form.new_password.length < minPasswordLength) {
+      setError(`Password must be at least ${minPasswordLength} characters`)
+      return
+    }
     if (form.new_password !== form.confirm) {
       setError('New passwords do not match')
       return
@@ -2945,7 +3175,12 @@ function AccountTab() {
         <h2 className="text-sm font-medium text-text-primary mb-4">Change Password</h2>
         <form onSubmit={handleChangePassword} className="space-y-3">
           <div><label className="label">Current Password</label><input type="password" className="input" value={form.current_password} onChange={e => setForm(f => ({ ...f, current_password: e.target.value }))} /></div>
-          <div><label className="label">New Password</label><input type="password" className="input" value={form.new_password} onChange={e => setForm(f => ({ ...f, new_password: e.target.value }))} /></div>
+          <div>
+            <label className="label">New Password</label>
+            <input type="password" className="input" value={form.new_password} onChange={e => setForm(f => ({ ...f, new_password: e.target.value }))} />
+            <p className="text-xs text-text-muted mt-1">At least {minPasswordLength} characters.</p>
+            <PasswordStrengthMeter password={form.new_password} />
+          </div>
           <div><label className="label">Confirm New Password</label><input type="password" className="input" value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} /></div>
           {error && <p className="text-red text-sm">{error}</p>}
           {msg && <p className="text-green text-sm">{msg}</p>}

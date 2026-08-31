@@ -60,11 +60,14 @@ async def fetch_and_index() -> dict:
         title = entry.get("title", "")
         # USN releases is { release: { sources: { src_pkg: { version, binaries: [...] } } } }
         releases = entry.get("releases") or {}
-        # Highest-severity CVE wins
+        # Severity: the published USN feed (usn.ubuntu.com/usn-db/database.json) carries
+        # only a flat list of CVE *ids* under "cves" — it has no per-CVE severity, so
+        # there is nothing here to rank and every entry stays "unknown". The richer
+        # "cves_data" shape below exists in newer/derived exports of this feed and is
+        # read opportunistically, so severity starts working the moment a feed that
+        # provides it is used. (Verified against the live feed 2026-08-31: 7788
+        # entries, no "cves_data" key — so severity is currently always "unknown".)
         worst_severity = "unknown"
-        for cve_summary in entry.get("description") or []:
-            pass
-        # Pull severity from cves field if present (newer USN format)
         for c in entry.get("cves_data") or []:
             sev = (c.get("severity") or "").lower()
             if sev in ("critical", "high", "medium", "low"):

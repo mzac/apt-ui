@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,6 +77,30 @@ def _to_out(cfg: ScheduleConfig | None) -> ScheduleConfigOut:
     )
 
 
+def _validate_cron(expr: str | None, label: str) -> None:
+    """Reject a cron that APScheduler can't schedule.
+
+    ``configure_jobs()`` only logs the failure, so an enabled job with a blank or
+    malformed cron used to be accepted and then silently never run (the scheduler
+    health endpoint would flag it after the fact). Fail the save instead.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+
+    expr = (expr or "").strip()
+    if not expr:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{label} is enabled but its cron expression is empty — e.g. '0 6 * * *'",
+        )
+    try:
+        CronTrigger.from_crontab(expr, timezone=TZ)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{label} cron expression is invalid ({exc}) — expected 5 fields, e.g. '0 6 * * *'",
+        )
+
+
 @router.get("/status", response_model=ScheduleConfigOut)
 async def get_status(
     db: AsyncSession = Depends(get_db),
@@ -104,11 +128,27 @@ async def update_config(
 
     result = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = result.scalar_one_or_none()
+
+    # Validate the *effective* config (patch merged over what's stored) before
+    # touching the row, so a rejected save leaves the DB untouched.
+    data = body.model_dump(exclude_unset=True)
+
+    def _effective(field: str, default):
+        if field in data:
+            return data[field]
+        current = getattr(cfg, field, None) if cfg is not None else None
+        return default if current is None else current
+
+    if _effective("check_enabled", True):
+        _validate_cron(_effective("check_cron", "0 6 * * *"), "Scheduled update check")
+    if _effective("auto_upgrade_enabled", False):
+        _validate_cron(_effective("auto_upgrade_cron", None), "Auto-upgrade")
+
     if cfg is None:
         cfg = ScheduleConfig(id=1)
         db.add(cfg)
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    for field, value in data.items():
         setattr(cfg, field, value)
 
     await db.commit()

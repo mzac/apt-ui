@@ -53,6 +53,14 @@ export default function Search() {
     }
   }
 
+  // The backend queries every enabled server over SSH and still lists servers
+  // that errored in `result.servers` (with a parallel entry in `result.errors`)
+  // — they never contribute matches. Counting `result.servers.length` as the
+  // "matched across N servers" figure overstates fleet coverage whenever any
+  // server is unreachable; count only the ones that actually answered.
+  const erroredCount = result ? Object.keys(result.errors).length : 0
+  const respondingCount = result ? result.servers.length - erroredCount : 0
+
   const allPackages = result ? Object.entries(result.matches).sort(([a], [b]) => a.localeCompare(b)) : []
   const filteredPackages = result
     ? allPackages.filter(([_, vers]) => {
@@ -113,7 +121,10 @@ export default function Search() {
           {/* Summary + filters */}
           <div className="flex flex-wrap items-center gap-3 mb-3">
             <span className="text-xs text-text-muted font-mono">
-              {allPackages.length.toLocaleString()} package{allPackages.length === 1 ? '' : 's'} matched across {result.servers.length} server{result.servers.length === 1 ? '' : 's'}
+              {allPackages.length.toLocaleString()} package{allPackages.length === 1 ? '' : 's'} matched across {respondingCount} server{respondingCount === 1 ? '' : 's'}
+              {erroredCount > 0 && (
+                <span className="text-amber"> ({erroredCount} server{erroredCount === 1 ? '' : 's'} unreachable)</span>
+              )}
             </span>
             {divergedCount > 0 && (
               <label className="flex items-center gap-2 text-xs text-text-muted cursor-pointer">

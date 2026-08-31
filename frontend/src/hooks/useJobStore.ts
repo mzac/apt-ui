@@ -17,6 +17,24 @@ export interface Job {
   completedAt?: number
 }
 
+/**
+ * Fire a job's window action (e.g. `apt:restore-upgrade-all`) so it survives the
+ * navigation that usually accompanies it.
+ *
+ * The upgrade-all restore listener is mounted *inside* the Dashboard, so firing
+ * the event before `navigate('/')` from any other page (bell dropdown, command
+ * palette) dispatched it into the void: the user landed on the Dashboard with no
+ * restored modal and no way to watch the in-flight upgrade. Re-dispatching on the
+ * next frames gives the destination route time to mount its listener. Handlers
+ * are idempotent (they just re-open the modal), so the extra dispatches are safe.
+ */
+export function dispatchJobAction(action: string) {
+  const fire = () => window.dispatchEvent(new CustomEvent(`apt:${action}`))
+  fire()
+  requestAnimationFrame(fire)
+  setTimeout(fire, 80)
+}
+
 interface JobStore {
   jobs: Job[]
   unseenCount: number

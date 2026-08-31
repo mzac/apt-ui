@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user, get_current_user_ws
+from backend.auth import get_current_user, get_current_user_ws, require_admin
 from backend.actor import set_actor
 from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
@@ -855,15 +855,41 @@ async def ws_upgrade_all(websocket: WebSocket):
         concurrency = cfg.upgrade_concurrency if cfg else 5
         run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
 
-        srv_query = select(Server).where(Server.is_enabled == True)
+        # When an explicit target set is given, load those servers *including* the
+        # disabled ones so we can report a skip for each — the client is waiting on a
+        # terminal message for every id it sent. Without an explicit set the target is
+        # "every enabled server", so disabled hosts were never in scope.
+        srv_query = select(Server)
         if explicit_ids:
             srv_query = srv_query.where(Server.id.in_(explicit_ids))
+        else:
+            srv_query = srv_query.where(Server.is_enabled == True)
         srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
+
+        async def _send_skipped(server_id: int, server_name: str | None, reason: str, *, cancelled: bool = False) -> None:
+            try:
+                payload = {"type": "skipped", "server_id": server_id,
+                           "server_name": server_name,
+                           "data": f"Skipped — {reason}."}
+                if cancelled:
+                    payload["cancelled"] = True
+                await websocket.send_json(payload)
+            except Exception:
+                pass
+
+        if explicit_ids:
+            found = {s.id for s in servers}
+            for missing in dict.fromkeys(explicit_ids):
+                if missing not in found:
+                    await _send_skipped(missing, None, "Server not found")
 
         from backend.routers.maintenance import window_block_reason
         to_upgrade = []
         for s in servers:
+            if not s.is_enabled:
+                await _send_skipped(s.id, s.name, "Server is disabled")
+                continue
             chk_res = await db.execute(
                 select(UpdateCheck)
                 .where(UpdateCheck.server_id == s.id)
@@ -872,22 +898,64 @@ async def ws_upgrade_all(websocket: WebSocket):
             )
             chk = chk_res.scalar_one_or_none()
             if not (chk and chk.status == "success" and chk.packages_available > 0):
+                await _send_skipped(
+                    s.id, s.name,
+                    "No pending updates from the last check" if chk and chk.status == "success"
+                    else "No successful update check yet",
+                )
                 continue
             block = await window_block_reason(db, s.id, override=override_window)
             if block:
-                try:
-                    await websocket.send_json({"type": "skipped", "server_id": s.id, "server_name": s.name,
-                                               "data": f"Skipped — {block}."})
-                except Exception:
-                    pass
+                await _send_skipped(s.id, s.name, block)
                 continue
             to_upgrade.append(s)
 
     semaphore = asyncio.Semaphore(concurrency)
     histories: list = []
 
+    # Graceful stop (issue #62). The client can send {"action":"cancel"} at any
+    # point over this same socket. Semantics: stop after the in-flight server
+    # completes — never kill a half-finished apt transaction (that's how you get
+    # a broken dpkg state) — so cancel_event is only consulted by a server task
+    # right after it acquires the semaphore, before upgrade_server() (and the
+    # real _upgrade_locks lock it takes internally) is ever called. A background
+    # listener task is used rather than racing it against the gather() below with
+    # asyncio.wait(FIRST_COMPLETED): we specifically do NOT want the listener
+    # finishing (e.g. on disconnect) to cancel in-flight work, only to flag
+    # not-yet-started work to skip itself.
+    cancel_event = asyncio.Event()
+    cancel_actor = user.username
+
+    async def _listen_for_cancel():
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if msg.get("action") == "cancel" and not cancel_event.is_set():
+                    cancel_event.set()
+                    logging.getLogger(__name__).info(
+                        "Upgrade-all cancelled by %s (%d server(s) targeted)",
+                        cancel_actor, len(to_upgrade),
+                    )
+                    try:
+                        await websocket.send_json({"type": "status", "data": "cancelling"})
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(_listen_for_cancel())
+
     async def _do_tracked(server: Server):
         async with semaphore:
+            if cancel_event.is_set():
+                await _send_skipped(server.id, server.name, "Cancelled by admin", cancelled=True)
+                return
             async with AsyncSessionLocal() as session:
                 async def send_fn(msg: dict):
                     msg["server_id"] = server.id
@@ -914,6 +982,18 @@ async def ws_upgrade_all(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        if cancel_event.is_set():
+            # Fleet-level terminal message so the client can distinguish a
+            # deliberate stop from a normal completion or a dropped connection.
+            try:
+                await websocket.send_json({"type": "complete", "data": {"cancelled": True}})
+            except Exception:
+                pass
         # Send one summary email/telegram for the whole batch
         try:
             from backend.models import NotificationConfig
@@ -951,6 +1031,13 @@ async def ws_shell(websocket: WebSocket, server_id: int):
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
+            await websocket.close(code=1008)
+            return
+        # Admin-only: this is an interactive shell on the remote host, almost always as
+        # root. Authenticating alone is not enough — without this check every read-only
+        # account could bypass the entire permission model by simply opening a shell.
+        if not user.is_admin:
+            await websocket.send_json({"type": "error", "data": "Terminal access requires an administrator account."})
             await websocket.close(code=1008)
             return
         set_actor(user.username)
@@ -1224,7 +1311,12 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
                 ) as proc:
                     async for line in proc.stdout:
                         await send_fn({"type": "output", "data": line})
-                await send_fn({"type": "complete", "data": {"success": True}})
+                    await proc.wait_closed()
+                    exit_code = proc.exit_status if proc.exit_status is not None else 1
+                await send_fn({
+                    "type": "complete",
+                    "data": {"success": exit_code == 0, "exit_code": exit_code},
+                })
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -1337,8 +1429,55 @@ async def ws_autoremove_all(websocket: WebSocket):
 
     semaphore = asyncio.Semaphore(concurrency)
 
+    # Graceful stop (issue #62) — same pattern as ws_upgrade_all: a server task
+    # only checks cancel_event right after acquiring the semaphore, before
+    # run_autoremove() (and the real _upgrade_locks lock it takes internally) is
+    # called, so an in-flight autoremove always finishes and the lock is never
+    # bypassed. A background listener (not a FIRST_COMPLETED race) so a finished
+    # listener never cancels in-flight work.
+    cancel_event = asyncio.Event()
+    cancel_actor = user.username
+
+    async def _send_skipped(server_id: int, server_name: str | None, reason: str, *, cancelled: bool = False) -> None:
+        try:
+            payload = {"type": "skipped", "server_id": server_id, "server_name": server_name,
+                       "data": f"Skipped — {reason}."}
+            if cancelled:
+                payload["cancelled"] = True
+            await websocket.send_json(payload)
+        except Exception:
+            pass
+
+    async def _listen_for_cancel():
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if msg.get("action") == "cancel" and not cancel_event.is_set():
+                    cancel_event.set()
+                    logging.getLogger(__name__).info(
+                        "Autoremove-all cancelled by %s (%d server(s) targeted)",
+                        cancel_actor, len(to_clean),
+                    )
+                    try:
+                        await websocket.send_json({"type": "status", "data": "cancelling"})
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(_listen_for_cancel())
+
     async def _do(server: Server):
         async with semaphore:
+            if cancel_event.is_set():
+                await _send_skipped(server.id, server.name, "Cancelled by admin", cancelled=True)
+                return
             async with AsyncSessionLocal() as session:
                 async def send_fn(msg: dict):
                     msg["server_id"] = server.id
@@ -1356,6 +1495,16 @@ async def ws_autoremove_all(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        if cancel_event.is_set():
+            try:
+                await websocket.send_json({"type": "complete", "data": {"cancelled": True}})
+            except Exception:
+                pass
         try:
             await websocket.close()
         except Exception:
@@ -1447,21 +1596,43 @@ async def ws_reboot_all(websocket: WebSocket):
         batch_wait_seconds = max(0, (cfg.reboot_batch_wait_minutes if cfg else 5)) * 60
         reboot_timeout_seconds = max(60, (cfg.reboot_timeout_minutes if cfg else 10) * 60)
 
+        async def _send_skipped(server_id: int, server_name: str | None, reason: str, *, cancelled: bool = False) -> None:
+            """Terminal, non-failure message so the client can account for every
+            server it targeted instead of reporting 'stream ended early'."""
+            try:
+                payload = {"type": "skipped", "server_id": server_id,
+                           "server_name": server_name, "phase": "skipped",
+                           "data": f"Skipped — {reason}."}
+                if cancelled:
+                    payload["cancelled"] = True
+                await websocket.send_json(payload)
+            except Exception:
+                pass
+
         # Default target set: all enabled servers with reboot_required=True
         if explicit_ids:
-            srv_res = await db.execute(
-                select(Server).where(
-                    Server.id.in_(explicit_ids),
-                    Server.is_enabled == True,
-                )
-            )
-            servers = list(srv_res.scalars().all())
-        else:
-            srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
-            all_enabled = list(srv_res.scalars().all())
-            # Filter to those whose latest check has reboot_required=True
+            # Load the disabled ones too so each gets an explicit skip message.
+            srv_res = await db.execute(select(Server).where(Server.id.in_(explicit_ids)))
+            found = list(srv_res.scalars().all())
+            found_ids = {s.id for s in found}
+            for missing in dict.fromkeys(explicit_ids):
+                if missing not in found_ids:
+                    await _send_skipped(missing, None, "Server not found")
             servers = []
-            for s in all_enabled:
+            for s in found:
+                if not s.is_enabled:
+                    await _send_skipped(s.id, s.name, "Server is disabled")
+                    continue
+                servers.append(s)
+        else:
+            srv_res = await db.execute(select(Server))
+            all_servers = list(srv_res.scalars().all())
+            # Filter to enabled servers whose latest check has reboot_required=True
+            servers = []
+            for s in all_servers:
+                if not s.is_enabled:
+                    await _send_skipped(s.id, s.name, "Server is disabled")
+                    continue
                 chk_res = await db.execute(
                     select(UpdateCheck)
                     .where(UpdateCheck.server_id == s.id)
@@ -1471,6 +1642,8 @@ async def ws_reboot_all(websocket: WebSocket):
                 chk = chk_res.scalar_one_or_none()
                 if chk and chk.reboot_required:
                     servers.append(s)
+                else:
+                    await _send_skipped(s.id, s.name, "No reboot required")
 
         if not servers:
             await websocket.send_json({
@@ -1489,6 +1662,43 @@ async def ws_reboot_all(websocket: WebSocket):
             await websocket.send_json(msg)
         except Exception:
             pass
+
+    # Graceful stop (issue #62). Reuses the existing ring-failure abort path
+    # (aborted flag / "abort" message) rather than adding a parallel one — a
+    # cancel just supplies reason="cancelled" instead of "history_errors" /
+    # "reboot_timeout". Servers already dispatched via asyncio.gather() for the
+    # current batch always finish (killing a reboot mid-flight is pointless
+    # anyway); cancel_event is only consulted before starting the next batch/ring,
+    # and interrupts the inter-batch wait early. A background listener (not an
+    # asyncio.wait(FIRST_COMPLETED) race) so a finished listener never itself
+    # aborts in-flight work.
+    cancel_event = asyncio.Event()
+    cancel_actor = user.username
+
+    async def _listen_for_cancel():
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if msg.get("action") == "cancel" and not cancel_event.is_set():
+                    cancel_event.set()
+                    logger_local.info(
+                        "Rolling reboot cancelled by %s (%d server(s) targeted)",
+                        cancel_actor, len(servers),
+                    )
+                    try:
+                        await websocket.send_json({"type": "status", "data": "cancelling"})
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(_listen_for_cancel())
 
     await send({
         "type": "plan",
@@ -1579,9 +1789,17 @@ async def ws_reboot_all(websocket: WebSocket):
         except Exception:
             return False
 
+    # Tracks servers already handed to asyncio.gather() for a batch — used to report
+    # every not-yet-dispatched server as cancelled+skipped if the run is stopped.
+    processed_ids: set[int] = set()
+
     try:
         for ring_idx, ring_name in enumerate(ring_names):
             if aborted:
+                break
+            if cancel_event.is_set():
+                aborted = True
+                await send({"type": "abort", "data": {"ring": ring_name, "reason": "cancelled"}})
                 break
             ring_servers = rings[ring_name]
             await send({"type": "ring_start", "data": {
@@ -1595,7 +1813,12 @@ async def ws_reboot_all(websocket: WebSocket):
             for batch_start in range(0, len(ring_servers), batch_size):
                 if aborted:
                     break
+                if cancel_event.is_set():
+                    aborted = True
+                    await send({"type": "abort", "data": {"ring": ring_name, "reason": "cancelled"}})
+                    break
                 batch = ring_servers[batch_start:batch_start + batch_size]
+                processed_ids.update(s.id for s in batch)
                 await send({"type": "batch_start", "data": {
                     "ring": ring_name,
                     "size": len(batch),
@@ -1624,7 +1847,21 @@ async def ws_reboot_all(websocket: WebSocket):
                 last_ring = ring_idx == len(ring_names) - 1
                 if not (last_batch and last_ring) and batch_wait_seconds > 0:
                     await send({"type": "batch_wait", "data": {"seconds": batch_wait_seconds}})
-                    await asyncio.sleep(batch_wait_seconds)
+                    # Cancellable wait: a cancel during the inter-batch pause stops the
+                    # rollout immediately instead of sleeping out the full delay. The
+                    # cancel_event check at the top of the next loop iteration does the
+                    # actual abort/skip bookkeeping.
+                    try:
+                        await asyncio.wait_for(cancel_event.wait(), timeout=batch_wait_seconds)
+                    except asyncio.TimeoutError:
+                        pass
+
+        if cancel_event.is_set():
+            # Every server not yet handed to a batch — report it the same way the
+            # pre-filter skips (disabled / no reboot required / not found) do.
+            remaining = [s for rn in ring_names for s in rings[rn] if s.id not in processed_ids]
+            for s in remaining:
+                await _send_skipped(s.id, s.name, "Cancelled by admin", cancelled=True)
 
         await send({"type": "complete", "data": {"success": not aborted, "aborted": aborted}})
 
@@ -1633,6 +1870,11 @@ async def ws_reboot_all(websocket: WebSocket):
     except Exception as exc:
         await send({"type": "error", "data": str(exc)})
     finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except (asyncio.CancelledError, Exception):
+            pass
         try:
             await websocket.close()
         except Exception:
@@ -1652,9 +1894,13 @@ async def validate_deb_url(
     server_id: int,
     body: DebUrlRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
-    """HEAD-request the URL from the dashboard container to validate it is a .deb file."""
+    """HEAD-request the URL from the dashboard container to validate it is a .deb file.
+
+    Admin-only: it makes the server issue an outbound request to a caller-supplied
+    URL, and it is the entry point of the admin-only .deb install flow.
+    """
     url = body.url.strip()
     if not url.lower().startswith(("http://", "https://")):
         return {"valid": False, "error": "URL must start with http:// or https://"}
@@ -1732,9 +1978,13 @@ async def upload_deb(
     server_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
-    """Receive a .deb file and copy it to /tmp/ on the target server via SFTP."""
+    """Receive a .deb file and copy it to /tmp/ on the target server via SFTP.
+
+    Admin-only: staging a .deb is the first half of installing one, whose
+    maintainer scripts run as root on the target.
+    """
     server = await _get_server(server_id, db)
 
     if not (file.filename or "").lower().endswith(".deb"):
@@ -1771,6 +2021,13 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
     async with AsyncSessionLocal() as db:
         user = await get_current_user_ws(token or "", db)
         if user is None:
+            await websocket.close(code=1008)
+            return
+        # Admin-only: a .deb's maintainer scripts run as root, so installing one is
+        # arbitrary remote code execution. Authenticating alone would let any
+        # read-only account install a crafted package and take over every host.
+        if not user.is_admin:
+            await websocket.send_json({"type": "error", "data": "Installing packages requires an administrator account."})
             await websocket.close(code=1008)
             return
         set_actor(user.username)

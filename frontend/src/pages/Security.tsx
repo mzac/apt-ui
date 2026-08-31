@@ -8,6 +8,7 @@ import type {
   ServerGroup,
   Tag,
 } from '@/types'
+import { formatDate } from '@/utils/datetime'
 
 type StatusFilter = 'pending' | 'fixed' | 'all'
 type ViewMode = 'cve' | 'server'
@@ -87,7 +88,12 @@ export default function Security() {
     securityApi.summary().then(setSummary).catch(() => {})
   }, [])
 
+  // `cancelled` guards against an out-of-order response: rapidly toggling
+  // filters (e.g. status pending → fixed → pending) could otherwise let an
+  // older response resolve after a newer one and paint a table that doesn't
+  // match the currently-selected filters.
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setError(null)
     securityApi
@@ -99,9 +105,13 @@ export default function Security() {
         since: since || undefined,
         until: until || undefined,
       })
-      .then(rows => setData(rows))
-      .catch(e => setError(e instanceof Error ? e.message : 'Failed to load CVEs'))
-      .finally(() => setLoading(false))
+      .then(rows => { if (!cancelled) setData(rows) })
+      .catch(e => {
+        if (cancelled) return
+        setError(e instanceof Error ? e.message : 'Failed to load CVEs')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [statusFilter, severityFilter, groupId, tag, since, until])
 
   function toggleSeverity(sev: CveSeverity) {
@@ -388,7 +398,7 @@ function ExpandableCveRow({
         <td className="px-3 py-1.5 text-text-primary">{row.package}</td>
         <td className="px-3 py-1.5 text-text-muted">{row.fixed_version || '—'}</td>
         <td className="px-3 py-1.5 text-text-muted">
-          {row.first_seen_in_fleet ? new Date(row.first_seen_in_fleet).toLocaleDateString() : '—'}
+          {formatDate(row.first_seen_in_fleet)}
         </td>
         <td className="px-3 py-1.5 text-center"><StatusBadge status={row.status} /></td>
         <td className="px-3 py-1.5 text-right">

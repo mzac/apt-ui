@@ -1,7 +1,22 @@
 import { useEffect, useState } from 'react'
 import { reports as reportsApi } from '@/api/client'
+import { formatDate, formatDateTime } from '@/utils/datetime'
 
 type ReportTab = 'coverage' | 'success' | 'sla'
+
+/** Inline error card with a retry — shared by each report tab's loader. */
+function ReportError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="card border-red/40 bg-red/5 p-3 flex items-center gap-3">
+      <span className="text-sm text-red font-mono flex-1 truncate" title={message}>{message}</span>
+      <button onClick={onRetry} className="btn-secondary text-xs shrink-0">Retry</button>
+    </div>
+  )
+}
+
+function errMsg(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback
+}
 
 function downloadCsv(filename: string, headers: string[], rows: (string | number | boolean | null)[][]) {
   const escape = (v: string | number | boolean | null) => {
@@ -70,7 +85,26 @@ export default function Reports() {
 
 function PatchCoverageReport() {
   const [data, setData] = useState<Awaited<ReturnType<typeof reportsApi.patchCoverage>> | null>(null)
-  useEffect(() => { reportsApi.patchCoverage().then(setData).catch(() => {}) }, [])
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+
+  // `cancelled` guards against an out-of-order response committing after a
+  // newer request (or unmount) — see UpgradeSuccessReport/SecuritySlaReport
+  // below, where it also protects against days/window filter races.
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    reportsApi.patchCoverage()
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => {
+        if (cancelled) return
+        setData(null)
+        setError(errMsg(e, 'Failed to load patch coverage report'))
+      })
+    return () => { cancelled = true }
+  }, [reload])
+
+  if (error) return <ReportError message={error} onRetry={() => setReload(n => n + 1)} />
   if (!data) return <p className="text-text-muted text-sm">Loading…</p>
 
   return (
@@ -117,7 +151,7 @@ function PatchCoverageReport() {
             {data.servers.map(s => (
               <tr key={s.hostname} className="hover:bg-surface/50">
                 <td className="px-3 py-1.5 text-text-primary">{s.server}</td>
-                <td className="px-3 py-1.5 text-text-muted">{s.last_check ? new Date(s.last_check).toLocaleString() : '—'}</td>
+                <td className="px-3 py-1.5 text-text-muted">{formatDateTime(s.last_check)}</td>
                 <td className="px-3 py-1.5 text-center">{s.in_24h ? '✓' : '—'}</td>
                 <td className="px-3 py-1.5 text-center">{s.in_7d ? '✓' : '—'}</td>
                 <td className="px-3 py-1.5 text-center">{s.in_30d ? '✓' : '—'}</td>
@@ -133,7 +167,26 @@ function PatchCoverageReport() {
 function UpgradeSuccessReport() {
   const [days, setDays] = useState(30)
   const [data, setData] = useState<Awaited<ReturnType<typeof reportsApi.upgradeSuccessRate>> | null>(null)
-  useEffect(() => { reportsApi.upgradeSuccessRate(days).then(setData).catch(() => {}) }, [days])
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+
+  // `cancelled` guards against a stale response landing after `days` has
+  // since changed again (e.g. flipping 30 → 90 → 30 quickly) and painting a
+  // table that doesn't match the currently-selected window.
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    reportsApi.upgradeSuccessRate(days)
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => {
+        if (cancelled) return
+        setData(null)
+        setError(errMsg(e, 'Failed to load upgrade success report'))
+      })
+    return () => { cancelled = true }
+  }, [days, reload])
+
+  if (error) return <ReportError message={error} onRetry={() => setReload(n => n + 1)} />
   if (!data) return <p className="text-text-muted text-sm">Loading…</p>
 
   return (
@@ -196,7 +249,25 @@ function SecuritySlaReport() {
   const [slaDays, setSlaDays] = useState(7)
   const [windowDays, setWindowDays] = useState(90)
   const [data, setData] = useState<Awaited<ReturnType<typeof reportsApi.securitySla>> | null>(null)
-  useEffect(() => { reportsApi.securitySla(slaDays, windowDays).then(setData).catch(() => {}) }, [slaDays, windowDays])
+  const [error, setError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+
+  // `cancelled` guards against a stale response landing after slaDays/windowDays
+  // have since changed again — same race as UpgradeSuccessReport above.
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    reportsApi.securitySla(slaDays, windowDays)
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => {
+        if (cancelled) return
+        setData(null)
+        setError(errMsg(e, 'Failed to load security SLA report'))
+      })
+    return () => { cancelled = true }
+  }, [slaDays, windowDays, reload])
+
+  if (error) return <ReportError message={error} onRetry={() => setReload(n => n + 1)} />
   if (!data) return <p className="text-text-muted text-sm">Loading…</p>
 
   return (
@@ -249,8 +320,8 @@ function SecuritySlaReport() {
             {data.servers.map(s => (
               <tr key={s.hostname} className="hover:bg-surface/50">
                 <td className="px-3 py-1.5 text-text-primary">{s.server}</td>
-                <td className="px-3 py-1.5 text-text-muted">{s.first_security_seen ? new Date(s.first_security_seen).toLocaleDateString() : '—'}</td>
-                <td className="px-3 py-1.5 text-text-muted">{s.cleared_at ? new Date(s.cleared_at).toLocaleDateString() : (s.first_security_seen ? <span className="text-amber">still pending</span> : '—')}</td>
+                <td className="px-3 py-1.5 text-text-muted">{formatDate(s.first_security_seen)}</td>
+                <td className="px-3 py-1.5 text-text-muted">{s.cleared_at ? formatDate(s.cleared_at) : (s.first_security_seen ? <span className="text-amber">still pending</span> : '—')}</td>
                 <td className="px-3 py-1.5 text-right text-text-primary">{s.days_to_clear ?? '—'}</td>
                 <td className="px-3 py-1.5 text-center">
                   {s.in_sla === null ? '—' : s.in_sla ? <span className="text-green">✓</span> : <span className="text-red">✗</span>}

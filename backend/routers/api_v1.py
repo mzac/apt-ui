@@ -16,6 +16,7 @@ from backend.auth import require_scope
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, User
 from backend.query_helpers import latest_checks_by_server
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/v1", tags=["api-v1"])
 
@@ -34,7 +35,7 @@ async def v1_list_servers(db: AsyncSession = Depends(get_db), _: User = Depends(
             "packages_available": c.packages_available if c else None,
             "security_packages": c.security_packages if c else None,
             "reboot_required": bool(c.reboot_required) if c else None,
-            "last_check": c.checked_at.isoformat() if c and c.checked_at else None,
+            "last_check": utc_iso(c.checked_at) if c else None,
         })
     return {"servers": out}
 

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,9 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import NotificationConfig, NotificationLog, User
+from backend.timeutil import utc_iso
 from backend.schemas import NotificationConfigOut, NotificationConfigUpdate, NotificationLogOut
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+
+
+# Secrets that are masked on read and must therefore be ignored on write when the
+# caller echoes the mask back instead of a real value.
+_MASKED_FIELDS = ("smtp_password", "telegram_bot_token", "slack_webhook_url")
 
 
 def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
@@ -17,6 +25,9 @@ def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
         out.smtp_password = "••••••••"
     if out.telegram_bot_token:
         out.telegram_bot_token = out.telegram_bot_token[:8] + "••••••••"
+    if out.slack_webhook_url:
+        # The webhook URL *is* the credential; show only enough to identify it.
+        out.slack_webhook_url = out.slack_webhook_url[:24] + "••••••••"
     return out
 
 
@@ -29,6 +40,27 @@ async def _get_cfg(db: AsyncSession) -> NotificationConfig:
         await db.commit()
         await db.refresh(cfg)
     return cfg
+
+
+def _effective_cfg(cfg: NotificationConfig, body: NotificationConfigUpdate | None) -> SimpleNamespace:
+    """Build a read-only, non-persisted config snapshot for the test endpoints (issue #62).
+
+    "Send Test" / "Detect Chat ID" used to exercise the *saved* config, so testing new
+    credentials before saving ran against the old/empty config — and a previous fix
+    worked around that by silently persisting the form first, which is a footgun (it
+    saves credentials the caller may not want saved). Instead, overlay any candidate
+    values from the request body onto the stored config in memory, without touching the
+    DB. A masked secret placeholder (see `_mask`) falls back to the stored real value —
+    the same rule `update_config` uses when persisting — since the form may be holding
+    the mask rather than the real secret.
+    """
+    data = {col.name: getattr(cfg, col.name) for col in NotificationConfig.__table__.columns}
+    if body is not None:
+        for field, value in body.model_dump(exclude_unset=True).items():
+            if field in _MASKED_FIELDS and value and "••••" in value:
+                continue
+            data[field] = value
+    return SimpleNamespace(**data)
 
 
 @router.get("/config", response_model=NotificationConfigOut)
@@ -50,7 +82,7 @@ async def update_config(
 
     for field, value in body.model_dump(exclude_unset=True).items():
         # Don't overwrite secrets with the masked placeholder
-        if field in ("smtp_password", "telegram_bot_token") and value and "••••" in value:
+        if field in _MASKED_FIELDS and value and "••••" in value:
             continue
         setattr(cfg, field, value)
 
@@ -69,10 +101,11 @@ async def update_config(
 
 @router.post("/test/email")
 async def test_email(
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    cfg = await _get_cfg(db)
+    cfg = _effective_cfg(await _get_cfg(db), body)
     if not cfg.email_enabled or not cfg.smtp_host:
         raise HTTPException(status_code=400, detail="Email is not configured")
 
@@ -86,10 +119,11 @@ async def test_email(
 
 @router.post("/test/telegram")
 async def test_telegram(
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    cfg = await _get_cfg(db)
+    cfg = _effective_cfg(await _get_cfg(db), body)
     if not cfg.telegram_enabled or not cfg.telegram_bot_token:
         raise HTTPException(status_code=400, detail="Telegram is not configured")
 
@@ -103,10 +137,11 @@ async def test_telegram(
 
 @router.post("/test/slack")
 async def test_slack(
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    cfg = await _get_cfg(db)
+    cfg = _effective_cfg(await _get_cfg(db), body)
     if not cfg.slack_enabled or not cfg.slack_webhook_url:
         raise HTTPException(status_code=400, detail="Slack is not configured")
 
@@ -125,6 +160,7 @@ async def test_slack(
 
 @router.post("/test-weekly-digest")
 async def test_weekly_digest(
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
@@ -134,7 +170,7 @@ async def test_weekly_digest(
     Channels marked `skipped` are either disabled or have their per-channel
     weekly-digest toggle off in NotificationConfig.
     """
-    cfg = await _get_cfg(db)
+    cfg = _effective_cfg(await _get_cfg(db), body)
     if not (cfg.email_enabled or cfg.telegram_enabled or cfg.webhook_enabled or cfg.slack_enabled):
         raise HTTPException(status_code=400, detail="No notification channels are enabled")
 
@@ -172,18 +208,30 @@ async def get_notification_history(
     }
 
 
-@router.get("/telegram/detect-chat-id")
+@router.post("/telegram/detect-chat-id")
 async def detect_chat_id(
+    body: NotificationConfigUpdate | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
+    # POST, not GET: the candidate bot token is a credential and must not ride in a
+    # query string, where reverse proxies and access logs would capture it. Admin-only
+    # to match the other config-testing endpoints — it dials out with a caller-supplied
+    # token, which a read-only user has no business doing.
+    telegram_bot_token = body.telegram_bot_token if body else None
     cfg = await _get_cfg(db)
-    if not cfg.telegram_bot_token:
+    # Use the candidate token from the form if present; a masked placeholder (see
+    # `_mask`) means the form field is untouched, so fall back to the stored value.
+    token = telegram_bot_token
+    if token and "••••" in token:
+        token = None
+    token = token or cfg.telegram_bot_token
+    if not token:
         raise HTTPException(status_code=400, detail="Telegram bot token is not configured")
 
     from backend.notifier import get_telegram_updates
     try:
-        chats = await get_telegram_updates(cfg.telegram_bot_token)
+        chats = await get_telegram_updates(token)
         return {"chats": chats}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -198,7 +246,7 @@ _DEST_TYPES = {"discord", "mattermost", "ntfy", "webhook", "pagerduty", "opsgeni
 
 def _dest_dict(d) -> dict:
     return {"id": d.id, "name": d.name, "type": d.type, "url": d.url,
-            "events": d.events, "enabled": d.enabled, "created_at": d.created_at}
+            "events": d.events, "enabled": d.enabled, "created_at": utc_iso(d.created_at)}
 
 
 @router.get("/destinations")

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
 from backend.models import Server, UpgradeHook, User
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/hooks", tags=["hooks"])
 
@@ -31,7 +32,7 @@ def _serialize(h: UpgradeHook) -> dict:
         "hook_type": getattr(h, "hook_type", "shell"),
         "sort_order": h.sort_order,
         "enabled": h.enabled,
-        "created_at": h.created_at,
+        "created_at": utc_iso(h.created_at),
     }
 
 

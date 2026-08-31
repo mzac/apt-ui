@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -310,8 +310,14 @@ async def list_cves(
         except ValueError:
             since_dt = None
     if until:
+        raw_until = until.strip()
         try:
-            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00")).replace(tzinfo=None)
+            parsed = datetime.fromisoformat(raw_until.replace("Z", "+00:00")).replace(tzinfo=None)
+            # "To (inclusive)": a bare date means "through the end of that day".
+            # Parsing it as midnight excluded every CVE first seen during the day
+            # the user picked as the end of the range.
+            date_only = "T" not in raw_until and ":" not in raw_until
+            until_dt = datetime.combine(parsed.date(), time.max) if date_only else parsed
         except ValueError:
             until_dt = None
 

@@ -17,14 +17,38 @@ from backend.auth import (
     verify_password,
 )
 from backend.database import get_db
-from backend.models import ApiToken, AuthEventLog, User
+from backend.models import ApiToken, AppConfig, AuthEventLog, User
 from backend.schemas import ChangePasswordRequest, LoginRequest, UserOut
+from backend.timeutil import utc_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_NAME = "apt_ui_token"
 COOKIE_MAX_AGE = 60 * 60 * 24  # 24 hours
+
+# ---------------------------------------------------------------------------
+# Password policy (issue #62) — configurable minimum length, enforced on
+# create-user, admin reset, and self-service change-password alike. Stored in
+# the generic AppConfig key/value table (same pattern used for jwt_secret /
+# encryption_key) rather than a new column, so there's nothing to migrate.
+# Default stays at the previous hardcoded minimum (4) so existing deployments
+# aren't locked out until an admin deliberately raises it.
+# ---------------------------------------------------------------------------
+PASSWORD_MIN_LENGTH_KEY = "password_min_length"
+DEFAULT_PASSWORD_MIN_LENGTH = 4
+
+
+async def get_password_min_length(db: AsyncSession) -> int:
+    result = await db.execute(select(AppConfig).where(AppConfig.key == PASSWORD_MIN_LENGTH_KEY))
+    row = result.scalar_one_or_none()
+    if row is None:
+        return DEFAULT_PASSWORD_MIN_LENGTH
+    try:
+        return max(1, int(row.value))
+    except (TypeError, ValueError):
+        return DEFAULT_PASSWORD_MIN_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # Brute-force protection (issue #62) — in-memory per (username, ip) tracker.
@@ -233,6 +257,14 @@ async def change_password(
             detail="Current password is incorrect",
         )
 
+    # Same minimum the admin create/reset paths enforce
+    min_length = await get_password_min_length(db)
+    if len(body.new_password) < min_length:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Password must be at least {min_length} characters",
+        )
+
     # Re-fetch within this session to allow update
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one()
@@ -240,6 +272,38 @@ async def change_password(
     await db.commit()
 
     return {"detail": "Password changed successfully"}
+
+
+@router.get("/password-policy")
+async def get_password_policy(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Expose the configured minimum password length so the create-user, admin-reset,
+    and change-password forms can validate client-side before the round trip."""
+    return {"min_length": await get_password_min_length(db)}
+
+
+@router.put("/password-policy")
+async def update_password_policy(
+    body: dict,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    min_length = body.get("min_length")
+    if not isinstance(min_length, int) or isinstance(min_length, bool) or min_length < 1 or min_length > 128:
+        raise HTTPException(status_code=400, detail="min_length must be an integer between 1 and 128")
+
+    result = await db.execute(select(AppConfig).where(AppConfig.key == PASSWORD_MIN_LENGTH_KEY))
+    row = result.scalar_one_or_none()
+    if row is None:
+        db.add(AppConfig(key=PASSWORD_MIN_LENGTH_KEY, value=str(min_length)))
+    else:
+        row.value = str(min_length)
+    await db.commit()
+    await record_auth_event(db, "password_policy_updated", username=current_user.username,
+                            actor=current_user.username, detail=f"min_length={min_length}")
+    return {"min_length": min_length}
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +327,9 @@ async def list_tokens(
             "id": t.id,
             "name": t.name,
             "prefix": t.token_prefix,
-            "created_at": t.created_at,
-            "last_used_at": t.last_used_at,
-            "expires_at": t.expires_at,
+            "created_at": utc_iso(t.created_at),
+            "last_used_at": utc_iso(t.last_used_at),
+            "expires_at": utc_iso(t.expires_at),
             "scopes": t.scopes,
         }
         for t in res.scalars().all()
@@ -316,9 +380,9 @@ async def create_token(
         "name": tok.name,
         "prefix": tok.token_prefix,
         "token": raw,  # shown ONCE
-        "created_at": tok.created_at,
+        "created_at": utc_iso(tok.created_at),
         "scopes": tok.scopes,
-        "expires_at": tok.expires_at,
+        "expires_at": utc_iso(tok.expires_at),
     }
     await record_auth_event(db, "token_created", username=current_user.username,
                             actor=current_user.username, detail=name)
@@ -447,8 +511,8 @@ def _user_dict(u: User) -> dict:
         "id": u.id,
         "username": u.username,
         "is_admin": u.is_admin,
-        "created_at": u.created_at,
-        "last_login": u.last_login,
+        "created_at": utc_iso(u.created_at),
+        "last_login": utc_iso(u.last_login),
     }
 
 
@@ -473,8 +537,9 @@ async def create_user(
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password required")
-    if len(password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    min_length = await get_password_min_length(db)
+    if len(password) < min_length:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
     if len(username) > 100:
         raise HTTPException(status_code=400, detail="Username too long")
 
@@ -513,16 +578,17 @@ async def update_user(
         # Don't let an admin demote themselves if they're the last admin
         if user.id == current_user.id and not new_admin:
             other_admins = await db.execute(
-                select(User).where(User.is_admin == True, User.id != user.id)
+                select(User.id).where(User.is_admin == True, User.id != user.id).limit(1)
             )
-            if other_admins.scalar_one_or_none() is None:
+            if other_admins.scalars().first() is None:
                 raise HTTPException(status_code=400, detail="Cannot demote the last admin")
         user.is_admin = new_admin
 
     # Update password (admin reset)
     if body.get("password"):
-        if len(body["password"]) < 4:
-            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        min_length = await get_password_min_length(db)
+        if len(body["password"]) < min_length:
+            raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
         user.password_hash = hash_password(body["password"])
 
     await db.commit()
@@ -552,9 +618,9 @@ async def delete_user(
     # Make sure we don't delete the last admin
     if user.is_admin:
         other_admins = await db.execute(
-            select(User).where(User.is_admin == True, User.id != user.id)
+            select(User.id).where(User.is_admin == True, User.id != user.id).limit(1)
         )
-        if other_admins.scalar_one_or_none() is None:
+        if other_admins.scalars().first() is None:
             raise HTTPException(status_code=400, detail="Cannot delete the last admin")
     # Cascade-delete the user's API tokens
     deleted_username = user.username
@@ -588,7 +654,7 @@ async def list_auth_events(
     items = [
         {
             "id": e.id,
-            "created_at": e.created_at,
+            "created_at": utc_iso(e.created_at),
             "event_type": e.event_type,
             "username": e.username,
             "actor": e.actor,

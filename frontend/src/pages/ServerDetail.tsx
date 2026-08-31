@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
@@ -15,6 +15,7 @@ import StatusDot from '@/components/StatusDot'
 import PackageInstallModal from '@/components/PackageInstallModal'
 import CopySshButton from '@/components/CopySshButton'
 import { pushRecentServer } from '@/components/CommandPalette'
+import { formatDateTime, formatDate } from '@/utils/datetime'
 
 const ansiConvert = new Convert({ escapeXML: true })
 
@@ -55,6 +56,18 @@ function applyChunk(lines: string[], chunk: string): string[] {
   return result
 }
 
+// A stream socket that closes without ever having sent a terminal
+// `complete` / `error` message was cut short (network blip, backend restart,
+// expired auth) — the run did NOT finish cleanly. Treating that as a clean
+// finish silently dropped the spinner and left bell jobs "running" forever.
+// (`wsClose` in api/client.ts already redirects to /login?expired=1 on code
+// 1008, so that case only needs an honest message here.)
+function abnormalCloseMessage(ev?: CloseEvent): string {
+  if (ev?.code === 1008) return 'Session expired — redirecting to login…'
+  const code = ev?.code ? ` (code ${ev.code})` : ''
+  return `Connection closed before the run finished${code} — it may still be running on the server.`
+}
+
 const TABS = ['Packages', 'Upgrade', 'Apt Repos', 'Health', 'History', 'dpkg Log', 'Stats', 'Shell'] as const
 type Tab = typeof TABS[number]
 
@@ -66,11 +79,21 @@ export default function ServerDetail() {
   const [server, setServer] = useState<Server | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
+  const { user: currentUser } = useAuthStore()
+  const isAdmin = !!currentUser?.is_admin
+  // Shell is admin-only server-side (interactive root shell) — don't offer the tab.
+  const visibleTabs = TABS.filter(t => t !== 'Shell' || isAdmin)
   const [tab, setTab] = useState<Tab>('Packages')
   const [checking, setChecking] = useState(false)
-  const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting'>('idle')
+  // A non-admin who deep-links to (or was left on) the Shell tab falls back to Packages.
+  const effectiveTab: Tab = tab === 'Shell' && !isAdmin ? 'Packages' : tab
+  // 'waiting'/'back'/'failed' track the post-reboot "did it come back" indicator (issue #62)
+  const [rebootState, setRebootState] = useState<'idle' | 'confirm' | 'rebooting' | 'waiting' | 'back' | 'failed'>('idle')
   const alwaysShowReboot = localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
   const [rebootMsg, setRebootMsg] = useState<string | null>(null)
+  const [rebootStartedAt, setRebootStartedAt] = useState<number | null>(null)
+  const [rebootElapsedSec, setRebootElapsedSec] = useState(0)
+  const [checkError, setCheckError] = useState<string | null>(null)
   const [showEdit, setShowEdit] = useState(false)
   const { addJob, updateJob } = useJobStore()
 
@@ -111,29 +134,121 @@ export default function ServerDetail() {
   async function handleCheck() {
     const jobId = `check-${serverId}`
     setChecking(true)
+    setCheckError(null)
     addJob({ id: jobId, type: 'check', label: `Check ${server?.name ?? serverId}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
     try {
       await serversApi.check(serverId)
       updateJob(jobId, { status: 'complete', completedAt: Date.now() })
       await load()
-    } catch {
+    } catch (err: unknown) {
+      // Surface the failure on the page too — the bell job alone is easy to miss,
+      // and a silent no-op looks like "Check Now" simply did nothing.
       updateJob(jobId, { status: 'error', completedAt: Date.now() })
+      setCheckError(err instanceof Error ? err.message : String(err))
     } finally {
       setChecking(false)
     }
   }
+
+  // Post-reboot "back online" indicator (issue #62). The backend already schedules its own
+  // post-reboot check server-side (POST /api/servers/{id}/reboot -> schedule_reboot_check,
+  // see backend/scheduler.py) which polls SSH every 30s for up to 10 minutes and then runs a
+  // full update check. We can't add a dedicated WS/REST endpoint here (this agent only owns
+  // this file + backend/routers/apt_repos.py), so this reuses the existing lightweight
+  // `serversApi.test` SSH-connect probe and mirrors the cadence of ws_reboot_all's
+  // TCP-reachability loop in backend/routers/upgrades.py (15s initial delay, 10s poll
+  // interval, 10 min timeout) rather than inventing new polling behavior.
+  const REBOOT_INITIAL_DELAY_MS = 15_000
+  const REBOOT_POLL_INTERVAL_MS = 10_000
+  const REBOOT_TIMEOUT_MS = 10 * 60 * 1000
+
+  // setTimeout chain (not setInterval) driven by a cancel token, so a server switch or
+  // unmount can never leak a timer or fire a setState after this component is gone.
+  const rebootTrackRef = useRef<{ cancelled: boolean; timeoutId?: ReturnType<typeof setTimeout>; followupId?: ReturnType<typeof setTimeout> } | null>(null)
+
+  const stopRebootTracking = useCallback(() => {
+    const t = rebootTrackRef.current
+    if (t) {
+      t.cancelled = true
+      if (t.timeoutId) clearTimeout(t.timeoutId)
+      if (t.followupId) clearTimeout(t.followupId)
+    }
+    rebootTrackRef.current = null
+  }, [])
+
+  const startRebootTracking = useCallback(() => {
+    stopRebootTracking()
+    const token: { cancelled: boolean; timeoutId?: ReturnType<typeof setTimeout>; followupId?: ReturnType<typeof setTimeout> } = { cancelled: false }
+    rebootTrackRef.current = token
+    const startedAt = Date.now()
+    setRebootStartedAt(startedAt)
+    setRebootElapsedSec(0)
+    setRebootState('waiting')
+
+    const poll = async () => {
+      if (token.cancelled) return
+      if (Date.now() - startedAt >= REBOOT_TIMEOUT_MS) {
+        setRebootElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+        setRebootState('failed')
+        return
+      }
+      let reachable = false
+      try {
+        const res = await serversApi.test(serverId)
+        reachable = res.success
+      } catch {
+        reachable = false
+      }
+      if (token.cancelled) return
+      if (reachable) {
+        setRebootElapsedSec(Math.floor((Date.now() - startedAt) / 1000))
+        setRebootState('back')
+        // Refresh now, and once more shortly after — the backend's own scheduled
+        // post-reboot check (schedule_reboot_check) may still be finishing its full apt
+        // check even after SSH answers again, so a single immediate refresh can still show
+        // stale reboot_required.
+        load()
+        token.followupId = setTimeout(() => { if (!token.cancelled) load() }, 20_000)
+        return
+      }
+      token.timeoutId = setTimeout(poll, REBOOT_POLL_INTERVAL_MS)
+    }
+
+    token.timeoutId = setTimeout(poll, REBOOT_INITIAL_DELAY_MS)
+  }, [serverId, load, stopRebootTracking])
+
+  useEffect(() => stopRebootTracking, [stopRebootTracking])
+
+  // Elapsed-time ticker, only while actively waiting — frozen once 'back'/'failed' is set.
+  useEffect(() => {
+    if (rebootState !== 'waiting' || rebootStartedAt == null) return
+    const id = setInterval(() => {
+      setRebootElapsedSec(Math.floor((Date.now() - rebootStartedAt) / 1000))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [rebootState, rebootStartedAt])
 
   async function handleReboot() {
     setRebootState('rebooting')
     setRebootMsg(null)
     try {
       const res = await serversApi.reboot(serverId)
-      setRebootMsg(res.success ? 'Reboot command sent.' : res.detail)
+      if (res.success) {
+        startRebootTracking()
+      } else {
+        setRebootMsg(res.detail)
+        setRebootState('idle')
+      }
     } catch (err: unknown) {
       setRebootMsg((err as Error).message)
-    } finally {
       setRebootState('idle')
     }
+  }
+
+  function dismissRebootTracking() {
+    stopRebootTracking()
+    setRebootState('idle')
+    setRebootStartedAt(null)
   }
 
   if (!server) {
@@ -195,8 +310,31 @@ export default function ServerDetail() {
           {rebootState === 'rebooting' && (
             <span className="text-xs text-text-muted font-mono self-center">Sending reboot…</span>
           )}
+          {rebootState === 'waiting' && (
+            <span className="text-xs text-amber font-mono self-center flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              Rebooting… waiting for {server.name} ({rebootElapsedSec}s)
+            </span>
+          )}
+          {rebootState === 'back' && (
+            <span className="text-xs text-green font-mono self-center flex items-center gap-1.5">
+              ✓ Back online ({rebootElapsedSec}s)
+              <button onClick={dismissRebootTracking} className="text-text-muted hover:text-text-primary" title="Dismiss">✕</button>
+            </span>
+          )}
+          {rebootState === 'failed' && (
+            <span className="text-xs text-red font-mono self-center flex items-center gap-1.5">
+              ✗ {server.name} did not come back within 10 minutes — check it manually.
+              <button onClick={dismissRebootTracking} className="text-text-muted hover:text-text-primary" title="Dismiss">✕</button>
+            </span>
+          )}
           {rebootMsg && (
             <span className="text-xs text-text-muted font-mono self-center">{rebootMsg}</span>
+          )}
+          {checkError && (
+            <span className="text-xs text-red font-mono self-center max-w-xs truncate" title={checkError}>
+              ✗ Check failed: {checkError}
+            </span>
           )}
           <button onClick={() => setShowEdit(v => !v)} className="btn-secondary text-xs">
             {showEdit ? 'Cancel Edit' : 'Edit'}
@@ -214,10 +352,10 @@ export default function ServerDetail() {
           {c.reboot_required && <span className="text-amber">↻ reboot required</span>}
           {c.held_packages > 0 && <span className="text-blue">{c.held_packages} held packages</span>}
           {c.autoremove_count > 0 && <span className="text-amber">{c.autoremove_count} auto-removable</span>}
-          {c.checked_at && <span>checked {new Date(c.checked_at).toLocaleString()}</span>}
+          {c.checked_at && <span>checked {formatDateTime(c.checked_at)}</span>}
           {server.last_apt_update && (
             <span title="Last time apt-get update was run on this server">
-              apt index: {new Date(server.last_apt_update).toLocaleString()}
+              apt index: {formatDateTime(server.last_apt_update)}
             </span>
           )}
           {server.apt_proxy && (
@@ -243,12 +381,12 @@ export default function ServerDetail() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border">
-        {TABS.map(t => (
+        {visibleTabs.map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm transition-colors -mb-px border-b-2 ${
-              tab === t ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
+              effectiveTab === t ? 'border-green text-text-primary' : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
           >
             {t}
@@ -256,14 +394,14 @@ export default function ServerDetail() {
         ))}
       </div>
 
-      {tab === 'Packages' && <PackagesTab serverId={serverId} server={server} onRefresh={load} />}
-      {tab === 'Upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={load} />}
-      {tab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
-      {tab === 'History' && <HistoryTab serverId={serverId} />}
-      {tab === 'Stats' && <StatsTab serverId={serverId} />}
-      {tab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
-      {tab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
-      {tab === 'Health' && <HealthTab serverId={serverId} />}
+      {effectiveTab === 'Packages' && <PackagesTab serverId={serverId} server={server} onRefresh={load} />}
+      {effectiveTab === 'Upgrade' && <UpgradePanel serverId={serverId} server={server} onRefresh={load} />}
+      {effectiveTab === 'Shell' && <SshShellPanelWrapper serverId={serverId} />}
+      {effectiveTab === 'History' && <HistoryTab serverId={serverId} />}
+      {effectiveTab === 'Stats' && <StatsTab serverId={serverId} />}
+      {effectiveTab === 'dpkg Log' && <DpkgLogTab serverId={serverId} />}
+      {effectiveTab === 'Apt Repos' && <AptReposTab serverId={serverId} />}
+      {effectiveTab === 'Health' && <HealthTab serverId={serverId} />}
     </div>
   )
 }
@@ -367,7 +505,9 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         group_ids: editForm.group_ids,
         is_enabled: editForm.is_enabled,
         tag_ids: editForm.tag_ids,
-        notes: editForm.notes || undefined,
+        // Always send the field (even when empty) — `undefined` is dropped by
+        // JSON.stringify, so clearing the textarea never reached the backend.
+        notes: editForm.notes,
       })
       onSaved()
     } catch (err: unknown) {
@@ -737,22 +877,34 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   const [sortCol, setSortCol] = useState<'name' | 'security'>('security')
   const [filterSec, setFilterSec] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [upgradeModal, setUpgradeModal] = useState(false)
+  // Packages the upgrade modal acts on, captured at click time — kept separate
+  // from `selected` so "Upgrade All" isn't affected by the "Security only" filter.
+  const [upgradeTarget, setUpgradeTarget] = useState<string[]>([])
   const [allowPhased, setAllowPhased] = useState(false)
   const [selectedRemove, setSelectedRemove] = useState<Set<string>>(new Set())
   const [removeTarget, setRemoveTarget] = useState<string[] | null>(null)
   const [removeModal, setRemoveModal] = useState(false)
   const [showInstallModal, setShowInstallModal] = useState(false)
   const [showDebModal, setShowDebModal] = useState(false)
+  // Installing a .deb runs maintainer scripts as root, so it is admin-only server-side.
+  const { user: debUser } = useAuthStore()
 
-  const loadPackages = useCallback(() => {
-    serversApi.packages(serverId).then(data => {
+  const loadPackages = useCallback(async () => {
+    try {
+      const data = await serversApi.packages(serverId)
       setPackages(data.packages)
       setHeld(data.held)
       setAutoremove(data.autoremove ?? [])
       setSelected(new Set())
       setSelectedRemove(new Set())
-    })
+      setLoadError(null)
+    } catch (e: unknown) {
+      // Distinguish a failed fetch from "nothing pending" — an empty list used to
+      // render "No pending updates." even when the request had errored out.
+      setLoadError(e instanceof Error ? e.message : String(e))
+    }
   }, [serverId])
 
   // Re-fetch whenever the check timestamp changes (e.g. after "Check Now")
@@ -783,6 +935,44 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
   function selectSecurity() { setSelected(new Set(sorted.filter(p => p.is_security).map(p => p.name))) }
   function clearSelection() { setSelected(new Set()) }
 
+  // Turning "Security only" on hides rows — drop any selection it hides so
+  // "Upgrade Selected" can never act on (or count) packages that aren't visible.
+  function toggleSecurityFilter(on: boolean) {
+    setFilterSec(on)
+    if (!on) return
+    setSelected(s => {
+      if (s.size === 0) return s
+      const visible = new Set(upgradable.filter(p => p.is_security).map(p => p.name))
+      const next = new Set([...s].filter(n => visible.has(n)))
+      return next.size === s.size ? s : next
+    })
+  }
+
+  // apt-mark hold/unhold. The packages list this tab renders comes from the last
+  // check, so reflect the change locally right away and then reconcile with the
+  // refetch — otherwise a held package stays listed as upgradable and invites a
+  // repeat click.
+  async function setHold(pkg: string, hold: boolean) {
+    try {
+      const r = await serversApi.holdPackage(serverId, pkg, hold)
+      if (!r.success) {
+        toast.error(`${hold ? 'Hold' : 'Unhold'} failed: ${r.stderr || r.stdout || 'unknown error'}`)
+        return
+      }
+      toast.success(hold ? `Held ${pkg}` : `Unheld ${pkg}`)
+      if (hold) {
+        setPackages(prev => prev.filter(p => p.name !== pkg))
+        setHeld(prev => prev.includes(pkg) ? prev : [...prev, pkg].sort())
+      } else {
+        setHeld(prev => prev.filter(h => h !== pkg))
+      }
+      onRefresh()
+      await loadPackages()
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const allChecked = sorted.length > 0 && sorted.every(p => selected.has(p.name))
   const someChecked = sorted.some(p => selected.has(p.name))
 
@@ -790,12 +980,14 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
     <div className="space-y-4">
       {/* Install buttons — always visible */}
       <div className="flex justify-end gap-2">
-        <button
-          onClick={() => setShowDebModal(true)}
-          className="btn-secondary text-xs"
-        >
-          + Install .deb
-        </button>
+        {debUser?.is_admin && (
+          <button
+            onClick={() => setShowDebModal(true)}
+            className="btn-secondary text-xs"
+          >
+            + Install .deb
+          </button>
+        )}
         <button
           onClick={() => setShowInstallModal(true)}
           className="btn-secondary text-xs"
@@ -804,7 +996,12 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
         </button>
       </div>
 
-      {packages.length === 0 ? (
+      {loadError ? (
+        <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono flex items-center justify-between gap-3">
+          <span className="truncate" title={loadError}>✗ Failed to load packages: {loadError}</span>
+          <button onClick={() => loadPackages()} className="btn-secondary text-xs shrink-0">Retry</button>
+        </div>
+      ) : packages.length === 0 ? (
         <p className="text-text-muted text-sm py-8 text-center">No pending updates.</p>
       ) : (
         <>
@@ -832,7 +1029,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
               <option value="name">Sort: Name</option>
             </select>
             <label className="flex items-center gap-2 text-xs text-text-muted">
-              <input type="checkbox" checked={filterSec} onChange={e => setFilterSec(e.target.checked)} className="w-3 h-3 accent-red" />
+              <input type="checkbox" checked={filterSec} onChange={e => toggleSecurityFilter(e.target.checked)} className="w-3 h-3 accent-red" />
               Security only
             </label>
             <div className="flex gap-1 ml-2">
@@ -842,7 +1039,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
             </div>
             <span className="text-xs text-text-muted ml-auto">{sorted.length} packages</span>
             <button
-              onClick={() => { setSelected(new Set(upgradable.map(p => p.name))); setUpgradeModal(true) }}
+              onClick={() => { setUpgradeTarget(upgradable.map(p => p.name)); setUpgradeModal(true) }}
               disabled={upgradable.length === 0}
               className="btn-amber text-xs"
             >
@@ -850,7 +1047,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
             </button>
             {someChecked && (
               <button
-                onClick={() => setUpgradeModal(true)}
+                onClick={() => { setUpgradeTarget([...selected]); setUpgradeModal(true) }}
                 className="btn-amber text-xs"
               >
                 Upgrade Selected ({selected.size})
@@ -965,15 +1162,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       if (!await confirmDialog({ message: `Hold ${p.name} at version ${p.current_version}? It will be excluded from future upgrades.`, confirmLabel: 'Hold' })) return
-                                      try {
-                                        const r = await serversApi.holdPackage(serverId, p.name, true)
-                                        if (!r.success) toast.error(`Hold failed: ${r.stderr || r.stdout}`)
-                                        else toast.success(`Held ${p.name}`)
-                                        onRefresh()
-                                        loadPackages()
-                                      } catch (err: unknown) {
-                                        toast.error(err instanceof Error ? err.message : String(err))
-                                      }
+                                      await setHold(p.name, true)
                                     }}
                                     className="text-blue/80 hover:text-blue text-[11px] font-mono"
                                     title="Pin this package to its current version (apt-mark hold)"
@@ -1050,15 +1239,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
                 <button
                   onClick={async () => {
                     if (!await confirmDialog({ message: `Unhold ${h}? It will be eligible for upgrades again.`, confirmLabel: 'Unhold' })) return
-                    try {
-                      const r = await serversApi.holdPackage(serverId, h, false)
-                      if (!r.success) toast.error(`Unhold failed: ${r.stderr || r.stdout}`)
-                      else toast.success(`Unheld ${h}`)
-                      onRefresh()
-                      loadPackages()
-                    } catch (e: unknown) {
-                      toast.error(e instanceof Error ? e.message : String(e))
-                    }
+                    await setHold(h, false)
                   }}
                   className="hover:text-red text-blue/70"
                   title="Unhold (allow upgrades again)"
@@ -1131,9 +1312,9 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
       {upgradeModal && (
         <SelectiveUpgradeModal
           serverId={serverId}
-          packages={[...selected]}
+          packages={upgradeTarget}
           allowPhased={allowPhased}
-          onClose={() => { setUpgradeModal(false); loadPackages(); onRefresh() }}
+          onClose={() => { setUpgradeModal(false); setUpgradeTarget([]); loadPackages(); onRefresh() }}
         />
       )}
 
@@ -1178,8 +1359,11 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
   const [started, setStarted] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
+  // Set when *we* tear the socket down (modal closed), so that close isn't
+  // reported as a dropped connection.
+  const teardownRef = useRef(false)
 
-  useEffect(() => () => { wsRef.current?.close() }, [])
+  useEffect(() => () => { teardownRef.current = true; wsRef.current?.close() }, [])
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [lines])
@@ -1187,19 +1371,30 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
   function start() {
     setStarted(true)
     setLines([])
+    let sawTerminal = false
     const ws = createSelectiveUpgradeWebSocket(
       serverId,
       { packages, allow_phased: phasedOpt },
       (msg) => {
         if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
         else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
-        else if (msg.type === 'error') setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
-        else if (msg.type === 'complete') {
+        else if (msg.type === 'error') {
+          sawTerminal = true
+          setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+        } else if (msg.type === 'skipped') {
+          sawTerminal = true
+          setLines(l => [...l, `\x1b[33m\n[skipped] ${msg.data}\x1b[0m\n`])
+        } else if (msg.type === 'complete') {
+          sawTerminal = true
           const d = msg.data as { success: boolean; packages_upgraded: number }
           setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓' : '✗'} ${d.packages_upgraded} packages upgraded\x1b[0m\n`])
         }
       },
-      () => { setDone(true); window.dispatchEvent(new CustomEvent('apt:refresh')) },
+      (ev) => {
+        setDone(true)
+        if (!sawTerminal) setLines(l => [...l, `\x1b[31m\n[error] ${abnormalCloseMessage(ev)}\x1b[0m\n`])
+        window.dispatchEvent(new CustomEvent('apt:refresh'))
+      },
     )
     wsRef.current = ws
   }
@@ -1270,19 +1465,30 @@ function AutoremoveModal({ serverId, packages, onClose }: {
   function start() {
     setStarted(true)
     setLines([])
+    let sawTerminal = false
     const ws = createAutoremoveWebSocket(
       serverId,
       { packages },
       (msg) => {
         if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
         else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
-        else if (msg.type === 'error') setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
-        else if (msg.type === 'complete') {
+        else if (msg.type === 'error') {
+          sawTerminal = true
+          setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
+        } else if (msg.type === 'skipped') {
+          sawTerminal = true
+          setLines(l => [...l, `\x1b[33m\n[skipped] ${msg.data}\x1b[0m\n`])
+        } else if (msg.type === 'complete') {
+          sawTerminal = true
           const d = msg.data as { success: boolean }
           setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ Autoremove successful' : '✗ Autoremove failed'}\x1b[0m\n`])
         }
       },
-      () => { setDone(true); window.dispatchEvent(new CustomEvent('apt:refresh')) },
+      (ev) => {
+        setDone(true)
+        if (!sawTerminal) setLines(l => [...l, `\x1b[31m\n[error] ${abnormalCloseMessage(ev)}\x1b[0m\n`])
+        window.dispatchEvent(new CustomEvent('apt:refresh'))
+      },
     )
     wsRef.current = ws
   }
@@ -1375,9 +1581,13 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const serverNeedsDist =
     (server.latest_check?.kept_back_count ?? 0) > 0 ||
     (server.latest_check?.new_packages_count ?? 0) > 0
+  const { user } = useAuthStore()
+  // Only admins may bypass a maintenance freeze (the backend enforces this too).
+  const canOverrideWindow = !!user?.is_admin
   const [action, setAction] = useState(serverNeedsDist ? 'dist-upgrade' : 'upgrade')
   const [allowPhased, setAllowPhased] = useState(false)
   const [rebootIfRequired, setRebootIfRequired] = useState(false)
+  const [overrideWindow, setOverrideWindow] = useState(false)
   const [lines, setLines] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [done, setDone] = useState(false)
@@ -1387,6 +1597,9 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   const [impact, setImpact] = useState<Awaited<ReturnType<typeof serversApi.impact>> | null>(null)
   const [impactLoading, setImpactLoading] = useState(false)
   const [runtimePkgs, setRuntimePkgs] = useState<string[]>([])
+  // False until the container-runtime probe below has settled, so "Run Upgrade"
+  // can't be clicked during the window where runtimePkgs is still an empty [].
+  const [runtimeProbed, setRuntimeProbed] = useState(!server.is_docker_host)
   const [pveUpgrading, setPveUpgrading] = useState(false)
   const dryWsRef = useRef<WebSocket | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -1397,16 +1610,27 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
 
   useEffect(() => () => { wsRef.current?.close(); dryWsRef.current?.close(); pveWsRef.current?.close() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Detect container-runtime packages in the upgrade list
+  // Detect container-runtime packages in the upgrade list.
+  // Re-runs whenever the check timestamp changes — a "Check Now" that pulls
+  // docker-ce into the pending list must re-arm the guard, otherwise a stale
+  // empty result leaves "Run Upgrade" enabled and the upgrade can restart Docker
+  // and kill this container mid-run.
+  const checkedAt = server.latest_check?.checked_at
   useEffect(() => {
-    if (!server.is_docker_host) return
+    if (!server.is_docker_host) { setRuntimeProbed(true); return }
+    let cancelled = false
+    setRuntimeProbed(false)
     serversApi.packages(serverId).then(data => {
+      if (cancelled) return
       const found = (data.packages as PackageInfo[])
         .map(p => p.name)
         .filter(n => CONTAINER_RUNTIME_PKGS.test(n))
       setRuntimePkgs(found)
-    }).catch(() => {})
-  }, [serverId, server.is_docker_host]) // eslint-disable-line react-hooks/exhaustive-deps
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) setRuntimeProbed(true)
+    })
+    return () => { cancelled = true }
+  }, [serverId, server.is_docker_host, checkedAt]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight
   }, [lines])
@@ -1432,19 +1656,23 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     setLines([])
     setDone(false)
     setRunning(true)
+    let sawTerminal = false
     const ws = createAptUpdateWebSocket(serverId, (msg) => {
       if (msg.type === 'output') {
         setLines(l => applyChunk(l, msg.data as string))
       } else if (msg.type === 'status') {
         setLines(l => [...l, `\x1b[36m[status] ${msg.data}\x1b[0m\n`])
       } else if (msg.type === 'error') {
+        sawTerminal = true
         setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
       } else if (msg.type === 'complete') {
+        sawTerminal = true
         setLines(l => [...l, `\x1b[32m\n[complete] ✓ apt-get update finished\x1b[0m\n`])
       }
-    }, () => {
+    }, (ev) => {
       setRunning(false)
       setDone(true)
+      if (!sawTerminal) setLines(l => [...l, `\x1b[31m\n[error] ${abnormalCloseMessage(ev)}\x1b[0m\n`])
       onRefresh()
     })
     wsRef.current = ws
@@ -1457,16 +1685,33 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     setPveUpgrading(true)
     const jobId = `upgrade-${serverId}`
     addJob({ id: jobId, type: 'upgrade', label: `pveupgrade ${server.name}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
+    let sawTerminal = false
     const ws = createPveUpgradeWebSocket(serverId, (msg) => {
       if (msg.type === 'output') setLines(l => applyChunk(l, msg.data as string))
       else if (msg.type === 'status') setLines(l => [...l, `\x1b[36m[${msg.data}]\x1b[0m\n`])
-      else if (msg.type === 'error') { setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`]); updateJob(jobId, { status: 'error', completedAt: Date.now() }) }
+      else if (msg.type === 'error') { sawTerminal = true; setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`]); updateJob(jobId, { status: 'error', completedAt: Date.now() }) }
+      else if (msg.type === 'skipped') {
+        sawTerminal = true
+        setLines(l => [...l, `\x1b[33m\n[skipped] ${msg.data}\x1b[0m\n`])
+        updateJob(jobId, { status: 'complete', completedAt: Date.now() })
+      }
       else if (msg.type === 'complete') {
+        sawTerminal = true
         const d = msg.data as { success: boolean }
         setLines(l => [...l, `\x1b[${d.success ? '32' : '31'}m\n[complete] ${d.success ? '✓ pveupgrade successful' : '✗ pveupgrade failed'}\x1b[0m\n`])
         updateJob(jobId, { status: d.success ? 'complete' : 'error', completedAt: Date.now() })
       }
-    }, () => { setRunning(false); setPveUpgrading(false); setDone(true); onRefresh(); window.dispatchEvent(new CustomEvent('apt:refresh')) })
+    }, (ev) => {
+      setRunning(false)
+      setPveUpgrading(false)
+      setDone(true)
+      if (!sawTerminal) {
+        setLines(l => [...l, `\x1b[31m\n[error] ${abnormalCloseMessage(ev)}\x1b[0m\n`])
+        updateJob(jobId, { status: 'error', completedAt: Date.now() })
+      }
+      onRefresh()
+      window.dispatchEvent(new CustomEvent('apt:refresh'))
+    })
     pveWsRef.current = ws
   }
 
@@ -1477,22 +1722,41 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
     const jobId = `upgrade-${serverId}`
     addJob({ id: jobId, type: 'upgrade', label: `Upgrading ${server.name}`, status: 'running', link: `/servers/${serverId}`, startedAt: Date.now() })
 
-    const ws = createUpgradeWebSocket(serverId, { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired }, (msg) => {
+    // `override_window` is admin-only and enforced server-side; typed locally
+    // because the shared helper's param type doesn't carry the optional flag.
+    const params: Parameters<typeof createUpgradeWebSocket>[1] & { override_window?: boolean } = {
+      action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired,
+    }
+    if (canOverrideWindow && overrideWindow) params.override_window = true
+
+    let sawTerminal = false
+    const ws = createUpgradeWebSocket(serverId, params, (msg) => {
       if (msg.type === 'output') {
         setLines(l => applyChunk(l, msg.data as string))
       } else if (msg.type === 'status') {
         setLines(l => [...l, `\x1b[36m[status] ${msg.data}\x1b[0m\n`])
       } else if (msg.type === 'error') {
+        sawTerminal = true
         setLines(l => [...l, `\x1b[31m[error] ${msg.data}\x1b[0m\n`])
         updateJob(jobId, { status: 'error', completedAt: Date.now() })
+      } else if (msg.type === 'skipped') {
+        // Maintenance-window skip — not a failure, so don't mark the job errored.
+        sawTerminal = true
+        setLines(l => [...l, `\x1b[33m\n[skipped] ${msg.data}\x1b[0m\n`])
+        updateJob(jobId, { status: 'complete', completedAt: Date.now() })
       } else if (msg.type === 'complete') {
+        sawTerminal = true
         const data = msg.data as { success: boolean; packages_upgraded: number }
         setLines(l => [...l, `\x1b[${data.success ? '32' : '31'}m\n[complete] ${data.success ? '✓ Upgrade successful' : '✗ Upgrade failed'} — ${data.packages_upgraded} packages\x1b[0m\n`])
         updateJob(jobId, { status: data.success ? 'complete' : 'error', completedAt: Date.now() })
       }
-    }, () => {
+    }, (ev) => {
       setRunning(false)
       setDone(true)
+      if (!sawTerminal) {
+        setLines(l => [...l, `\x1b[31m\n[error] ${abnormalCloseMessage(ev)}\x1b[0m\n`])
+        updateJob(jobId, { status: 'error', completedAt: Date.now() })
+      }
       onRefresh()
       window.dispatchEvent(new CustomEvent('apt:refresh'))
     })
@@ -1516,7 +1780,7 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
           <pre className="bg-bg rounded px-3 py-2 text-xs font-mono text-text-primary overflow-x-auto select-all">{`ssh ${server.username}@${server.hostname}${server.ssh_port !== 22 ? ` -p ${server.ssh_port}` : ''}\nsudo apt-get install --only-upgrade ${runtimePkgs.join(' ')}`}</pre>
         </div>
       )}
-      {server.is_docker_host && runtimePkgs.length === 0 && (server.latest_check?.packages_available ?? 0) > 0 && (
+      {server.is_docker_host && runtimeProbed && runtimePkgs.length === 0 && (server.latest_check?.packages_available ?? 0) > 0 && (
         <div className="rounded border border-purple/30 bg-purple/5 px-4 py-2 text-xs text-text-muted">
           🐳 This is the Docker host. No container-runtime packages in the current upgrade list.
         </div>
@@ -1594,6 +1858,15 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
               <input type="checkbox" checked={rebootIfRequired} onChange={e => setRebootIfRequired(e.target.checked)} className="w-4 h-4 accent-amber" />
               Reboot if required
             </label>
+            {canOverrideWindow && (
+              <label
+                className="flex items-center gap-2 text-sm text-text-muted"
+                title="Run now even if this server is outside its maintenance window. Admin-only, and recorded in the audit log."
+              >
+                <input type="checkbox" checked={overrideWindow} onChange={e => setOverrideWindow(e.target.checked)} className="w-4 h-4 accent-red" />
+                Override maintenance window
+              </label>
+            )}
             <button
               onClick={runAptUpdate}
               className="btn-secondary"
@@ -1624,13 +1897,23 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
             </button>
             <button
               onClick={startUpgrade}
-              disabled={!hasUpdates || (server.is_docker_host && runtimePkgs.length > 0)}
+              disabled={!hasUpdates || (server.is_docker_host && (!runtimeProbed || runtimePkgs.length > 0))}
               className="btn-amber"
-              title={!hasUpdates ? 'No updates available' : (server.is_docker_host && runtimePkgs.length > 0) ? 'Blocked: container-runtime packages would be upgraded — see warning above' : ''}
+              title={
+                !hasUpdates ? 'No updates available'
+                : server.is_docker_host && !runtimeProbed ? 'Checking for container-runtime packages…'
+                : server.is_docker_host && runtimePkgs.length > 0 ? 'Blocked: container-runtime packages would be upgraded — see warning above'
+                : ''
+              }
             >
               Run Upgrade
             </button>
           </div>
+          {canOverrideWindow && overrideWindow && (
+            <p className="text-xs text-red">
+              ⚠️ Maintenance window will be ignored — this upgrade runs immediately, even during a freeze. The override is recorded in the audit log.
+            </p>
+          )}
         </div>
       )}
 
@@ -1717,7 +2000,13 @@ function SshShellPanel({ serverId }: { serverId: number }) {
     return () => {
       wsRef.current?.close()
       roRef.current?.disconnect()
-      termRef.current?.dispose()
+      roRef.current = null
+      // Null the ref *before* disposing: the socket's onclose fires asynchronously
+      // after unmount and used to write() into an already-disposed xterm (throws).
+      const term = termRef.current
+      termRef.current = null
+      fitRef.current = null
+      term?.dispose()
     }
   }, [])
 
@@ -1783,8 +2072,14 @@ function SshShellPanel({ serverId }: { serverId: number }) {
       } catch {}
     }
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       setStatus('disconnected')
+      // This socket is created directly rather than through api/client.ts, so the
+      // expired-auth close (1008) has to be handled here like every other stream.
+      if (ev.code === 1008 && !window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login?expired=1'
+        return
+      }
       termRef.current?.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n')
     }
 
@@ -1803,6 +2098,10 @@ function SshShellPanel({ serverId }: { serverId: number }) {
 
   function disconnect() {
     wsRef.current?.close()
+    // Stop observing too — connect() installs a fresh observer, so leaving this
+    // one attached leaked one ResizeObserver per connect/disconnect cycle.
+    roRef.current?.disconnect()
+    roRef.current = null
     setStatus('disconnected')
   }
 
@@ -1877,7 +2176,7 @@ function HistoryTab({ serverId }: { serverId: number }) {
                 {h.status === 'success' ? '✓' : h.status === 'error' ? '✗' : '⚙'}
               </span>
               <span className="font-mono">{h.action}</span>
-              <span className="text-text-muted">{new Date(h.started_at).toLocaleString()}</span>
+              <span className="text-text-muted">{formatDateTime(h.started_at)}</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-text-muted">
               {h.packages_upgraded && <span>{h.packages_upgraded.length} pkgs</span>}
@@ -1920,26 +2219,66 @@ function HistoryTab({ serverId }: { serverId: number }) {
 // ---------------------------------------------------------------------------
 // Stats tab
 // ---------------------------------------------------------------------------
+const STATS_PAGE_SIZE = 20      // matches the history endpoint's default per_page
+const STATS_MAX_PAGES = 3       // up to 60 runs scanned for 30 successful ones
+const STATS_POINTS = 30
+
 function StatsTab({ serverId }: { serverId: number }) {
   const [data, setData] = useState<{ date: string; packages: number; security: number }[]>([])
+  const [runCount, setRunCount] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Build trend from history checks — fetch multiple pages
-    serversApi.history(serverId, 1).then(result => {
-      const points = result.items
-        .filter(h => h.status === 'success')
-        .slice(0, 30)
-        .reverse()
-        .map(h => ({
-          date: new Date(h.started_at).toLocaleDateString(),
-          packages: h.packages_upgraded?.length ?? 0,
-          security: (h.packages_upgraded ?? []).filter(p => p.is_security).length,
-        }))
-      setData(points)
-    })
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    // Build the trend from upgrade history — genuinely fetch multiple pages, since
+    // one page of 20 rows can't fill a 30-point chart (and failed runs are dropped
+    // from the series, so a page of failures used to yield an empty chart).
+    ;(async () => {
+      try {
+        const first = await serversApi.history(serverId, 1)
+        const rows = [...first.items]
+        const pages = Math.min(STATS_MAX_PAGES, Math.ceil(first.total / STATS_PAGE_SIZE))
+        for (let p = 2; p <= pages; p++) {
+          const next = await serversApi.history(serverId, p)
+          rows.push(...next.items)
+        }
+        if (cancelled) return
+        const points = rows
+          .filter(h => h.status === 'success')
+          .slice(0, STATS_POINTS)
+          .reverse()
+          .map(h => ({
+            date: formatDate(h.started_at),
+            packages: h.packages_upgraded?.length ?? 0,
+            security: (h.packages_upgraded ?? []).filter(p => p.is_security).length,
+          }))
+        setData(points)
+        setRunCount(first.total)
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
   }, [serverId])
 
-  if (data.length === 0) return <p className="text-text-muted text-sm py-8 text-center">No stats available yet.</p>
+  if (loading) return <p className="text-text-muted text-sm py-8 text-center font-mono">Loading…</p>
+  if (error) return <div className="card border-red/40 bg-red/5 p-3 text-sm text-red font-mono">✗ Failed to load stats: {error}</div>
+  if (data.length === 0) {
+    // Be honest about *why* there's nothing to plot — a server whose upgrades all
+    // failed has plenty of history, just none that belongs on this chart.
+    return (
+      <p className="text-text-muted text-sm py-8 text-center">
+        {runCount > 0
+          ? `No successful upgrades to chart — all ${runCount} recorded run${runCount === 1 ? '' : 's'} failed or are still in progress. See the History tab.`
+          : 'No stats available yet.'}
+      </p>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -2120,11 +2459,161 @@ function DpkgLogTab({ serverId }: { serverId: number }) {
 // Apt Repos Tab
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Apt Repos tab helpers — diff preview + syntax lint (issue #62)
+//
+// backend/routers/apt_repos.py's `AptRepoFile` (client.ts) doesn't yet declare
+// `backup_content` — the backend response includes it, but api/client.ts is owned by
+// another agent in this round, so the field is added locally here rather than there.
+// ---------------------------------------------------------------------------
+
+interface AptRepoFileWithBackup extends AptRepoFile {
+  backup_content?: string | null
+}
+
+type DiffOp = { type: 'same' | 'add' | 'del'; text: string }
+type DiffRow = DiffOp | { type: 'skip'; count: number }
+
+// Simple O(n*m) LCS-based line diff — no new dependency, and apt sources files are small
+// (typically tens of lines), so the naive DP table is more than fast enough.
+function computeLineDiff(oldText: string, newText: string): DiffOp[] {
+  const a = oldText.split('\n')
+  const b = newText.split('\n')
+  const n = a.length
+  const m = b.length
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const ops: DiffOp[] = []
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ type: 'same', text: a[i] }); i++; j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'del', text: a[i] }); i++
+    } else {
+      ops.push({ type: 'add', text: b[j] }); j++
+    }
+  }
+  while (i < n) { ops.push({ type: 'del', text: a[i] }); i++ }
+  while (j < m) { ops.push({ type: 'add', text: b[j] }); j++ }
+  return ops
+}
+
+// Collapse long unchanged runs to a couple of lines of context, like a normal unified diff,
+// so a one-line edit in a 100-line sources file doesn't bury the change.
+function buildDiffRows(ops: DiffOp[]): DiffRow[] {
+  const CONTEXT = 2
+  const rows: DiffRow[] = []
+  let i = 0
+  while (i < ops.length) {
+    if (ops[i].type !== 'same') { rows.push(ops[i]); i++; continue }
+    let j = i
+    while (j < ops.length && ops[j].type === 'same') j++
+    const runLen = j - i
+    if (runLen <= CONTEXT * 2) {
+      for (let k = i; k < j; k++) rows.push(ops[k])
+    } else {
+      for (let k = i; k < i + CONTEXT; k++) rows.push(ops[k])
+      rows.push({ type: 'skip', count: runLen - CONTEXT * 2 })
+      for (let k = j - CONTEXT; k < j; k++) rows.push(ops[k])
+    }
+    i = j
+  }
+  return rows
+}
+
+interface LintResult { errors: string[]; warnings: string[] }
+
+// One-line format: `deb [options] URI distribution [component1] [component2] ...`
+function lintOneLineSources(content: string): LintResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+  content.split('\n').forEach((raw, idx) => {
+    const line = raw.trim()
+    const n = idx + 1
+    if (line === '' || line.startsWith('#')) return
+    // Pull the bracketed [options] group out first (it may contain spaces, e.g.
+    // "[arch=amd64 signed-by=/path]") and strip those internal spaces so the group
+    // survives as a single token below instead of getting split into extra fields.
+    const masked = line.replace(/\[[^\]]*\]/, m => m.replace(/\s+/g, ''))
+    const tokens = masked.split(/\s+/).filter(Boolean)
+    const type = tokens[0]
+    if (type !== 'deb' && type !== 'deb-src') {
+      errors.push(`Line ${n}: does not start with "deb" or "deb-src" — apt will fail to parse this line.`)
+      return
+    }
+    const rest = tokens.slice(1)
+    const hasOptions = rest[0]?.startsWith('[')
+    const afterOptions = hasOptions ? rest.slice(1) : rest
+    if (afterOptions.length < 2) {
+      errors.push(`Line ${n}: expected a URI and a distribution after "${type}" — found ${afterOptions.length} field(s).`)
+      return
+    }
+    const uri = afterOptions[0]
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) {
+      warnings.push(`Line ${n}: "${uri}" doesn't look like a URI (expected a scheme like http:// or https://).`)
+    }
+    const dist = afterOptions[1]
+    const isFlat = dist.endsWith('/')
+    if (!isFlat && afterOptions.length < 3) {
+      warnings.push(`Line ${n}: no component listed after distribution "${dist}" — only valid for a flat repo (distribution ending in "/").`)
+    }
+  })
+  return { errors, warnings }
+}
+
+// deb822 (.sources) format: RFC822-style stanzas separated by blank lines, each requiring
+// Types/URIs/Suites (and Components unless it's a flat repo, i.e. Suites ends in "/").
+function lintDeb822Sources(content: string): LintResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+  const rawLines = content.split('\n')
+  const stanzas: { start: number; lines: string[] }[] = []
+  let current: { start: number; lines: string[] } | null = null
+  rawLines.forEach((line, idx) => {
+    if (line.trim() === '') { current = null; return }
+    if (!current) { current = { start: idx + 1, lines: [] }; stanzas.push(current) }
+    current.lines.push(line)
+  })
+  if (stanzas.length === 0) {
+    warnings.push('No stanzas found — file appears to be empty or all comments.')
+    return { errors, warnings }
+  }
+  const REQUIRED = ['Types', 'URIs', 'Suites']
+  stanzas.forEach(st => {
+    // Comment-only stanzas are allowed and ignored.
+    const contentLines = st.lines.filter(l => !l.trim().startsWith('#'))
+    if (contentLines.length === 0) return
+    const keys = new Set(
+      contentLines.filter(l => /^[A-Za-z-]+:/.test(l)).map(l => l.split(':')[0].trim())
+    )
+    for (const req of REQUIRED) {
+      if (!keys.has(req)) {
+        errors.push(`Stanza at line ${st.start}: missing required field "${req}:".`)
+      }
+    }
+    const suitesLine = contentLines.find(l => /^Suites:/.test(l))
+    const isFlat = suitesLine?.slice(suitesLine.indexOf(':') + 1).trim().endsWith('/')
+    if (!isFlat && !keys.has('Components')) {
+      warnings.push(`Stanza at line ${st.start}: no "Components:" field — only valid for a flat repo (Suites ending in "/").`)
+    }
+  })
+  return { errors, warnings }
+}
+
+function lintAptSource(content: string, format: 'one-line' | 'deb822'): LintResult {
+  return format === 'deb822' ? lintDeb822Sources(content) : lintOneLineSources(content)
+}
+
 function AptReposTab({ serverId }: { serverId: number }) {
   const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [files, setFiles] = useState<AptRepoFile[]>([])
+  const [files, setFiles] = useState<AptRepoFileWithBackup[]>([])
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   // Tracks unsaved edits per file path — cleared on save
   const [pendingEdits, setPendingEdits] = useState<Record<string, string>>({})
@@ -2132,6 +2621,10 @@ function AptReposTab({ serverId }: { serverId: number }) {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveOk, setSaveOk] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Diff + lint preview gate (issue #62) — Save no longer writes directly, it opens this
+  // review step first. Errors block; warnings need an explicit override.
+  const [previewing, setPreviewing] = useState(false)
+  const [overrideWarnings, setOverrideWarnings] = useState(false)
 
   // New file form
   const [showNewForm, setShowNewForm] = useState(false)
@@ -2156,13 +2649,19 @@ function AptReposTab({ serverId }: { serverId: number }) {
   async function loadRepos() {
     setLoading(true)
     setError(null)
+    // A reload can only be reached from the same server's tab (this whole page remounts on
+    // server switch — see ServerDetailRoute's key={id} in App.tsx), but the previous
+    // preview/lint result was computed against the pre-reload content, so drop it.
+    setPreviewing(false)
+    setOverrideWarnings(false)
     try {
       const result = await serversApi.aptRepos(serverId)
-      setFiles(result.files)
+      const withBackup = result.files as AptRepoFileWithBackup[]
+      setFiles(withBackup)
       setSelectedPath(prev => {
         // Keep current selection if still present, otherwise pick first
-        if (prev && result.files.some(f => f.path === prev)) return prev
-        return result.files[0]?.path ?? null
+        if (prev && withBackup.some(f => f.path === prev)) return prev
+        return withBackup[0]?.path ?? null
       })
       setLoaded(true)
     } catch (e: unknown) {
@@ -2183,18 +2682,60 @@ function AptReposTab({ serverId }: { serverId: number }) {
     return pendingEdits[path] !== file?.content
   }
 
-  async function saveFile() {
+  // Diff preview + syntax lint (issue #62), recomputed whenever the selected file or its
+  // pending content changes.
+  const diffRows = useMemo(
+    () => (currentFile ? buildDiffRows(computeLineDiff(currentFile.content, currentContent)) : []),
+    [currentFile, currentContent]
+  )
+  const lint = useMemo(
+    () => (currentFile ? lintAptSource(currentContent, currentFile.format) : { errors: [], warnings: [] }),
+    [currentFile, currentContent]
+  )
+
+  function openPreview() {
+    setSaveError(null)
+    setSaveOk(false)
+    setOverrideWarnings(false)
+    setPreviewing(true)
+  }
+
+  function closePreview() {
+    setPreviewing(false)
+    setOverrideWarnings(false)
+  }
+
+  // One-click restore of the previous content (issue #62). Populates the editor from the
+  // server-side single-generation backup write_apt_repo() keeps (survives a page reload);
+  // still has to go through the same diff-preview + lint gate before it's actually written,
+  // same as any other edit.
+  function restorePrevious() {
+    if (!selectedPath || currentFile?.backup_content == null) return
+    setPendingEdits(prev => ({ ...prev, [selectedPath]: currentFile.backup_content as string }))
+    setSaveError(null)
+    setSaveOk(false)
+    setPreviewing(false)
+  }
+
+  async function commitSave() {
     if (!selectedPath) return
+    if (lint.errors.length > 0) return
+    if (lint.warnings.length > 0 && !overrideWarnings) return
     setSaving(true)
     setSaveError(null)
     setSaveOk(false)
     try {
       await serversApi.saveAptRepo(serverId, selectedPath, currentContent)
       setFiles(prev => prev.map(f =>
-        f.path === selectedPath ? { ...f, content: currentContent } : f
+        // The content we're replacing becomes the new "previous version" — mirrors the
+        // backup write_apt_repo() just wrote server-side, so Restore Previous stays correct
+        // without waiting for a reload.
+        f.path === selectedPath ? { ...f, content: currentContent, backup_content: f.content } : f
       ))
       setPendingEdits(prev => { const next = { ...prev }; delete next[selectedPath!]; return next })
       setSaveOk(true)
+      setPreviewing(false)
+      setOverrideWarnings(false)
       setTimeout(() => setSaveOk(false), 3000)
     } catch (e: unknown) {
       setSaveError(String(e))
@@ -2246,6 +2787,8 @@ function AptReposTab({ serverId }: { serverId: number }) {
     setNewFileError(null)
     setSaveError(null)
     setSaveOk(false)
+    setPreviewing(false)
+    setOverrideWarnings(false)
   }
 
   function runTest() {
@@ -2319,7 +2862,7 @@ function AptReposTab({ serverId }: { serverId: number }) {
               return (
                 <button
                   key={f.path}
-                  onClick={() => { setSelectedPath(f.path); setSaveError(null); setSaveOk(false) }}
+                  onClick={() => { setSelectedPath(f.path); setSaveError(null); setSaveOk(false); setPreviewing(false); setOverrideWarnings(false) }}
                   title={f.path}
                   className={`px-3 py-1.5 text-xs -mb-px border-b-2 transition-colors font-mono whitespace-nowrap ${
                     selectedPath === f.path
@@ -2391,30 +2934,115 @@ function AptReposTab({ serverId }: { serverId: number }) {
                   setSaveError(null)
                   setPendingEdits(prev => ({ ...prev, [selectedPath]: e.target.value }))
                 }}
+                readOnly={previewing}
                 rows={Math.max(8, (currentContent.match(/\n/g)?.length ?? 0) + 3)}
                 spellCheck={false}
-                className="w-full bg-black/40 border border-border rounded px-3 py-2 text-xs font-mono text-text-primary focus:outline-none focus:border-green resize-y"
+                className={`w-full bg-black/40 border border-border rounded px-3 py-2 text-xs font-mono text-text-primary focus:outline-none focus:border-green resize-y ${previewing ? 'opacity-60' : ''}`}
               />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={saveFile}
-                  disabled={saving || !isDirty(selectedPath)}
-                  className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-                {currentFile.deletable && (
+
+              {!previewing && (
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
-                    onClick={deleteFile}
-                    disabled={deleting}
-                    className="px-3 py-1 text-xs bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 rounded disabled:opacity-40"
+                    onClick={openPreview}
+                    disabled={saving || !isDirty(selectedPath)}
+                    className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    {deleting ? 'Deleting…' : 'Delete File'}
+                    Review &amp; Save…
                   </button>
-                )}
-                {saveOk && <span className="text-xs text-green">✓ Saved</span>}
-                {saveError && <span className="text-xs text-red-400">{saveError}</span>}
-              </div>
+                  {currentFile.backup_content != null && (
+                    <button
+                      onClick={restorePrevious}
+                      disabled={saving}
+                      className="btn-secondary text-xs py-1 disabled:opacity-40"
+                      title="Load the version saved before your last edit back into the editor"
+                    >
+                      ↺ Restore Previous
+                    </button>
+                  )}
+                  {currentFile.deletable && (
+                    <button
+                      onClick={deleteFile}
+                      disabled={deleting}
+                      className="px-3 py-1 text-xs bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 rounded disabled:opacity-40"
+                    >
+                      {deleting ? 'Deleting…' : 'Delete File'}
+                    </button>
+                  )}
+                  {saveOk && <span className="text-xs text-green">✓ Saved</span>}
+                  {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+                </div>
+              )}
+
+              {/* Diff preview + syntax lint — must be reviewed before Save actually writes
+                  anything (issue #62). Errors block Save outright; warnings need the
+                  explicit override checkbox below. */}
+              {previewing && (
+                <div className="space-y-3 border border-border rounded p-3 bg-black/20">
+                  <span className="text-xs font-mono text-text-muted uppercase tracking-wide">Review changes</span>
+
+                  <div className="bg-black rounded p-2 max-h-72 overflow-y-auto font-mono text-xs leading-relaxed">
+                    {diffRows.length === 0 ? (
+                      <p className="text-text-muted px-1 py-2">No changes.</p>
+                    ) : diffRows.map((row, i) => (
+                      row.type === 'skip' ? (
+                        <div key={i} className="text-text-muted/60 px-1">
+                          ⋯ {row.count} unchanged line{row.count === 1 ? '' : 's'} ⋯
+                        </div>
+                      ) : (
+                        <div
+                          key={i}
+                          className={`px-1 whitespace-pre-wrap break-all ${
+                            row.type === 'add' ? 'bg-green-500/10 text-green' :
+                            row.type === 'del' ? 'bg-red-500/10 text-red-400' :
+                            'text-text-muted'
+                          }`}
+                        >
+                          {row.type === 'add' ? '+ ' : row.type === 'del' ? '- ' : '  '}{row.text}
+                        </div>
+                      )
+                    ))}
+                  </div>
+
+                  {lint.errors.length > 0 && (
+                    <div className="bg-red-400/10 border border-red-400/30 rounded px-3 py-2 space-y-1">
+                      <p className="text-xs text-red-400 font-medium">✗ This will likely break apt — fix before saving:</p>
+                      {lint.errors.map((e, i) => <p key={i} className="text-xs text-red-400">{e}</p>)}
+                    </div>
+                  )}
+
+                  {lint.warnings.length > 0 && (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 space-y-2">
+                      <p className="text-xs text-amber-400 font-medium">⚠ Possible issues:</p>
+                      {lint.warnings.map((w, i) => <p key={i} className="text-xs text-amber-400">{w}</p>)}
+                      {lint.errors.length === 0 && (
+                        <label className="flex items-center gap-2 text-xs text-text-muted">
+                          <input
+                            type="checkbox"
+                            checked={overrideWarnings}
+                            onChange={e => setOverrideWarnings(e.target.checked)}
+                            className="w-3.5 h-3.5 accent-amber"
+                          />
+                          I&apos;ve reviewed these warnings — save anyway
+                        </label>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={commitSave}
+                      disabled={saving || lint.errors.length > 0 || (lint.warnings.length > 0 && !overrideWarnings)}
+                      className="btn-primary text-xs py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {saving ? 'Saving…' : 'Confirm & Save'}
+                    </button>
+                    <button onClick={closePreview} disabled={saving} className="btn-secondary text-xs py-1 disabled:opacity-40">
+                      Back to Editor
+                    </button>
+                    {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2443,8 +3071,13 @@ function AptReposTab({ serverId }: { serverId: number }) {
               <div
                 ref={termRef}
                 className="bg-black rounded p-3 h-48 overflow-y-auto font-mono text-xs leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: testLines.map(l => ansiConvert.toHtml(l)).join('') }}
-              />
+              >
+                {/* One <div> per line, like every other terminal in this file —
+                    joining them into a single innerHTML blob lost all line breaks. */}
+                {testLines.map((line, i) => (
+                  <div key={i} dangerouslySetInnerHTML={{ __html: ansiConvert.toHtml(line) }} />
+                ))}
+              </div>
             )}
           </div>
         </>

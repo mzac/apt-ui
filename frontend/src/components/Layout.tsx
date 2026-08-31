@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
-import { useJobStore } from '@/hooks/useJobStore'
+import { useJobStore, dispatchJobAction } from '@/hooks/useJobStore'
 import { useTheme } from '@/hooks/useTheme'
 import { servers as serversApi, releaseCheck as releaseCheckApi, security as securityApi } from '@/api/client'
 import type { CveSummary } from '@/types'
@@ -28,8 +28,11 @@ function JobRow({ job, onNavigate }: { job: Job; onNavigate: () => void }) {
 
   function handleClick() {
     if (job.action) {
-      window.dispatchEvent(new CustomEvent(`apt:${job.action}`))
+      // Navigate first — the listener for the action lives on the destination
+      // page (e.g. the Dashboard's `apt:restore-upgrade-all`), so dispatching
+      // before the route change lost the restore entirely.
       if (job.link) navigate(job.link)
+      dispatchJobAction(job.action)
     } else if (job.link) {
       navigate(job.link)
     }

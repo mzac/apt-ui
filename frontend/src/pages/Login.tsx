@@ -19,7 +19,14 @@ export default function Login() {
   // location.state.from — preserve its search/hash too so deep links like
   // /settings?tab=Users land on the right tab after login, not just the pathname.
   const fromLoc = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from
-  const from = fromLoc ? `${fromLoc.pathname ?? '/'}${fromLoc.search ?? ''}${fromLoc.hash ?? ''}` : '/'
+  // A 401 mid-session is a full-page redirect, which router state can't survive, so
+  // client.ts puts the requested path in ?next= instead. Accept only a same-origin
+  // absolute path (no "//host" or "/\host") so the param can't become an open redirect.
+  const nextParam = searchParams.get('next')
+  const nextSafe = nextParam && /^\/(?![/\\])/.test(nextParam) ? nextParam : null
+  const from = fromLoc
+    ? `${fromLoc.pathname ?? '/'}${fromLoc.search ?? ''}${fromLoc.hash ?? ''}`
+    : nextSafe ?? '/'
 
   useEffect(() => {
     if (user) navigate(from, { replace: true })
@@ -28,6 +35,13 @@ export default function Login() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
+    // Submitting the 2FA step with an empty code used to be a silent no-op: the
+    // backend replied "2FA code required" again and that reply is mapped to no
+    // error text below (it's the signal that opens this step in the first place).
+    if (needs2fa && !totpCode.trim()) {
+      setError('Enter the 6-digit code from your authenticator app.')
+      return
+    }
     setLoading(true)
     try {
       const u = await auth.login(username, password, needs2fa ? totpCode : undefined)
@@ -37,8 +51,10 @@ export default function Login() {
       const msg = (err as Error).message || 'Login failed'
       // Backend signals 2FA needed via the error detail (issue #18)
       if (msg.includes('2FA code required')) {
+        // Re-prompting after the step is already open means the code didn't reach
+        // the backend — say so instead of appearing to do nothing.
         setNeeds2fa(true)
-        setError('')
+        setError(needs2fa ? 'Enter the 6-digit code from your authenticator app.' : '')
       } else {
         setError(msg)
       }

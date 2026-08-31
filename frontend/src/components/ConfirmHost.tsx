@@ -1,21 +1,54 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useConfirmStore } from '@/hooks/useConfirm'
+import { useEscapeKey } from '@/hooks/useEscapeKey'
 
 export default function ConfirmHost() {
   const { pending, resolve } = useConfirmStore()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const prevFocusRef = useRef<HTMLElement | null>(null)
 
+  // Escape cancels. Registered through the shared layer registry so it doesn't
+  // also close whatever modal sits underneath this dialog.
+  useEscapeKey(() => resolve(false), !!pending)
+
+  // Remember what was focused before the dialog opened and restore it on close.
+  // The confirm button itself carries autoFocus, so Enter activates *the focused
+  // control* natively — there is deliberately no window-level Enter handler:
+  // it used to resolve `true` even when Cancel had focus, firing the destructive
+  // action (and swallowing the subsequent Cancel click, since the pending dialog
+  // was already cleared).
   useEffect(() => {
     if (!pending) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') resolve(false)
-      if (e.key === 'Enter') resolve(true)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [pending, resolve])
+    prevFocusRef.current = document.activeElement as HTMLElement | null
+    return () => prevFocusRef.current?.focus?.()
+  }, [pending])
 
   if (!pending) return null
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    // A held-down Enter must not activate the freshly-autofocused confirm button
+    // the instant the dialog appears.
+    if (e.key === 'Enter' && e.repeat) {
+      e.preventDefault()
+      return
+    }
+    // Keep Tab inside the dialog.
+    if (e.key === 'Tab') {
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled])')
+      if (!focusable || focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey && (active === first || !dialogRef.current?.contains(active))) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+  }
 
   return createPortal(
     <div
@@ -23,8 +56,10 @@ export default function ConfirmHost() {
       onClick={() => resolve(false)}
     >
       <div
+        ref={dialogRef}
         className="bg-surface border border-border rounded-lg w-full max-w-sm p-5 space-y-4 shadow-2xl"
         onClick={e => e.stopPropagation()}
+        onKeyDown={onKeyDown}
         role="dialog"
         aria-modal="true"
         aria-label={pending.title || 'Confirm'}

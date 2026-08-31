@@ -3,6 +3,7 @@ import type { Server } from '@/types'
 import { createUpgradeWebSocket } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
+import { confirmDialog } from '@/hooks/useConfirm'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -14,10 +15,19 @@ interface Props {
 }
 
 interface ServerProgress {
-  status: 'pending' | 'running' | 'done' | 'error' | 'skipped'
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'cancelled'
   lines: string[]
   packagesUpgraded?: number
 }
+
+// The backend keeps streaming for a server *after* its 'complete' message —
+// post-upgrade hook output, the auto-reboot status, and the "Server is rebooting"
+// line (backend/upgrade_manager.py). A late 'output'/'status' must therefore never
+// downgrade a server that already reported a terminal result back to "running",
+// or every ✓ chip flips to ⚙️ and stays that way in the final Done view.
+const TERMINAL: ServerProgress['status'][] = ['done', 'error', 'skipped', 'cancelled']
+const liveStatus = (prev?: ServerProgress): ServerProgress['status'] =>
+  prev && TERMINAL.includes(prev.status) ? prev.status : 'running'
 
 export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props) {
   // Auto-default to dist-upgrade when any server has new dependency packages
@@ -40,6 +50,8 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   const [progress, setProgress] = useState<Record<number, ServerProgress>>({})
   const [done, setDone] = useState(false)
   const [filterServer, setFilterServer] = useState<number | null>(null)
+  const [cancelRequested, setCancelRequested] = useState(false)
+  const [runCancelled, setRunCancelled] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const termRef = useRef<HTMLDivElement>(null)
   const { addJob, updateJob } = useJobStore()
@@ -50,6 +62,13 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
   useEffect(() => {
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Keep the terminal pinned to the newest line as output streams in.
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+    }
+  }, [progress])
 
   // Escape closes the modal before start or once the run is done (not mid-run).
   useEscapeKey(handleClose, !started || done)
@@ -77,15 +96,24 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
     // not every enabled server. Without this, "Upgrade All (3)" upgraded the whole fleet.
     const ws = createUpgradeWebSocket('all', { action, allow_phased: allowPhased, reboot_if_required: rebootIfRequired, server_ids: snapshot.map(s => s.id) }, (msg) => {
       const sid = msg.server_id as number
+
+      // Fleet-level terminal message — sent once, right before the socket closes,
+      // only when a stop request was actually honoured. Distinguishes a deliberate
+      // cancel from a normal finish so the Done view doesn't read as a plain success.
+      if (msg.type === 'complete' && !sid) {
+        const data = msg.data as { cancelled?: boolean }
+        if (data?.cancelled) setRunCancelled(true)
+        return
+      }
       if (!sid) return
 
       if (msg.type === 'output') {
         setProgress(p => ({
           ...p,
-          [sid]: { ...p[sid], status: 'running', lines: [...(p[sid]?.lines || []), msg.data as string] },
+          [sid]: { ...p[sid], status: liveStatus(p[sid]), lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
       } else if (msg.type === 'status') {
-        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: 'running' } }))
+        setProgress(p => ({ ...p, [sid]: { ...p[sid], status: liveStatus(p[sid]) } }))
       } else if (msg.type === 'complete') {
         const data = msg.data as { success: boolean; packages_upgraded: number }
         setProgress(p => ({
@@ -97,10 +125,13 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
           updateJob('upgrade-all', { status: 'complete', completedAt: Date.now(), action: undefined })
         }
       } else if (msg.type === 'skipped') {
-        // Maintenance-window skip — terminal, but NOT a failure.
+        // Maintenance-window skip, or a not-yet-started server dropped by a "Stop
+        // after current" request — either way terminal, but NOT a failure. The
+        // 'cancelled' flag distinguishes the latter so it renders distinctly.
+        const status: ServerProgress['status'] = msg.cancelled ? 'cancelled' : 'skipped'
         setProgress(p => ({
           ...p,
-          [sid]: { ...p[sid], status: 'skipped', lines: [...(p[sid]?.lines || []), msg.data as string] },
+          [sid]: { ...p[sid], status, lines: [...(p[sid]?.lines || []), msg.data as string] },
         }))
         pendingRef.current -= 1
         if (pendingRef.current <= 0) {
@@ -141,13 +172,51 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
     wsRef.current = ws
   }
 
+  // The fleet terminal is the only record of a bulk run — per-server history keeps
+  // its own logs, but this combined view is lost the moment the modal closes.
+  function downloadLog() {
+    const lines: string[] = []
+    for (const s of runServers) {
+      const p = progress[s.id]
+      lines.push(`===== ${s.name} (${s.hostname}) — ${p?.status ?? 'pending'} =====`)
+      for (const l of p?.lines || []) lines.push(l.replace(/\u001b\[[0-9;]*m/g, ''))
+      lines.push('')
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `apt-ui-upgrade-all-${stamp}.log`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function handleClose() {
     window.dispatchEvent(new CustomEvent('apt:refresh'))
     onClose()
   }
 
+  // "Stop after current" — asks for confirmation, then sends a cancel frame over
+  // the already-open socket. cancelRequested guards against double-submit; the
+  // button itself is also hidden once the run finishes.
+  async function handleStop() {
+    if (cancelRequested) return
+    const ok = await confirmDialog({
+      message: 'Stop this upgrade run? Servers already upgrading will finish; servers not yet started will be skipped.',
+      confirmLabel: 'Stop',
+      danger: true,
+    })
+    if (!ok) return
+    setCancelRequested(true)
+    try {
+      wsRef.current?.send(JSON.stringify({ action: 'cancel' }))
+    } catch {
+      // socket already closed — nothing to do, the run has already ended
+    }
+  }
+
   const statusIcon = (s: ServerProgress['status']) =>
-    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗', skipped: '⏭️' }[s])
+    ({ pending: '⏳', running: '⚙️', done: '✓', error: '✗', skipped: '⏭️', cancelled: '⏹️' }[s])
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
@@ -155,6 +224,16 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
         <div className="p-4 border-b border-border flex items-center justify-between">
           <h2 className="font-mono text-sm text-text-primary">Upgrade All Servers</h2>
           <div className="flex items-center gap-2">
+            {started && !done && (
+              <button
+                onClick={handleStop}
+                disabled={cancelRequested}
+                className="btn-secondary text-xs text-red disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Stop after the currently upgrading server(s) finish"
+              >
+                {cancelRequested ? 'Stopping…' : 'Stop after current'}
+              </button>
+            )}
             {started && !done && onMinimize && (
               <button
                 onClick={onMinimize}
@@ -270,7 +349,8 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
                 const borderColor =
                   p?.status === 'done' ? '#22c55e' :
                   p?.status === 'error' ? '#ef4444' :
-                  p?.status === 'running' ? '#06b6d4' : '#374151'
+                  p?.status === 'running' ? '#06b6d4' :
+                  p?.status === 'cancelled' ? '#6b7280' : '#374151'
                 return (
                   <button
                     key={s.id}
@@ -306,7 +386,17 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
             </div>
 
             {done && (
-              <button onClick={handleClose} className="btn-primary">Done</button>
+              <div className="space-y-2">
+                {runCancelled && (
+                  <p className="text-xs text-text-muted">⏹️ Run stopped — servers not yet started were skipped.</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button onClick={handleClose} className="btn-primary">Done</button>
+                  <button onClick={downloadLog} className="btn-secondary text-sm" title="Save the combined fleet output as a .log file">
+                    ⤓ Download log
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}

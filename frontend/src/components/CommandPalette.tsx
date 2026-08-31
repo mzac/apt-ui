@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
-import { useJobStore } from '@/hooks/useJobStore'
+import { useJobStore, dispatchJobAction } from '@/hooks/useJobStore'
 import { useServersStore } from '@/hooks/useServers'
+import { useEscapeKey, hasEscapeLayer } from '@/hooks/useEscapeKey'
+import { toast } from '@/hooks/useToast'
 import { servers as serversApi } from '@/api/client'
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,70 @@ function Highlight({ text, positions }: { text: string; positions: number[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet check/refresh — mirrors the Dashboard button so the palette registers a
+// bell job (which Layout's poller then completes) and surfaces failures. It used
+// to swallow the error and only dispatch `apt:refresh`, which nothing but the
+// Dashboard listens for — off-dashboard the run was completely invisible.
+// ---------------------------------------------------------------------------
+
+async function runFleetCheck(mode: 'check' | 'refresh') {
+  const { addJob, updateJob } = useJobStore.getState()
+  const label = mode === 'refresh' ? 'Refresh All' : 'Check All'
+  addJob({ id: 'check-all', type: 'check-all', label, status: 'running', link: '/', startedAt: Date.now() })
+  try {
+    if (mode === 'refresh') await serversApi.refreshAll()
+    else await serversApi.checkAll()
+    toast.info(`${label} started across the fleet.`)
+    window.dispatchEvent(new CustomEvent('apt:refresh'))
+  } catch (e: unknown) {
+    updateJob('check-all', { status: 'error', completedAt: Date.now() })
+    toast.error(`${label} failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quick jumps (issue #62) — query-driven entries that don't exist as static
+// items: a CVE/USN id jumps to the Security page filtered to it, and a
+// package-shaped term offers a fleet-wide package search.
+// ---------------------------------------------------------------------------
+
+const CVE_LIKE = /^(cve|usn)[-\s]?[\w.-]*$/i
+const PKG_LIKE = /^[a-z0-9][a-z0-9+._-]*$/i
+
+function buildQuickJumps(raw: string, navigate: (path: string) => void): CommandItem[] {
+  const q = raw.trim()
+  if (q.length < 3) return []
+  const out: CommandItem[] = []
+
+  if (CVE_LIKE.test(q)) {
+    const id = q.toUpperCase().replace(/\s+/, '-')
+    out.push({
+      id: `jump-cve-${id}`,
+      category: 'action',
+      label: `Security · ${id}`,
+      hint: 'Show fleet exposure for this CVE / USN',
+      icon: 'action',
+      haystack: '',
+      perform: () => navigate(`/security?cve=${encodeURIComponent(id)}`),
+    })
+    return out
+  }
+
+  if (PKG_LIKE.test(q)) {
+    out.push({
+      id: `jump-pkg-${q}`,
+      category: 'action',
+      label: `Search packages · ${q}`,
+      hint: 'Fleet-wide package search',
+      icon: 'action',
+      haystack: '',
+      perform: () => navigate(`/search?q=${encodeURIComponent(q)}`),
+    })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // CommandPalette
 // ---------------------------------------------------------------------------
 
@@ -172,7 +238,7 @@ export default function CommandPalette() {
   const prevFocusRef = useRef<HTMLElement | null>(null)
 
   const navigate = useNavigate()
-  const { logout } = useAuthStore()
+  const { user, logout } = useAuthStore()
   const { jobs } = useJobStore()
   const { servers, load } = useServersStore()
 
@@ -187,6 +253,10 @@ export default function CommandPalette() {
 
   const closePalette = useCallback(() => setOpen(false), [])
 
+  // Escape closes the palette. Routed through the shared layer registry so one
+  // Escape doesn't also close the modal the palette was opened on top of.
+  useEscapeKey(closePalette, open)
+
   // Listen for Ctrl+K / Cmd+K globally + a custom event so the nav button can trigger it
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -195,6 +265,8 @@ export default function CommandPalette() {
         e.preventDefault()
         setOpen((v) => {
           if (v) return false
+          // Don't stack the palette on top of an open dialog/modal.
+          if (hasEscapeLayer()) return v
           setQuery('')
           setActiveIdx(0)
           setFilter('all')
@@ -283,8 +355,13 @@ export default function CommandPalette() {
       { label: 'Templates', path: '/templates', hint: 'Package templates' },
       { label: 'Compare', path: '/compare', hint: 'Compare packages across servers' },
       { label: 'Search', path: '/search', hint: 'Fleet-wide package search' },
+      { label: 'Security', path: '/security', hint: 'Fleet CVE inventory' },
       { label: 'Reports', path: '/reports', hint: 'Upgrade activity reports' },
       { label: 'Settings', path: '/settings', hint: 'Configure apt-ui' },
+      // Run calls an admin-only endpoint — gate it the same way the nav does.
+      ...(user?.is_admin
+        ? [{ label: 'Run', path: '/run', hint: 'Safe fleet command runner' }]
+        : []),
     ]
     for (const p of pages) {
       out.push({
@@ -341,8 +418,10 @@ export default function CommandPalette() {
         haystack: `${j.label} ${statusLabel}`.toLowerCase(),
         perform: () => {
           if (j.action) {
-            window.dispatchEvent(new CustomEvent(`apt:${j.action}`))
+            // Navigate first: the listener for the action (e.g. the Dashboard's
+            // `apt:restore-upgrade-all`) only exists on the destination page.
             if (j.link) navigate(j.link)
+            dispatchJobAction(j.action)
           } else if (j.link) {
             navigate(j.link)
           }
@@ -355,24 +434,12 @@ export default function CommandPalette() {
       {
         label: 'Check All',
         hint: 'Run apt update on every enabled server',
-        perform: async () => {
-          try {
-            await serversApi.checkAll()
-            window.dispatchEvent(new CustomEvent('apt:refresh'))
-          } catch {
-            // Errors surface in the dashboard — the palette stays silent
-          }
-        },
+        perform: () => runFleetCheck('check'),
       },
       {
         label: 'Refresh All',
         hint: 'Re-poll status without re-running apt update',
-        perform: async () => {
-          try {
-            await serversApi.refreshAll()
-            window.dispatchEvent(new CustomEvent('apt:refresh'))
-          } catch {}
-        },
+        perform: () => runFleetCheck('refresh'),
       },
       {
         label: 'New template',
@@ -405,7 +472,7 @@ export default function CommandPalette() {
     return out
     // `open` is a dep so the recent-servers list (read from localStorage) is
     // re-evaluated each time the palette opens.
-  }, [servers, jobs, navigate, logout, open])
+  }, [servers, jobs, navigate, logout, open, user])
 
   // ----- filter + score ----------------------------------------------------
 
@@ -436,8 +503,13 @@ export default function CommandPalette() {
       if (b.score !== a.score) return b.score - a.score
       return a.item.label.localeCompare(b.item.label)
     })
-    return scored
-  }, [items, query, filter])
+
+    // Quick jumps are appended (not scored) so they never displace a real match;
+    // they land at the end of the Actions group.
+    const jumps = filter === 'all' || filter === 'action' ? buildQuickJumps(query, navigate) : []
+    if (jumps.length === 0) return scored
+    return [...scored, ...jumps.map((item) => ({ item, positions: [] as number[], score: 0 }))]
+  }, [items, query, filter, navigate])
 
   // Group results by category for rendering
   const grouped = useMemo(() => {
@@ -466,11 +538,9 @@ export default function CommandPalette() {
   // ----- key handling inside the palette ----------------------------------
 
   function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      closePalette()
-      return
-    }
+    // Escape is handled by useEscapeKey above — handling it here as well let the
+    // native event keep bubbling to the window listeners of any modal underneath,
+    // so a single Escape closed both layers.
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setActiveIdx((i) => (flat.length === 0 ? 0 : (i + 1) % flat.length))

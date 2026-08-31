@@ -21,6 +21,7 @@ from backend.schemas import (
     LatestCheckOut, TagOut,
 )
 from backend.ssh_manager import apt_prefix, test_connection, run_command, sudo_prefix
+from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 
@@ -998,7 +999,7 @@ async def get_server_health(
         "failed_services": failed_services,
         "recent_errors": recent_errors,
         "reboots": reboots,
-        "collected_at": datetime.utcnow().isoformat(),
+        "collected_at": utc_iso(datetime.utcnow()),
     }
 
 
@@ -1183,7 +1184,7 @@ async def get_audit_log(
                 "id": r.id,
                 "server_id": r.server_id,
                 "server_name": name_map.get(r.server_id, f"#{r.server_id}"),
-                "started_at": r.started_at,
+                "started_at": utc_iso(r.started_at),
                 "duration_ms": r.duration_ms,
                 "initiated_by": r.initiated_by,
                 "command": r.command,
@@ -1193,6 +1194,72 @@ async def get_audit_log(
             for r in rows
         ],
     }
+
+
+async def _sync_hold_cache(db: AsyncSession, server_id: int, pkg: str, hold: bool) -> None:
+    """Reflect an apt-mark hold/unhold in the cached latest UpdateCheck row.
+
+    ``/api/servers/{id}/packages`` serves that cached row, so without this the
+    package stays listed as upgradable (and absent from the held list) until the
+    next full Check Now — making hold/unhold look like a no-op.
+
+    ``packages_json`` is deliberately left intact: it is the only cached record of
+    the package's upgrade candidate, so dropping the entry on hold would make an
+    immediate unhold unable to restore it — the package would be neither upgradable
+    nor held until the next full check. Held packages are instead filtered out of
+    the upgradable list when the row is read (see ``get_packages``), and excluded
+    from the counts below, which keeps hold and unhold exactly symmetric.
+    """
+    res = await db.execute(
+        select(UpdateCheck)
+        .where(UpdateCheck.server_id == server_id)
+        .order_by(UpdateCheck.checked_at.desc())
+        .limit(1)
+    )
+    check = res.scalar_one_or_none()
+    if check is None:
+        return
+
+    # held_packages_list is a JSON list of package names — parse defensively.
+    held: list[str] = []
+    if check.held_packages_list:
+        try:
+            parsed = json.loads(check.held_packages_list)
+            if isinstance(parsed, list):
+                held = [h for h in parsed if isinstance(h, str)]
+        except Exception:
+            held = []
+
+    if hold:
+        if pkg not in held:
+            held.append(pkg)
+    else:
+        held = [h for h in held if h != pkg]
+
+    check.held_packages_list = json.dumps(sorted(held))
+    check.held_packages = len(held)
+
+    # Recompute the cached counts over everything that is still actually upgradable,
+    # i.e. packages_json minus the held set. Runs for both hold and unhold so the two
+    # are symmetric — holding then unholding returns the row to where it started.
+    packages: list[dict] = []
+    if check.packages_json:
+        try:
+            parsed_pkgs = json.loads(check.packages_json)
+            if isinstance(parsed_pkgs, list):
+                packages = [p for p in parsed_pkgs if isinstance(p, dict)]
+        except Exception:
+            packages = []
+
+    held_set = set(held)
+    upgradable = [p for p in packages if p.get("name") not in held_set]
+    check.packages_available = sum(1 for p in upgradable if not p.get("is_new"))
+    check.security_packages = sum(1 for p in upgradable if p.get("is_security"))
+    check.regular_packages = sum(
+        1 for p in upgradable if not p.get("is_new") and not p.get("is_security")
+    )
+
+    await db.commit()
 
 
 @router.post("/{server_id}/hold-package")
@@ -1216,6 +1283,8 @@ async def hold_package(
     sudo = sudo_prefix(server)
     cmd = f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}"
     result = await run_command(server, cmd, timeout=30)
+    if result.exit_code == 0:
+        await _sync_hold_cache(db, server_id, pkg, hold)
     return {
         "success": result.exit_code == 0,
         "package": pkg,
