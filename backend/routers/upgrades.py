@@ -21,7 +21,7 @@ from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
-from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
+from backend.ssh_manager import _connect_options, apt_prefix, conffile_opts, dpkg_conffile_opts, run_command, sudo_prefix
 from backend.timeutil import utc_iso
 from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
 from backend import task_queue
@@ -170,7 +170,7 @@ async def ws_install(websocket: WebSocket, server_id: int):
         await websocket.send_json({"type": "status", "data": "connecting"})
 
         pkg_str = " ".join(safe_packages)
-        cmd = f"{apt_prefix(server)}apt-get install -y {pkg_str}"
+        cmd = f"{apt_prefix(server)}apt-get install -y {conffile_opts()} {pkg_str}"
 
         async def send_fn(msg: dict):
             try:
@@ -242,7 +242,7 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 
         if enable:
             cmd = (
-                f"{apt_prefix(server)}apt-get install -y unattended-upgrades; "
+                f"{apt_prefix(server)}apt-get install -y {conffile_opts()} unattended-upgrades; "
                 f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
                 f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
             )
@@ -340,7 +340,7 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
         elif mode == "auto":
             # Install auto-apt-proxy — discovers proxy via DNS SRV/_apt_proxy._tcp or WPAD
             cmd = (
-                f"{apt_prefix(server)}apt-get install -y auto-apt-proxy 2>&1; "
+                f"{apt_prefix(server)}apt-get install -y {conffile_opts()} auto-apt-proxy 2>&1; "
                 f"{sudo}rm -f {conf_file}"  # remove any manual config that would override auto
             )
         else:
@@ -893,6 +893,7 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
         cfg = cfg_res.scalar_one_or_none()
         run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
+        conffile_action = params.get("conffile_action") or (cfg.conffile_action if cfg else None) or "confdef_confold"
 
         await websocket.send_json({"type": "status", "data": "connecting"})
 
@@ -909,6 +910,7 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
                 allow_phased=allow_phased,
                 send_fn=send_fn,
                 run_apt_update=run_apt_update,
+                conffile_action=conffile_action,
             )
         except WebSocketDisconnect:
             pass
@@ -1419,7 +1421,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
                     pass
                 return
 
-            cmd = f"{apt_prefix(server)}apt-get install -y {pkg_str}"
+            cmd = f"{apt_prefix(server)}apt-get install -y {conffile_opts()} {pkg_str}"
 
             # Serialize with upgrades/other template applies on the same server.
             async with _get_lock(server.id):
@@ -2414,12 +2416,12 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
 
             # Install with dpkg
             await send_fn({"type": "status", "data": "installing"})
-            install_cmd = f"{apt_prefix(server, 'dpkg')}dpkg -i {remote_path}"
+            install_cmd = f"{apt_prefix(server, 'dpkg')}dpkg {dpkg_conffile_opts()} -i {remote_path}"
             await run_command_stream(server, install_cmd, send_fn, timeout=300)
 
             # Fix any missing dependencies
             await send_fn({"type": "status", "data": "fixing_deps"})
-            fix_cmd = f"{apt_prefix(server)}apt-get install -f -y"
+            fix_cmd = f"{apt_prefix(server)}apt-get install -f -y {conffile_opts()}"
             fix_result = await run_command_stream(server, fix_cmd, send_fn, timeout=300)
 
             # Clean up temp file
