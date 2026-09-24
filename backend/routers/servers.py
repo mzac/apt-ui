@@ -23,7 +23,7 @@ from backend.schemas import (
     CheckAllProgress, GroupRef, ServerCreate, ServerOut, ServerUpdate,
     LatestCheckOut, TagOut,
 )
-from backend.ssh_manager import apt_prefix, test_connection, run_command, sudo_prefix
+from backend.ssh_manager import apt_prefix, conffile_opts, test_connection, run_command, sudo_prefix
 from backend.timeutil import utc_iso
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
@@ -1336,7 +1336,7 @@ async def set_auto_security_updates(
     if enable:
         # Install unattended-upgrades if missing, then enable it
         cmd = (
-            f"{apt_prefix(server)}apt-get install -y unattended-upgrades 2>/dev/null; "
+            f"{apt_prefix(server)}apt-get install -y {conffile_opts()} unattended-upgrades 2>/dev/null; "
             f"printf 'APT::Periodic::Update-Package-Lists \"1\";\\nAPT::Periodic::Unattended-Upgrade \"1\";\\n' "
             f"| {sudo}tee /etc/apt/apt.conf.d/20auto-upgrades"
         )

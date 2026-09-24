@@ -41,6 +41,35 @@ CONNECT_TIMEOUT = 15  # seconds — give up connecting after this long
 
 DEBIAN_FRONTEND = "DEBIAN_FRONTEND=noninteractive"
 
+# What dpkg does when a package ships a new version of a config file the admin
+# has modified. Without one of these, dpkg stops at an interactive
+# "What would you like to do about it?" prompt that nobody can answer (issue #83).
+CONFFILE_OPTS = {
+    # Use the package's declared default answer; fall back to keeping the existing
+    # file if there is no default. This is the safest choice for production servers.
+    "confdef_confold": '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"',
+    # Always keep the locally-installed config file, even if the package ships a newer one.
+    "confold": '-o Dpkg::Options::="--force-confold"',
+    # Always take the new config file from the package, overwriting local changes.
+    "confnew": '-o Dpkg::Options::="--force-confnew"',
+}
+DEFAULT_CONFFILE_ACTION = "confdef_confold"
+
+
+def conffile_opts(action: str | None = None) -> str:
+    """apt-get `-o Dpkg::Options::=...` flags for *action* (unknown → safe default).
+
+    Every apt-get call that can install or upgrade a package must carry these,
+    not just the full upgrade — `install`, `install --only-upgrade` and
+    `install -f` hit the same conffile prompt.
+    """
+    return CONFFILE_OPTS.get(action or DEFAULT_CONFFILE_ACTION, CONFFILE_OPTS[DEFAULT_CONFFILE_ACTION])
+
+
+def dpkg_conffile_opts(action: str | None = None) -> str:
+    """The same conffile policy as conffile_opts(), in raw `dpkg` flag form."""
+    return conffile_opts(action).replace('-o Dpkg::Options::=', '').replace('"', '')
+
 
 def sudo_prefix(server: "Server") -> str:
     """Return 'sudo ' unless the SSH user is root."""
@@ -156,7 +185,10 @@ async def run_command(
     try:
         async with asyncssh.connect(**_connect_options(server)) as conn:
             result = await asyncio.wait_for(
-                conn.run(command, check=False),
+                # stdin=DEVNULL: nothing can answer an interactive prompt over
+                # this channel, so hand it EOF — dpkg/debconf then fail (or take
+                # the default) at once instead of hanging until the timeout.
+                conn.run(command, check=False, stdin=asyncssh.DEVNULL),
                 timeout=timeout,
             )
         cr = CommandResult(
@@ -239,6 +271,10 @@ async def run_command_stream(
             async with conn.create_process(
                 command,
                 stderr=asyncssh.STDOUT,  # merge stderr into stdout for terminal feel
+                # No one can type into this stream. An open-but-silent stdin made
+                # an unexpected prompt (e.g. dpkg's conffile question, issue #83)
+                # hang for the whole timeout; EOF makes it fail fast and visibly.
+                stdin=asyncssh.DEVNULL,
             ) as process:
                 await asyncio.wait_for(
                     _drain_reader(process.stdout, is_stderr=False),

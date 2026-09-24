@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.models import Server, UpdateCheck, UpdateHistory, ScheduleConfig
-from backend.ssh_manager import apt_prefix, run_command, run_command_stream, sudo_prefix
+from backend.ssh_manager import apt_prefix, conffile_opts, run_command, run_command_stream, sudo_prefix
 from backend.update_checker import check_server
 from backend.actor import get_actor
 
@@ -102,6 +102,16 @@ async def _run_hook(server: Server, hook, send_fn) -> int:
     return hr.exit_code
 
 
+# stdin is closed on every SSH command, so a prompt apt-ui didn't pre-answer
+# makes dpkg bail with one of these instead of hanging (issue #83).
+_PROMPT_EOF_RE = re.compile(r"end of file on stdin at conffile prompt|EOF on stdin at conffile prompt", re.I)
+_PROMPT_EOF_MSG = (
+    "dpkg stopped at an interactive config-file prompt. Choose a 'Config file handling' "
+    "policy in Settings → Preferences → Upgrade Behaviour, then run the upgrade again (or resolve it with "
+    "`sudo dpkg --configure -a` on the host)."
+)
+
+
 def _validate_package_names(packages: list[str]) -> list[str]:
     """Return *packages* unchanged if all names are valid; raise ValueError otherwise.
 
@@ -115,20 +125,8 @@ def _validate_package_names(packages: list[str]) -> list[str]:
     return packages
 
 
-_CONFFILE_OPTS = {
-    # Use the package's declared default answer; fall back to keeping the existing
-    # file if there is no default. This is the safest choice for production servers.
-    "confdef_confold": '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"',
-    # Always keep the locally-installed config file, even if the package ships a newer one.
-    "confold": '-o Dpkg::Options::="--force-confold"',
-    # Always take the new config file from the package, overwriting local changes.
-    "confnew": '-o Dpkg::Options::="--force-confnew"',
-}
-
-
 def _build_upgrade_command(server, action: str, allow_phased: bool, conffile_action: str = "confdef_confold") -> str:
-    dpkg_opts = _CONFFILE_OPTS.get(conffile_action, _CONFFILE_OPTS["confdef_confold"])
-    base = f"{apt_prefix(server)}apt-get {action} -y {dpkg_opts}"
+    base = f"{apt_prefix(server)}apt-get {action} -y {conffile_opts(conffile_action)}"
     if allow_phased:
         base += " -o APT::Get::Always-Include-Phased-Updates=true"
     return base
@@ -245,6 +243,8 @@ async def upgrade_server(
                     raise RuntimeError(
                         "Sudo requires a password. Configure passwordless sudo for this user."
                     )
+                if _PROMPT_EOF_RE.search(combined_output):
+                    raise RuntimeError(_PROMPT_EOF_MSG)
                 if "Could not get lock" in combined_output:
                     raise RuntimeError(
                         "apt lock is held by another process. Try again later."
@@ -365,6 +365,7 @@ async def upgrade_packages_selective(
     initiated_by: str | None = None,
     send_fn=None,
     run_apt_update: bool = False,
+    conffile_action: str = "confdef_confold",
 ) -> UpdateHistory:
     """
     Upgrade only the specified *packages* using apt-get install --only-upgrade.
@@ -426,7 +427,7 @@ async def upgrade_packages_selective(
                         raise RuntimeError(update_result.stderr or "SSH connection failed")
 
                 pkg_list = " ".join(packages)
-                cmd = f"{apt_prefix(server)}apt-get install --only-upgrade -y {pkg_list}"
+                cmd = f"{apt_prefix(server)}apt-get install --only-upgrade -y {conffile_opts(conffile_action)} {pkg_list}"
                 if allow_phased:
                     cmd += " -o APT::Get::Always-Include-Phased-Updates=true"
 
@@ -438,6 +439,8 @@ async def upgrade_packages_selective(
                 combined_output = "".join(log_chunks)
                 if "sudo: a password is required" in combined_output:
                     raise RuntimeError("Sudo requires a password. Configure passwordless sudo for this user.")
+                if _PROMPT_EOF_RE.search(combined_output):
+                    raise RuntimeError(_PROMPT_EOF_MSG)
                 if "Could not get lock" in combined_output:
                     raise RuntimeError("apt lock is held by another process. Try again later.")
 
@@ -555,9 +558,9 @@ async def run_autoremove(
 
                 if packages:
                     pkg_list = " ".join(packages)
-                    cmd = f"{apt_prefix(server)}apt-get remove -y {pkg_list}"
+                    cmd = f"{apt_prefix(server)}apt-get remove -y {conffile_opts()} {pkg_list}"
                 else:
-                    cmd = f"{apt_prefix(server)}apt-get autoremove -y"
+                    cmd = f"{apt_prefix(server)}apt-get autoremove -y {conffile_opts()}"
 
                 result = await run_command_stream(server, cmd, _send, timeout=600)
 
