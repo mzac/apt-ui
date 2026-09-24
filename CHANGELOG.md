@@ -4,6 +4,17 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.09.24-01] — 2026-09-24
+
+Fixes upgrades hanging forever when a package ships a new version of a locally modified config file ([#83](https://github.com/mzac/apt-ui/issues/83)).
+
+### Fixed
+
+- **Upgrades stopped at dpkg's "modified config file" prompt and hung until the one-hour timeout.** The `--force-confdef` / `--force-confold` policy was only passed to the full `upgrade` / `dist-upgrade`. Selective upgrades (`apt-get install --only-upgrade`), package installs, template applies, `.deb` installs (`dpkg -i` + `apt-get install -f`) and the unattended-upgrades / auto-apt-proxy installs all ran without it, so a package such as `zabbix-agent2` shipping an updated config file stopped at *"What would you like to do about it?"* with nobody able to answer. The policy now lives in one helper (`conffile_opts()` in `backend/ssh_manager.py`) and is applied to every apt-get/dpkg call that installs or upgrades. Selective upgrades honour the **Config file handling** setting (Settings → Preferences → Upgrade Behaviour); the other paths use the safe default (package default, otherwise keep the local file).
+- **Unanswerable prompts now fail fast instead of hanging.** SSH commands previously held stdin open, so *any* interactive question waited for the full timeout. stdin is now closed, so a prompt that still slips through (e.g. Proxmox `pveupgrade`, which can't take dpkg options) fails within seconds, and a dpkg conffile-prompt failure is reported as a clear error pointing at the setting and at `dpkg --configure -a`.
+
+---
+
 ## [2026.08.31-02] — 2026-08-31
 
 Completes the enhancement roadmap ([#62](https://github.com/mzac/apt-ui/issues/62)) — including the four architectural items that had been deferred — and fixes `.deb` installation, which has been broken at runtime for several releases.
