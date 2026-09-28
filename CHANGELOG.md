@@ -4,12 +4,21 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [2026.09.24-01] — 2026-09-24
+## [2026.09.28-01] — 2026-09-28
 
-Fixes upgrades hanging forever when a package ships a new version of a locally modified config file ([#83](https://github.com/mzac/apt-ui/issues/83)).
+Handles hosts whose root filesystem is read-only or a RAM-backed overlay, such as a Raspberry Pi in overlay mode ([#86](https://github.com/mzac/apt-ui/issues/86)), and fixes upgrades hanging forever when a package ships a new version of a locally modified config file ([#83](https://github.com/mzac/apt-ui/issues/83)). The #83 fix was prepared as `2026.09.24-01` but never tagged, so it ships here.
+
+### Added
+
+- **Read-only and overlay root filesystem detection.** Every update check now records whether a host's root filesystem is read-write, read-only, or a RAM-backed overlay (Raspberry Pi OS "Overlay File System", Ubuntu `overlayroot`). Docker/podman containers also run on an overlay root but keep their changes, so they are not flagged. The dashboard shows a `🔒 overlay` / `🔒 read-only` badge and Server Detail explains what it means for that host.
+- **"Allow upgrades on a read-only root"** per-server setting, for hosts you remount read-write yourself around upgrades (e.g. pre-upgrade hook `mount -o remount,rw /`, post-upgrade hook `mount -o remount,ro /`). Overlay roots stay blocked regardless, since nothing can make those writes survive a reboot.
 
 ### Fixed
 
+- **Upgrades on an overlay root reported success and then silently reverted at the next reboot.** Writes land in RAM, so apt succeeded, history said "success", and the fleet and CVE views showed the host as patched when it wasn't. Upgrades, installs, autoremove, template applies and EEPROM updates are now refused on these hosts with an explanation, and auto-upgrade, upgrade-all, autoremove-all and `/api/v1` skip them.
+- **Upgrades on a read-only root failed on every run**, and auto-upgrade re-sent a failure notification each time. They are now blocked the same way unless the new opt-in is set. Work planned earlier (rollout rings, window-queued upgrades) that reaches such a host is recorded as **skipped**, not failed, so it no longer aborts a rollout ring.
+- **Update checks silently used stale package lists when `apt-get update` failed.** Only SSH failures were treated as errors, so a read-only disk, broken source or DNS failure produced a normal-looking result based on whatever lists were already on the host. The check still completes, but now carries a warning shown as **⚠ stale** with the apt error.
+- **Template applies skipped by a maintenance window were never recorded in history.** The skip path referenced an undefined variable, and the error was swallowed.
 - **Upgrades stopped at dpkg's "modified config file" prompt and hung until the one-hour timeout.** The `--force-confdef` / `--force-confold` policy was only passed to the full `upgrade` / `dist-upgrade`. Selective upgrades (`apt-get install --only-upgrade`), package installs, template applies, `.deb` installs (`dpkg -i` + `apt-get install -f`) and the unattended-upgrades / auto-apt-proxy installs all ran without it, so a package such as `zabbix-agent2` shipping an updated config file stopped at *"What would you like to do about it?"* with nobody able to answer. The policy now lives in one helper (`conffile_opts()` in `backend/ssh_manager.py`) and is applied to every apt-get/dpkg call that installs or upgrades. Selective upgrades honour the **Config file handling** setting (Settings → Preferences → Upgrade Behaviour); the other paths use the safe default (package default, otherwise keep the local file).
 - **Unanswerable prompts now fail fast instead of hanging.** SSH commands previously held stdin open, so *any* interactive question waited for the full timeout. stdin is now closed, so a prompt that still slips through (e.g. Proxmox `pveupgrade`, which can't take dpkg options) fails within seconds, and a dpkg conffile-prompt failure is reported as a clear error pointing at the setting and at `dpkg --configure -a`.
 
