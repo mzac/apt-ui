@@ -38,7 +38,7 @@ OVERLAY_REASON = (
 )
 READONLY_REASON = (
     "blocked: the root filesystem is mounted read-only. Remount it read-write "
-    "(e.g. with pre/post-upgrade hooks) and enable 'Allow read-only root' for this server"
+    "(e.g. with pre/post-upgrade hooks) and enable 'Allow upgrades on a read-only root' in this server's settings"
 )
 
 
