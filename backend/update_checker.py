@@ -178,6 +178,21 @@ async def _gather_stats(server: Server) -> dict:
             "elif [ -f /.dockerenv ] || systemd-detect-virt 2>/dev/null | grep -qE '^(lxc|docker)$'; then echo container; "
             "else echo none; fi"
         ),
+        # Root filesystem mode (issue #86): 'ro' when / is mounted read-only,
+        # 'overlay' for a RAM-backed overlay root (Raspberry Pi OS overlay file
+        # system, Ubuntu overlayroot) where package changes vanish at reboot,
+        # else 'rw'. Docker/podman containers also run on an overlay root, but
+        # their writable layer persists, so they are not flagged as overlay.
+        # `set --` splits findmnt's space-padded columns without a subshell.
+        "root_fs_mode": (
+            "line=$(findmnt -n -o FSTYPE,OPTIONS / 2>/dev/null | tail -n 1); "
+            "[ -n \"$line\" ] || line=$(awk '$2==\"/\"{t=$3\" \"$4} END{print t}' /proc/mounts 2>/dev/null); "
+            "set -- $line; "
+            "if printf ',%s,' \"$2\" | grep -q ',ro,'; then echo ro; "
+            "elif [ \"$1\" = overlay ] && [ ! -f /.dockerenv ] && [ ! -f /run/.containerenv ]; then echo overlay; "
+            "elif [ -n \"$1\" ]; then echo rw; "
+            "else echo unknown; fi"
+        ),
         # Config drift (issue #62) — unmerged conffiles left by past upgrades.
         # These (.dpkg-dist/.ucf-dist/.dpkg-new under /etc) are the most common
         # post-patch breakage cause and are cheap to find. Emit the TRUE (uncapped)
@@ -363,6 +378,11 @@ async def _gather_stats(server: Server) -> dict:
     if snapshot_capability not in ("btrfs", "zfs", "container", "none"):
         snapshot_capability = None
 
+    fs_raw = results.get("root_fs_mode")
+    root_fs_mode = fs_raw.stdout.strip() if fs_raw and fs_raw.success else None
+    if root_fs_mode not in ("rw", "ro", "overlay"):
+        root_fs_mode = None
+
     # Line 1 is the true (uncapped) count; remaining lines are up to 200 paths.
     drift_raw = results.get("drift")
     drift_files: list[str] = []
@@ -396,9 +416,26 @@ async def _gather_stats(server: Server) -> dict:
         "boot_total_mb": boot_total_mb,
         "boot_free_mb": boot_free_mb,
         "snapshot_capability": snapshot_capability,
+        "root_fs_mode": root_fs_mode,
         "drift_count": drift_count,
         "drift_files": json.dumps(drift_files) if drift_files else None,
     }
+
+
+def _summarize_apt_update_failure(result) -> str:
+    """One-line explanation of a failed `apt-get update` for UpdateCheck.warning_message."""
+    if result.exit_code == 124:
+        detail = "timed out"
+    else:
+        out = (result.stdout or "") + "\n" + (result.stderr or "")
+        errors = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("E:")]
+        if not errors:
+            errors = [ln.strip() for ln in out.splitlines() if ln.strip()][-1:]
+        detail = "; ".join(errors[:3])[:500] or f"exit code {result.exit_code}"
+    return (
+        f"apt-get update failed ({detail}) — this result is based on the package lists "
+        "already on the host and may be out of date."
+    )
 
 
 async def check_server(
@@ -455,6 +492,14 @@ async def check_server(
         await db.refresh(check)
         return check
 
+    # Any other apt-get update failure (read-only root, broken sources, DNS, ...)
+    # used to be ignored silently, so the check "succeeded" against whatever
+    # package lists were already on disk — possibly months stale (issue #86).
+    # Keep the result, but carry a warning the UI can show.
+    warnings: list[str] = []
+    if not apt_update_result.success:
+        warnings.append(_summarize_apt_update_failure(apt_update_result))
+
     sudo = sudo_prefix(server)
 
     # Parallel: list upgradable, held packages, reboot required, autoremove dry-run,
@@ -480,6 +525,11 @@ async def check_server(
     # Append new packages (not yet installed) discovered from the upgrade dry-run.
     # These are pulled in as dependencies of upgraded meta-packages (e.g. new kernel
     # version triggered by upgrading linux-generic) and don't appear in apt list --upgradable.
+    if not upgrade_dry_result.success and upgrade_dry_result.exit_code != 255:
+        warnings.append(
+            "The dist-upgrade dry-run failed, so new dependency packages (e.g. a new kernel) "
+            "and kept-back packages may be missing from this result."
+        )
     if upgrade_dry_result.success:
         new_pkg_names, kept_back_names = _parse_dist_upgrade_dry_run(upgrade_dry_result.stdout)
         # Mark kept-back packages in the upgradable list so the UI can flag them
@@ -547,6 +597,7 @@ async def check_server(
         server_id=server.id,
         checked_at=datetime.utcnow(),
         status="success",
+        warning_message=" ".join(warnings) or None,
         packages_available=sum(1 for p in packages if not p.get("is_new")),
         security_packages=security_count,
         regular_packages=regular_count,
@@ -586,6 +637,7 @@ async def check_server(
         boot_total_mb=stats.get("boot_total_mb"),
         boot_free_mb=stats.get("boot_free_mb"),
         snapshot_capability=stats.get("snapshot_capability"),
+        root_fs_mode=stats.get("root_fs_mode"),
         drift_count=stats.get("drift_count"),
         drift_files=stats.get("drift_files"),
     )

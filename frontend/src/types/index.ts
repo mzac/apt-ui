@@ -40,6 +40,7 @@ export interface LatestCheck {
   autoremove_count: number
   reboot_required: boolean
   error_message: string | null
+  warning_message: string | null  // non-fatal, e.g. apt-get update failed → stale package lists (issue #86)
   kept_back_count: number       // packages blocked by plain apt-get upgrade (need dist-upgrade)
   new_packages_count: number    // packages installed as new dependencies during upgrade
 }
@@ -81,6 +82,8 @@ export interface Server {
   boot_free_mb: number | null            // free MB on /boot (issue #43)
   boot_total_mb: number | null           // total MB on /boot
   snapshot_capability: 'btrfs' | 'zfs' | 'container' | 'none' | null  // (issue #35)
+  root_fs_mode: 'rw' | 'ro' | 'overlay' | null  // root filesystem mode (issue #86)
+  allow_readonly_root: boolean           // admin opt-in: allow package changes on a read-only root (issue #86)
   drift_count: number | null              // unmerged conffiles (issue #62)
   drift_files: string[] | null            // the actual drifted conffile paths, capped (issue #62)
   os_eol_date: string | null              // ISO date when OS reaches EOL (issue #57)

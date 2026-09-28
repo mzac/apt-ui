@@ -238,6 +238,10 @@ async def init_db():
             "ALTER TABLE update_history ADD COLUMN rollout_id INTEGER",
             "ALTER TABLE maintenance_windows ADD COLUMN mode TEXT DEFAULT 'deny'",
             "ALTER TABLE schedule_config ADD COLUMN queue_for_next_window BOOLEAN DEFAULT 0",
+            # Read-only / overlay root filesystems (issue #86)
+            "ALTER TABLE server_stats ADD COLUMN root_fs_mode TEXT",
+            "ALTER TABLE servers ADD COLUMN allow_readonly_root BOOLEAN DEFAULT 0",
+            "ALTER TABLE update_checks ADD COLUMN warning_message TEXT",
             # api_tokens table is created by Base.metadata.create_all (new table — no migration needed)
             # auth_event_log + fleet_snapshots are new tables — created by create_all, no migration needed
         ]

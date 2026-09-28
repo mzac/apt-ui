@@ -219,6 +219,7 @@ async def _build_server_out(
             autoremove_count=check.autoremove_count or 0,
             reboot_required=check.reboot_required,
             error_message=check.error_message,
+            warning_message=check.warning_message,
             kept_back_count=kept_back_count,
             new_packages_count=new_packages_count,
         )
@@ -290,6 +291,8 @@ async def _build_server_out(
         boot_free_mb=stats_row.boot_free_mb if stats_row else None,
         boot_total_mb=stats_row.boot_total_mb if stats_row else None,
         snapshot_capability=stats_row.snapshot_capability if stats_row else None,
+        root_fs_mode=stats_row.root_fs_mode if stats_row else None,
+        allow_readonly_root=bool(server.allow_readonly_root),
         drift_count=stats_row.drift_count if stats_row else None,
         drift_files=drift_files,
         os_eol_date=eol["date"],
@@ -544,6 +547,8 @@ async def update_server(
         server.is_enabled = body.is_enabled
     if "notes" in body.model_fields_set:
         server.notes = body.notes
+    if body.allow_readonly_root is not None:
+        server.allow_readonly_root = body.allow_readonly_root
     if body.ssh_private_key is not None:
         if body.ssh_private_key.strip():
             from backend.crypto import encrypt
@@ -1330,6 +1335,10 @@ async def set_auto_security_updates(
 ):
     """Enable or disable unattended-upgrades (auto security updates) on a server via SSH."""
     server = await _get_server_or_404(server_id, db)
+    from backend.fs_guard import root_fs_block_reason
+    block = await root_fs_block_reason(db, server)
+    if block:
+        raise HTTPException(status_code=409, detail=f"Changing automatic security updates {block}.")
     enable: bool = body.get("enable", True)
     sudo = sudo_prefix(server)
 

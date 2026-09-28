@@ -130,6 +130,7 @@ class ServerUpdate(BaseModel):
     tag_names: Optional[list[str]] = None
     ssh_private_key: Optional[str] = None  # write-only; stored encrypted
     notes: Optional[str] = None
+    allow_readonly_root: Optional[bool] = None  # opt a read-only root back in (issue #86)
 
 
 class LatestCheckOut(BaseModel):
@@ -142,6 +143,7 @@ class LatestCheckOut(BaseModel):
     autoremove_count: int = 0
     reboot_required: bool = False
     error_message: Optional[str] = None
+    warning_message: Optional[str] = None  # e.g. apt-get update failed → stale lists (issue #86)
     # Detected from dist-upgrade dry-run; signals that plain `apt-get upgrade`
     # will skip these and dist-upgrade is required.
     kept_back_count: int = 0
@@ -188,6 +190,8 @@ class ServerOut(BaseModel):
     boot_free_mb: Optional[int] = None              # free MB on /boot (issue #43)
     boot_total_mb: Optional[int] = None             # total MB on /boot
     snapshot_capability: Optional[str] = None       # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
+    root_fs_mode: Optional[str] = None              # 'rw' | 'ro' | 'overlay' (issue #86)
+    allow_readonly_root: bool = False               # admin opt-in for a read-only root (issue #86)
     drift_count: Optional[int] = None                # unmerged conffiles (issue #62)
     drift_files: Optional[list[str]] = None          # the actual drifted conffile paths (capped) (issue #62)
     os_eol_date: Optional[str] = None                # ISO date string of OS EOL (issue #57)
@@ -217,6 +221,7 @@ class UpdateCheckOut(BaseModel):
     checked_at: UtcDateTime
     status: str
     error_message: Optional[str] = None
+    warning_message: Optional[str] = None
     packages_available: int
     security_packages: int
     regular_packages: int

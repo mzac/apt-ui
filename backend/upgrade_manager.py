@@ -132,6 +132,41 @@ def _build_upgrade_command(server, action: str, allow_phased: bool, conffile_act
     return base
 
 
+async def _skip_if_readonly_root(
+    server: Server, db: AsyncSession, action: str, allow_phased: bool, initiated_by: str | None, send_fn,
+) -> UpdateHistory | None:
+    """Last-line guard for a read-only / overlay root (issue #86).
+
+    The entry points (WebSockets, REST, /api/v1, auto-upgrade) refuse these hosts
+    up front; this catches work that was planned earlier and runs later — rollout
+    rings and window-queued upgrades — against a host that has since been
+    detected as read-only. Recorded as 'skipped' (not 'error') so it doesn't
+    fail a rollout ring or fire failure notifications on every run.
+    """
+    from backend.fs_guard import root_fs_block_reason
+    block = await root_fs_block_reason(db, server)
+    if block is None:
+        return None
+    msg = f"Skipped — {block}."
+    if send_fn:
+        await send_fn({"type": "skipped", "data": msg})
+    history = UpdateHistory(
+        server_id=server.id,
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+        status="skipped",
+        action=action,
+        phased_updates=allow_phased,
+        log_output=msg,
+        initiated_by=(initiated_by or get_actor()),
+    )
+    db.add(history)
+    await db.commit()
+    await db.refresh(history)
+    logger.info("Skipping %s on %s: %s", action, server.name, block)
+    return history
+
+
 async def upgrade_server(
     server: Server,
     db: AsyncSession,
@@ -150,6 +185,9 @@ async def upgrade_server(
     If *send_fn* is provided, streams output over WebSocket in real time.
     Always creates an UpdateHistory record.
     """
+    skipped = await _skip_if_readonly_root(server, db, action, allow_phased, initiated_by, send_fn)
+    if skipped is not None:
+        return skipped
     lock = _get_lock(server.id)
     # Fail fast (atomic in single-threaded asyncio: no await between check and add)
     if server.id in _upgrade_running:
@@ -376,6 +414,9 @@ async def upgrade_packages_selective(
     # Validate package names to prevent shell injection (CWE-78)
     _validate_package_names(packages)
 
+    skipped = await _skip_if_readonly_root(server, db, "selective", allow_phased, initiated_by, send_fn)
+    if skipped is not None:
+        return skipped
     lock = _get_lock(server.id)
     if server.id in _upgrade_running:
         msg = f"An upgrade is already running on {server.name}"
@@ -510,6 +551,9 @@ async def run_autoremove(
     if packages:
         _validate_package_names(packages)
 
+    skipped = await _skip_if_readonly_root(server, db, "autoremove", False, initiated_by, send_fn)
+    if skipped is not None:
+        return skipped
     lock = _get_lock(server.id)
     if server.id in _upgrade_running:
         msg = f"An upgrade is already running on {server.name}"

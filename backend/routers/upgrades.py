@@ -73,6 +73,18 @@ def _parse_apt_cache_show(output: str) -> dict[str, dict]:
     return packages
 
 
+async def _ws_refuse_if_readonly_root(websocket: WebSocket, db: AsyncSession, server: Server, what: str) -> bool:
+    """Send an error and close *websocket* if *server*'s root filesystem is read-only
+    or an overlay (issue #86). Returns True when the caller must stop."""
+    from backend.fs_guard import root_fs_block_reason
+    block = await root_fs_block_reason(db, server)
+    if block is None:
+        return False
+    await websocket.send_json({"type": "error", "data": f"{what} {block}."})
+    await websocket.close()
+    return True
+
+
 @router.get("/api/servers/{server_id}/packages/search", response_model=list[PackageSearchResult])
 async def search_packages(
     server_id: int,
@@ -146,6 +158,8 @@ async def ws_install(websocket: WebSocket, server_id: int):
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Install"):
             return
 
         try:
@@ -230,6 +244,8 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
             return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Changing automatic security updates"):
+            return
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -313,6 +329,8 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Changing the apt proxy"):
             return
 
         try:
@@ -423,6 +441,8 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
             return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "EEPROM update"):
+            return
 
         sudo = sudo_prefix(server)
         cmd = f"{sudo}rpi-eeprom-update -a"
@@ -490,6 +510,8 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Upgrade"):
             return
 
         async def send_fn(msg: dict):
@@ -620,6 +642,10 @@ async def start_upgrade(
     user: User = Depends(get_current_user),
 ):
     server = await _get_server(server_id, db)
+    from backend.fs_guard import root_fs_block_reason
+    block = await root_fs_block_reason(db, server)
+    if block:
+        raise HTTPException(status_code=409, detail=f"Upgrade {block}.")
     cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = cfg_res.scalar_one_or_none()
     run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
@@ -688,7 +714,8 @@ async def start_upgrade_all(
     srv_res = await db.execute(select(Server).where(Server.is_enabled == True))
     servers = srv_res.scalars().all()
 
-    # Only servers with pending updates
+    # Only servers with pending updates, skipping read-only / overlay roots (issue #86)
+    from backend.fs_guard import root_fs_block_reason
     to_upgrade = []
     for s in servers:
         chk_res = await db.execute(
@@ -699,6 +726,8 @@ async def start_upgrade_all(
         )
         chk = chk_res.scalar_one_or_none()
         if chk and chk.status == "success" and chk.packages_available > 0:
+            if await root_fs_block_reason(db, s):
+                continue
             to_upgrade.append(s)
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -740,6 +769,8 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Upgrade"):
             return
 
         # Read upgrade params from first message
@@ -875,6 +906,8 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
             return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Upgrade"):
+            return
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -1002,6 +1035,7 @@ async def ws_upgrade_all(websocket: WebSocket):
                     await _send_skipped(missing, None, "Server not found")
 
         from backend.routers.maintenance import window_block_reason
+        from backend.fs_guard import root_fs_block_reason
         to_upgrade = []
         for s in servers:
             if not s.is_enabled:
@@ -1020,6 +1054,12 @@ async def ws_upgrade_all(websocket: WebSocket):
                     "No pending updates from the last check" if chk and chk.status == "success"
                     else "No successful update check yet",
                 )
+                continue
+            # Read-only / overlay root (issue #86): checked before the window so a
+            # host that can never be upgraded in place isn't queued for a window.
+            fs_block = await root_fs_block_reason(db, s)
+            if fs_block:
+                await _send_skipped(s.id, s.name, fs_block)
                 continue
             block = await window_block_reason(db, s.id, override=override_window)
             if block:
@@ -1386,6 +1426,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
 
     from datetime import datetime
     from backend.routers.maintenance import window_block_reason
+    from backend.fs_guard import root_fs_block_reason
     from backend.upgrade_manager import _get_lock
     from backend.models import UpdateHistory
 
@@ -1401,10 +1442,13 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
         async with semaphore:
             # Respect maintenance windows — don't push a template install into a freeze.
             async with AsyncSessionLocal() as wdb:
+                # Read-only / overlay root first (issue #86): no window makes it installable.
+                block = await root_fs_block_reason(wdb, server)
                 # Full block check, not the deny-only helper: allow-only windows
                 # block by *not* being open, which get_active_window_for_server
                 # cannot express.
-                block = await window_block_reason(wdb, server.id)
+                if block is None:
+                    block = await window_block_reason(wdb, server.id)
             if block is not None:
                 await send_fn({"type": "skipped", "data": f"Skipped — {block}"})
                 # Record the skip in history so it's visible/auditable.
@@ -1414,7 +1458,7 @@ async def ws_template_apply(websocket: WebSocket, template_id: int):
                             server_id=server.id, status="skipped",
                             action=f"template:{template_name}", initiated_by=actor,
                             completed_at=datetime.utcnow(),
-                            log_output=f"Skipped — in maintenance window '{window.name}'",
+                            log_output=f"Skipped — {block}",
                         ))
                         await sdb.commit()
                 except Exception:
@@ -1548,6 +1592,8 @@ async def ws_autoremove(websocket: WebSocket, server_id: int):
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
             return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Autoremove"):
+            return
 
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -1617,7 +1663,9 @@ async def ws_autoremove_all(websocket: WebSocket):
         srv_res = await db.execute(srv_query)
         servers = srv_res.scalars().all()
 
+        from backend.fs_guard import root_fs_block_reason
         to_clean = []
+        fs_skipped: list[tuple[Server, str]] = []  # read-only / overlay roots (issue #86)
         for s in servers:
             chk_res = await db.execute(
                 select(UpdateCheck)
@@ -1627,6 +1675,10 @@ async def ws_autoremove_all(websocket: WebSocket):
             )
             chk = chk_res.scalar_one_or_none()
             if chk and (chk.autoremove_count or 0) > 0:
+                fs_block = await root_fs_block_reason(db, s)
+                if fs_block:
+                    fs_skipped.append((s, fs_block))
+                    continue
                 to_clean.append(s)
 
         # Task row (issue #62) — durable record of this fleet run.
@@ -1669,6 +1721,9 @@ async def ws_autoremove_all(websocket: WebSocket):
             await websocket.send_json(payload)
         except Exception:
             pass
+
+    for srv, reason in fs_skipped:
+        await _send_skipped(srv.id, srv.name, reason)
 
     async def _mark_task_cancel_requested():
         try:
@@ -2362,6 +2417,8 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_readonly_root(websocket, db, server, "Install"):
             return
 
         try:

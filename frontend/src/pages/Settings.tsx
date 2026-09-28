@@ -219,6 +219,7 @@ function ServersTab() {
     tagIds: [] as number[],
     tagInput: '',
     notes: '',
+    allow_readonly_root: false,
   })
   const [editTagDropdown, setEditTagDropdown] = useState(false)
   const [editError, setEditError] = useState('')
@@ -260,6 +261,7 @@ function ServersTab() {
       tagIds: (s.tags ?? []).map(t => t.id),
       tagInput: '',
       notes: s.notes ?? '',
+      allow_readonly_root: s.allow_readonly_root ?? false,
     })
     setEditTagDropdown(false)
     setEditError('')
@@ -283,6 +285,7 @@ function ServersTab() {
         // Send "" rather than undefined: JSON.stringify drops undefined keys, so
         // clearing the notes box never reached the backend and the old note stuck.
         notes: editForm.notes.trim(),
+        allow_readonly_root: editForm.allow_readonly_root,
       })
       setEditingServer(null)
       load()
@@ -1023,6 +1026,17 @@ function ServersTab() {
                           onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
                         />
                       </div>
+                      {/* Read-only root opt-in (issue #86) — only relevant once a check has
+                          detected a read-only root, or if it was already turned on. */}
+                      {(s.root_fs_mode === 'ro' || s.allow_readonly_root) && (
+                        <label className="flex items-start gap-1.5 pt-1 text-xs text-text-muted"
+                          title="Upgrades on this host are blocked because its root filesystem is mounted read-only. Tick this only if you remount it read-write yourself, e.g. a pre-upgrade hook running `mount -o remount,rw /` and a post-upgrade hook running `mount -o remount,ro /`.">
+                          <input type="checkbox" checked={editForm.allow_readonly_root}
+                            onChange={e => setEditForm(f => ({ ...f, allow_readonly_root: e.target.checked }))}
+                            className="w-3.5 h-3.5 mt-0.5 accent-amber" />
+                          <span>Allow upgrades on read-only root <span className="text-text-muted/70">(I remount it rw via hooks)</span></span>
+                        </label>
+                      )}
                     </div>
                   </td>
                 </tr>

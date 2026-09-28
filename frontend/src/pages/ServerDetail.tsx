@@ -368,6 +368,35 @@ export default function ServerDetail() {
           📝 {server.notes}
         </div>
       )}
+      {/* Read-only / overlay root filesystem (issue #86) */}
+      {server.root_fs_mode === 'overlay' && (
+        <div className="text-xs bg-red/10 border border-red/30 text-red rounded px-3 py-2 space-y-1">
+          <p className="font-medium">🔒 Root filesystem is a RAM-backed overlay — package changes are blocked</p>
+          <p className="text-text-muted">
+            Writes go to memory and are discarded at the next reboot (Raspberry Pi OS overlay file system,
+            Ubuntu overlayroot), so an upgrade would report success and then silently revert. To patch this host,
+            disable the overlay (e.g. <code className="font-mono">sudo raspi-config nonint do_overlayfs 1</code>),
+            reboot, upgrade, then re-enable it and reboot again.
+          </p>
+        </div>
+      )}
+      {server.root_fs_mode === 'ro' && (
+        <div className={`text-xs rounded px-3 py-2 space-y-1 border ${server.allow_readonly_root ? 'bg-blue/10 border-blue/30 text-blue' : 'bg-amber/10 border-amber/30 text-amber'}`}>
+          <p className="font-medium">
+            🔒 Root filesystem is mounted read-only{server.allow_readonly_root ? ' — upgrades allowed' : ' — package changes are blocked'}
+          </p>
+          <p className="text-text-muted">
+            {server.allow_readonly_root
+              ? 'Upgrades are allowed because this server is marked as remounted read-write around upgrades (e.g. via pre/post-upgrade hooks). If that isn\'t set up, they will fail.'
+              : 'apt and dpkg can\'t write here, so upgrades would fail every time. If you remount it read-write around upgrades (e.g. pre/post-upgrade hooks), enable "Allow upgrades on a read-only root" under Edit.'}
+          </p>
+        </div>
+      )}
+      {c?.warning_message && (
+        <div className="text-xs bg-amber/10 border border-amber/30 text-amber rounded px-3 py-2 font-mono break-words">
+          ⚠ {c.warning_message}
+        </div>
+      )}
 
       {/* Edit form */}
       {showEdit && (
@@ -425,6 +454,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
     group_ids: (server.groups || []).map(g => g.id),
     tag_ids: (server.tags || []).map(t => t.id),
     notes: server.notes ?? '',
+    allow_readonly_root: server.allow_readonly_root ?? false,
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -471,6 +501,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
       group_ids: (server.groups || []).map(g => g.id),
       tag_ids: (server.tags || []).map(t => t.id),
       notes: server.notes ?? '',
+      allow_readonly_root: server.allow_readonly_root ?? false,
     })
     setAutoSecState(server.auto_security_updates)
     setAptProxyState(server.apt_proxy)
@@ -508,6 +539,7 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
         // Always send the field (even when empty) — `undefined` is dropped by
         // JSON.stringify, so clearing the textarea never reached the backend.
         notes: editForm.notes,
+        allow_readonly_root: editForm.allow_readonly_root,
       })
       onSaved()
     } catch (err: unknown) {
@@ -679,6 +711,23 @@ function EditServerForm({ server, groupList, onSaved, onCancel }: {
           onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
         />
       </div>
+
+      {/* Read-only root opt-in (issue #86) */}
+      {(server.root_fs_mode === 'ro' || server.allow_readonly_root) && (
+        <label className="flex items-start gap-2 text-sm text-text-muted">
+          <input type="checkbox" checked={editForm.allow_readonly_root}
+            onChange={e => setEditForm(f => ({ ...f, allow_readonly_root: e.target.checked }))}
+            className="w-4 h-4 mt-0.5 accent-amber" />
+          <span>
+            Allow upgrades on a read-only root
+            <span className="block text-xs">
+              Only tick this if you remount the root filesystem read-write around upgrades yourself,
+              e.g. a pre-upgrade hook running <code className="font-mono">mount -o remount,rw /</code> and a
+              post-upgrade hook running <code className="font-mono">mount -o remount,ro /</code>.
+            </span>
+          </span>
+        </label>
+      )}
 
       {/* Auto security updates */}
       {autoSecState !== null && (
@@ -1764,6 +1813,8 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
   }
 
   const hasUpdates = (server.latest_check?.packages_available ?? 0) > 0
+  // Mirrors backend/fs_guard.py (issue #86) so the button explains itself instead of failing.
+  const rootFsBlocked = server.root_fs_mode === 'overlay' || (server.root_fs_mode === 'ro' && !server.allow_readonly_root)
 
   return (
     <div className="space-y-3">
@@ -1797,7 +1848,8 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
           {!running && (
             <button
               onClick={startPveUpgrade}
-              disabled={!hasUpdates}
+              disabled={!hasUpdates || rootFsBlocked}
+              title={rootFsBlocked ? 'Blocked: read-only / overlay root filesystem — see banner above' : undefined}
               className="btn text-xs px-3 py-1.5 border border-orange-500/50 text-orange-300 hover:bg-orange-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Run pveupgrade
@@ -1897,10 +1949,11 @@ function UpgradePanel({ serverId, server, onRefresh }: { serverId: number; serve
             </button>
             <button
               onClick={startUpgrade}
-              disabled={!hasUpdates || (server.is_docker_host && (!runtimeProbed || runtimePkgs.length > 0))}
+              disabled={!hasUpdates || rootFsBlocked || (server.is_docker_host && (!runtimeProbed || runtimePkgs.length > 0))}
               className="btn-amber"
               title={
                 !hasUpdates ? 'No updates available'
+                : rootFsBlocked ? 'Blocked: read-only / overlay root filesystem — see banner above'
                 : server.is_docker_host && !runtimeProbed ? 'Checking for container-runtime packages…'
                 : server.is_docker_host && runtimePkgs.length > 0 ? 'Blocked: container-runtime packages would be upgraded — see warning above'
                 : ''
@@ -2172,8 +2225,8 @@ function HistoryTab({ serverId }: { serverId: number }) {
             onClick={() => setExpanded(expanded === h.id ? null : h.id)}
           >
             <div className="flex items-center gap-3 text-sm">
-              <span className={h.status === 'success' ? 'text-green' : h.status === 'error' ? 'text-red' : 'text-cyan'}>
-                {h.status === 'success' ? '✓' : h.status === 'error' ? '✗' : '⚙'}
+              <span className={h.status === 'success' ? 'text-green' : h.status === 'error' ? 'text-red' : h.status === 'skipped' ? 'text-text-muted' : 'text-cyan'}>
+                {h.status === 'success' ? '✓' : h.status === 'error' ? '✗' : h.status === 'skipped' ? '⤼' : '⚙'}
               </span>
               <span className="font-mono">{h.action}</span>
               <span className="text-text-muted">{formatDateTime(h.started_at)}</span>
