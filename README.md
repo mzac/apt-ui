@@ -180,6 +180,7 @@
 | 🏥 | **Health panel** | on-demand probe of `systemctl --failed`, last 20 boot-priority `journalctl` errors, recent reboot history · restart-service per failed unit |
 | 🍓 | **Raspberry Pi EEPROM** | firmware update detection for Pi 4 / 400 / CM4 / 5 · one-click apply |
 | 💾 | **Disk + boot health** | red badge when `/boot` free < 100 MB or < 10% · kernel install date with 60d / 180d age tinting |
+| 🔒 | **Read-only / overlay root** | detects a read-only `/` or a RAM-backed overlay root (Raspberry Pi overlay FS, `overlayroot`) · blocks package changes that would fail or be lost at reboot · flags stale checks when `apt-get update` fails |
 | 📸 | **Snapshot capability** | BTRFS / ZFS / LXC detected · banner with copy-pastable pre-hook command suggestion in the Upgrade tab |
 | ⚡ | **apt proxy** | detect + manage `apt-cacher-ng` proxy or `auto-apt-proxy` · live SSH output when toggling |
 
@@ -277,6 +278,26 @@ out to other binaries and need them listed too — add only the ones you use:
 | Apt repo editing, apt proxy, auto-security-updates | `/usr/bin/tee`, `/usr/bin/rm` |
 | Health tab (failed units, needrestart, service restart) | `/usr/bin/systemctl`, `/usr/sbin/needrestart`, `/usr/bin/journalctl` |
 | Pre-upgrade snapshots / rollback | `/usr/bin/timeshift` |
+| Remounting a read-only root around upgrades (via hooks) | `/usr/bin/mount` |
+
+### Read-only and overlay root filesystems
+
+Every update check records whether the host's root filesystem is read-write, read-only, or a
+RAM-backed overlay. apt-ui treats the last two differently:
+
+- **Overlay root** (Raspberry Pi OS "Overlay File System", Ubuntu `overlayroot`): writes go to
+  memory and are thrown away at the next reboot, so an upgrade would report success and then
+  silently revert. apt-ui blocks upgrades, installs, autoremove and EEPROM updates on these hosts,
+  and auto-upgrade skips them. To patch one, disable the overlay
+  (`sudo raspi-config nonint do_overlayfs 1`), reboot, upgrade, re-enable it and reboot again.
+- **Read-only root** (`/` mounted `ro`): apt can't write, so the same actions are blocked by default.
+  If you remount it yourself around upgrades, add a pre-upgrade hook running
+  `sudo mount -o remount,rw /` and a post-upgrade hook running `sudo mount -o remount,ro /`
+  (post hooks always run, even after a failure), then tick **Allow upgrades on a read-only root**
+  in the server's Edit form.
+
+If `apt-get update` fails during a check (read-only root, a broken source, DNS), the check still
+completes but is marked **⚠ stale**, since it's based on the package lists already on the host.
 
 ### Key delivery
 

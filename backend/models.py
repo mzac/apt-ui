@@ -183,6 +183,10 @@ class Server(Base):
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of tag strings (legacy)
     ssh_private_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted PEM key
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text admin notes
+    # Opt-in for hosts whose root is mounted read-only (issue #86): the admin
+    # handles remounting rw (e.g. pre/post-upgrade hooks), so apt-ui should not
+    # refuse package changes. Never applies to overlay roots — see fs_guard.py.
+    allow_readonly_root: Mapped[bool] = mapped_column(Boolean, default=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_reachable: Mapped[bool] = mapped_column(Boolean, default=True)   # updated by ping job
     last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last successful TCP connect
@@ -215,6 +219,9 @@ class UpdateCheck(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     status: Mapped[str] = mapped_column(Text, nullable=False)  # success / error
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Non-fatal problem with a successful check, e.g. `apt-get update` failed so the
+    # result is based on stale package lists (issue #86).
+    warning_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     packages_available: Mapped[int] = mapped_column(Integer, default=0)
     security_packages: Mapped[int] = mapped_column(Integer, default=0)
     regular_packages: Mapped[int] = mapped_column(Integer, default=0)
@@ -273,6 +280,7 @@ class ServerStats(Base):
     snapshot_capability: Mapped[str | None] = mapped_column(Text, nullable=True)    # 'btrfs' | 'zfs' | 'container' | 'none' (issue #35)
     drift_count: Mapped[int | None] = mapped_column(Integer, nullable=True)         # unmerged conffiles (.dpkg-dist/.ucf-dist) (issue #62)
     drift_files: Mapped[str | None] = mapped_column(Text, nullable=True)            # JSON list of the actual drifted conffile paths (capped) (issue #62)
+    root_fs_mode: Mapped[str | None] = mapped_column(Text, nullable=True)           # 'rw' | 'ro' | 'overlay' (issue #86)
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_stats")
 

@@ -88,6 +88,10 @@ async def v1_upgrade(server_id: int, body: dict | None = None,
     block = await window_block_reason(db, server_id, override=bool(body.get("override_window")) and user.is_admin)
     if block:
         raise HTTPException(status_code=409, detail=f"Upgrade {block}")
+    from backend.fs_guard import root_fs_block_reason
+    fs_block = await root_fs_block_reason(db, server)
+    if fs_block:
+        raise HTTPException(status_code=409, detail=f"Upgrade {fs_block}")
 
     action = body.get("action", "upgrade")
     if action not in ("upgrade", "dist-upgrade"):

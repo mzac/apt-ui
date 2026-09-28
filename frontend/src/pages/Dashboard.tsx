@@ -1401,6 +1401,18 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           c?.reboot_required
             ? <span key="reboot" className="text-amber">↻ reboot</span>
             : null,
+          // Read-only / overlay root filesystem (issue #86)
+          s.root_fs_mode === 'overlay'
+            ? <span key="rootfs" className="text-red" title="Root filesystem is a RAM-backed overlay — package changes would be lost at reboot, so upgrades are blocked">🔒 overlay</span>
+            : s.root_fs_mode === 'ro'
+              ? <span key="rootfs" className={s.allow_readonly_root ? 'text-blue' : 'text-amber'}
+                  title={s.allow_readonly_root
+                    ? 'Root filesystem is read-only — upgrades allowed (you remount it read-write, e.g. via hooks)'
+                    : 'Root filesystem is read-only — upgrades are blocked'}>🔒 read-only</span>
+              : null,
+          c?.warning_message
+            ? <span key="stale" className="text-amber" title={c.warning_message}>⚠ stale</span>
+            : null,
           s.eeprom_update_available === 'update_available'
             ? <span key="eeprom" className="text-amber" title="EEPROM firmware update available">⬆ eeprom</span>
             : null,

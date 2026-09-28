@@ -104,7 +104,9 @@ async def _job_auto_upgrade():
 
         # Only upgrade servers that have pending updates AND aren't in a maintenance deny window
         from backend.routers.maintenance import get_active_window_for_server
+        from backend.fs_guard import root_fs_block_reason
         to_upgrade = []
+        skipped_readonly_root = 0
         skipped_for_maintenance = 0
         queued_for_window = 0
         for s in servers:
@@ -116,6 +118,13 @@ async def _job_auto_upgrade():
             )
             chk = chk_res.scalar_one_or_none()
             if chk and chk.status == "success" and chk.packages_available > 0:
+                # Read-only root fails every run; an overlay root "succeeds" and
+                # reverts at reboot (issue #86). Neither belongs in auto-upgrade.
+                fs_block = await root_fs_block_reason(db, s)
+                if fs_block:
+                    skipped_readonly_root += 1
+                    logger.info("Auto-upgrade skipping %s — upgrade %s", s.name, fs_block)
+                    continue
                 # Skip servers currently in a maintenance window (issue #40).
                 #
                 # "Queue for next window opening" instead of a hard skip is
@@ -160,6 +169,8 @@ async def _job_auto_upgrade():
                     logger.info("Auto-upgrade skipping %s — inside maintenance window '%s'", s.name, window.name)
                     continue
                 to_upgrade.append(s)
+        if skipped_readonly_root:
+            logger.info("Auto-upgrade: %d server(s) skipped for a read-only / overlay root", skipped_readonly_root)
         if skipped_for_maintenance:
             logger.info(
                 "Auto-upgrade: %d server(s) inside maintenance windows (%d queued for the next opening)",
