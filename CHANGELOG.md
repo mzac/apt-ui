@@ -4,6 +4,16 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.09.29-01] — 2026-09-29
+
+Shows which packages autoremove will remove before you start it.
+
+### Changed
+
+- **Autoremove confirmations now list the packages.** The Dashboard's **Autoremove All** dialog only showed a count per server, and a server's **Remove All** showed no package names at all. Both now list the auto-removable packages for each server, and Autoremove All has a filter box, like the Pending Updates dialog. The lists come from each server's last check (a new `GET /api/stats/pending-autoremove` endpoint, no live SSH), so they are marked "as of the last check": `apt-get autoremove` still removes whatever is orphaned when it actually runs. ([#89](https://github.com/mzac/apt-ui/pull/89))
+
+---
+
 ## [2026.09.28-01] — 2026-09-28
 
 Handles hosts whose root filesystem is read-only or a RAM-backed overlay, such as a Raspberry Pi in overlay mode ([#86](https://github.com/mzac/apt-ui/issues/86)), and fixes upgrades hanging forever when a package ships a new version of a locally modified config file ([#83](https://github.com/mzac/apt-ui/issues/83)). The #83 fix was prepared as `2026.09.24-01` but never tagged, so it ships here.
