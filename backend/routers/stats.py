@@ -152,6 +152,38 @@ async def pending_updates(
     return {"servers": out}
 
 
+@router.get("/stats/pending-autoremove")
+async def pending_autoremove(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Every server's auto-removable package names, read from the latest stored
+    UpdateCheck (no live SSH) — the Autoremove All modal's counterpart to
+    /stats/pending-updates, so the user sees what will be removed before starting."""
+    import json as _json
+    from backend.query_helpers import latest_checks_by_server
+
+    result = await db.execute(select(Server).where(Server.is_enabled == True))
+    servers = result.scalars().all()
+    checks = await latest_checks_by_server(db)
+
+    out: list[dict] = []
+    for server in servers:
+        check = checks.get(server.id)
+        if check is None or check.status == "error" or (check.autoremove_count or 0) <= 0:
+            continue
+        packages: list[str] = []
+        if check.autoremove_packages:
+            try:
+                parsed = _json.loads(check.autoremove_packages)
+                if isinstance(parsed, list):
+                    packages = sorted(str(p) for p in parsed if p)
+            except Exception:
+                pass
+        out.append({"id": server.id, "packages": packages, "checked_at": utc_iso(check.checked_at)})
+    return {"servers": out}
+
+
 @router.get("/history")
 async def global_history(
     page: int = Query(default=1, ge=1),

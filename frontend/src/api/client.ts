@@ -428,6 +428,8 @@ export const stats = {
   trend: (days = 30) => get<{ points: FleetTrendPoint[] }>(`/api/stats/trend?days=${days}`),
   pendingUpdates: () =>
     get<{ servers: { id: number; packages: PendingUpdatePkg[] }[] }>('/api/stats/pending-updates'),
+  pendingAutoremove: () =>
+    get<{ servers: { id: number; packages: string[]; checked_at: string | null }[] }>('/api/stats/pending-autoremove'),
   globalHistory: (page = 1, serverId?: number, status?: string) => {
     const params = new URLSearchParams({ page: String(page) })
     if (serverId !== undefined) params.set('server_id', String(serverId))
