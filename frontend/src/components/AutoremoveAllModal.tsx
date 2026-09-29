@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import type { Server } from '@/types'
-import { createAutoremoveAllWebSocket } from '@/api/client'
+import { createAutoremoveAllWebSocket, stats as statsApi } from '@/api/client'
 import { useJobStore } from '@/hooks/useJobStore'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { confirmDialog } from '@/hooks/useConfirm'
+import { relativeTime } from '@/utils/datetime'
 import Convert from 'ansi-to-html'
 
 const ansiConvert = new Convert({ escapeXML: true })
@@ -41,6 +42,27 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
   const pendingRef = useRef(0)
 
   const totalPackages = servers.reduce((sum, s) => sum + (s.latest_check?.autoremove_count ?? 0), 0)
+
+  // Package names per server, from each server's last check (one aggregate call,
+  // same as the Pending Updates modal) — shown before start so it's clear what goes.
+  const [pkgMap, setPkgMap] = useState<Record<number, { packages: string[]; checked_at: string | null }> | null>(null)
+  const [loadError, setLoadError] = useState(false)
+  const [filter, setFilter] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    statsApi.pendingAutoremove()
+      .then(res => {
+        if (cancelled) return
+        const map: Record<number, { packages: string[]; checked_at: string | null }> = {}
+        for (const row of res.servers) map[row.id] = { packages: row.packages, checked_at: row.checked_at }
+        setPkgMap(map)
+      })
+      .catch(() => { if (!cancelled) setLoadError(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  const q = filter.trim().toLowerCase()
 
   useEffect(() => {
     return () => { wsRef.current?.close() }
@@ -206,14 +228,58 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
               to remove {totalPackages} orphaned package{totalPackages !== 1 ? 's' : ''}.
             </p>
 
-            <div className="space-y-1">
-              {servers.map(s => (
-                <div key={s.id} className="flex items-center justify-between text-xs font-mono text-text-muted">
-                  <span>{s.name} ({s.hostname})</span>
-                  <span className="text-amber">{s.latest_check?.autoremove_count} removable</span>
-                </div>
-              ))}
+            <input
+              type="text"
+              placeholder="Filter packages…"
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              className="input text-xs px-2 py-1 w-48"
+            />
+
+            <div className="overflow-y-auto max-h-[45vh] border border-border rounded divide-y divide-border/40">
+              {loadError && (
+                <div className="px-3 py-4 text-center text-xs text-red font-mono">Failed to load package lists.</div>
+              )}
+              {servers.map(s => {
+                const entry = pkgMap?.[s.id]
+                const loading = pkgMap === null && !loadError
+                const pkgs = (entry?.packages ?? []).filter(p => !q || p.toLowerCase().includes(q))
+                // When filtering, hide servers with no matching packages.
+                if (q && !loading && pkgs.length === 0) return null
+                return (
+                  <div key={s.id} className="px-3 py-2 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs font-mono">
+                      <span className="text-text-primary font-medium">{s.name}</span>
+                      <span className="text-text-muted">{s.hostname}</span>
+                      <span className="text-amber ml-auto shrink-0">{s.latest_check?.autoremove_count} removable</span>
+                    </div>
+                    {loading && (
+                      <div className="text-xs text-text-muted font-mono animate-pulse">Loading packages…</div>
+                    )}
+                    {!loading && entry && entry.packages.length === 0 && (
+                      <div className="text-xs text-text-muted font-mono">No package details available — re-check this server to list them.</div>
+                    )}
+                    {!loading && pkgs.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {pkgs.map(p => (
+                          <span key={p} className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-2/60 border border-border text-text-primary">
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {!loading && entry?.checked_at && (
+                      <div className="text-[11px] text-text-muted font-mono">as of last check, {relativeTime(entry.checked_at)}</div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
+
+            <p className="text-xs text-text-muted">
+              The list comes from each server's last check. <span className="font-mono">apt-get autoremove</span> removes
+              whatever is orphaned at the time it runs, so it can differ if packages changed since.
+            </p>
 
             <div className="flex gap-2">
               <button onClick={start} className="btn-amber">Start Autoremove</button>

@@ -1371,6 +1371,7 @@ function PackagesTab({ serverId, server, onRefresh }: { serverId: number; server
         <AutoremoveModal
           serverId={serverId}
           packages={removeTarget}
+          knownPackages={autoremove}
           onClose={() => { setRemoveModal(false); setRemoveTarget(null); loadPackages(); onRefresh() }}
         />
       )}
@@ -1495,9 +1496,12 @@ function SelectiveUpgradeModal({ serverId, packages, allowPhased, onClose }: {
 // ---------------------------------------------------------------------------
 // Autoremove modal
 // ---------------------------------------------------------------------------
-function AutoremoveModal({ serverId, packages, onClose }: {
+function AutoremoveModal({ serverId, packages, knownPackages = [], onClose }: {
   serverId: number
   packages: string[] | null  // null = remove all autoremovable packages
+  // The auto-removable list from the last check — display only, so "Remove all"
+  // shows what will go. The run itself still sends null (a plain apt-get autoremove).
+  knownPackages?: string[]
   onClose: () => void
 }) {
   const [lines, setLines] = useState<string[]>([])
@@ -1542,8 +1546,9 @@ function AutoremoveModal({ serverId, packages, onClose }: {
     wsRef.current = ws
   }
 
+  const shownPackages = packages ?? knownPackages
   const label = packages === null
-    ? 'Remove all auto-removable packages'
+    ? `Remove all auto-removable packages${knownPackages.length ? ` (${knownPackages.length})` : ''}`
     : `Remove ${packages.length} selected package${packages.length !== 1 ? 's' : ''}`
 
   return (
@@ -1557,12 +1562,17 @@ function AutoremoveModal({ serverId, packages, onClose }: {
         {!started ? (
           <div className="p-4 space-y-4">
             <p className="text-sm text-text-muted">{label}</p>
-            {packages !== null && packages.length > 0 && (
+            {shownPackages.length > 0 && (
               <div className="card p-3 max-h-48 overflow-y-auto">
-                {packages.map(p => (
+                {shownPackages.map(p => (
                   <div key={p} className="font-mono text-xs text-text-muted py-0.5">{p}</div>
                 ))}
               </div>
+            )}
+            {packages === null && knownPackages.length > 0 && (
+              <p className="text-xs text-text-muted">
+                As of the last check — <span className="font-mono">apt-get autoremove</span> removes whatever is orphaned when it runs.
+              </p>
             )}
             <p className="text-xs text-amber">
               ⚠️ These packages will be permanently removed from the server.
