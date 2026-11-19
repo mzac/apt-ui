@@ -1,19 +1,19 @@
 ---
-# Secret — create once with:
+# Secret — NOT defined in this file on purpose. Create it once, before applying:
+#
 #   kubectl create secret generic apt-ui-secrets \
 #     --from-literal=ssh-private-key="$(cat ~/.ssh/id_ed25519)" \
 #     --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#     --from-literal=admin-password="$(openssl rand -base64 18)" \
 #     --from-literal=ts-authkey="tskey-client-..."  # optional, for Tailscale
-apiVersion: v1
-kind: Secret
-metadata:
-  name: apt-ui-secrets
-  namespace: default
-type: Opaque
-stringData:
-  ssh-private-key: ""   # fill in or use kubectl create secret
-  jwt-secret: ""        # fill in or use kubectl create secret
-  ts-authkey: ""        # Tailscale auth key — only needed if using Tailscale sidecar
+#
+# (admin-password is optional — see ADMIN_PASSWORD below.)
+#
+# This manifest used to ship a Secret object with empty values as a template.
+# `kubectl apply -f` on it overwrote a real secret created with the command
+# above with empty strings — wiping the SSH key and JWT secret on every
+# re-apply. If you manage the secret declaratively, keep it in its own file
+# (or a sealed/external secret), never alongside placeholder values.
 
 ---
 apiVersion: v1
@@ -47,10 +47,31 @@ spec:
       labels:
         app: apt-ui
     spec:
+      # Run as the image's unprivileged user from the first instruction (the
+      # image's entrypoint only starts as root to migrate root-owned Docker
+      # volumes; here it never is). fsGroup makes the kubelet give the data
+      # volume to gid 10001 at mount time, which is also what migrates a volume
+      # written by an older, root-running release. If your storage driver
+      # ignores fsGroup (some NFS / hostPath setups), chown the volume to
+      # 10001:10001 once with a root initContainer or on the storage side.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: apt-ui
           image: ghcr.io/mzac/apt-ui:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 8000
               name: http
@@ -70,6 +91,13 @@ spec:
             - name: DATABASE_PATH
               value: /data/apt-ui.db
             # Optional overrides — uncomment as needed:
+            # Initial admin password, read on the FIRST start only (empty DB).
+            # Unset: a random one is generated and printed once in the pod log.
+            # - name: ADMIN_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: apt-ui-secrets
+            #       key: admin-password
             # - name: ENCRYPTION_KEY
             #   valueFrom:
             #     secretKeyRef:
@@ -82,6 +110,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
             # Uncomment when using the Tailscale sidecar:
             # - name: tailscale-socket
             #   mountPath: /var/run/tailscale
@@ -165,6 +195,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: apt-ui-data
+        # Scratch space — the root filesystem is read-only.
+        - name: tmp
+          emptyDir: {}
         # Uncomment when using the Tailscale sidecar:
         # - name: tailscale-state
         #   persistentVolumeClaim:

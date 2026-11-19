@@ -346,7 +346,7 @@ flowchart LR
 
     subgraph dockerfile["📦 Dockerfile · multi-stage"]
         DF1["Stage 1: node:22-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
-        DF2["Stage 2: python:3.12-slim<br/>pip install -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
+        DF2["Stage 2: python:3.12-slim<br/>pip install --require-hashes -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
         DF1 --> DF2
     end
 

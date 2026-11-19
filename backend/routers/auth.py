@@ -41,7 +41,22 @@ COOKIE_MAX_AGE = 60 * 60 * 24  # 24 hours
 # aren't locked out until an admin deliberately raises it.
 # ---------------------------------------------------------------------------
 PASSWORD_MIN_LENGTH_KEY = "password_min_length"
+# Fallback when no value is stored — i.e. installs that predate the stored
+# policy. New installs get NEW_INSTALL_PASSWORD_MIN_LENGTH written to AppConfig
+# by seed_defaults() on first start, so they never reach this fallback.
 DEFAULT_PASSWORD_MIN_LENGTH = 4
+NEW_INSTALL_PASSWORD_MIN_LENGTH = 8
+
+
+def _reject_default_password(password: str) -> None:
+    """The well-known default can never be chosen as a password again, whatever
+    the configured minimum length is."""
+    from backend.auth import DEFAULT_PASSWORD
+    if password == DEFAULT_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="That is the default password — choose a different one",
+        )
 
 
 async def get_password_min_length(db: AsyncSession) -> int:
@@ -287,7 +302,7 @@ async def login(
     token = create_access_token(user.username, user.token_version)
     _set_session_cookie(response, request, token)
     out = UserOut.model_validate(user)
-    out.is_default_password = bcrypt.checkpw(b"admin", user.password_hash.encode())
+    out.is_default_password = bool(user.must_change_password)
     return out
 
 
@@ -463,7 +478,7 @@ async def sso_callback(
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
     out = UserOut.model_validate(current_user)
-    out.is_default_password = bcrypt.checkpw(b"admin", current_user.password_hash.encode())
+    out.is_default_password = bool(current_user.must_change_password)
     return out
 
 
@@ -477,6 +492,7 @@ async def change_password(
 ):
     _check_password_or_throttle(current_user, body.current_password, "Current password is incorrect")
 
+    _reject_default_password(body.new_password)
     # Same minimum the admin create/reset paths enforce
     min_length = await get_password_min_length(db)
     if len(body.new_password) < min_length:
@@ -489,6 +505,7 @@ async def change_password(
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one()
     user.password_hash = hash_password(body.new_password)
+    user.must_change_password = False
     # Invalidate every session issued under the old password, then hand this
     # browser a fresh one so the person changing their password stays logged in.
     user.token_version = (user.token_version or 0) + 1
@@ -770,6 +787,7 @@ async def create_user(
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password required")
+    _reject_default_password(password)
     min_length = await get_password_min_length(db)
     if len(password) < min_length:
         raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
@@ -819,10 +837,12 @@ async def update_user(
 
     # Update password (admin reset)
     if body.get("password"):
+        _reject_default_password(body["password"])
         min_length = await get_password_min_length(db)
         if len(body["password"]) < min_length:
             raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
         user.password_hash = hash_password(body["password"])
+        user.must_change_password = False
         user.token_version = (user.token_version or 0) + 1  # revoke that user's sessions
 
     await db.commit()

@@ -235,6 +235,7 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'",
             "ALTER TABLE users ADD COLUMN oidc_subject TEXT",
             "ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0",
             "ALTER TABLE update_history ADD COLUMN task_id INTEGER",
             "ALTER TABLE update_history ADD COLUMN rollout_id INTEGER",
             "ALTER TABLE maintenance_windows ADD COLUMN mode TEXT DEFAULT 'deny'",

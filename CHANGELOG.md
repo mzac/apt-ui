@@ -4,6 +4,33 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+Deployment hardening — the part of the security audit that changes first-run and container behaviour. **Read the upgrade notes below before upgrading.** Existing Docker Compose installs using the shipped compose files upgrade with a plain `pull` + `up -d`; the notes say where anything else is needed.
+
+### Changed — upgrade notes
+
+- **No more default `admin` / `admin`.** A new install creates `admin` with the password from the new `ADMIN_PASSWORD` env var, or — if unset — a random one printed **once** in the log at first start (`docker compose logs apt-ui | grep -A3 "initial admin account"`).
+  **Existing installs still on `admin` / `admin`:** you can still log in, but the server now refuses every request except changing the password, and the UI shows only a change-password screen until you do. API tokens on that account keep working. `admin` can no longer be chosen as a password (the CLI `reset-password` still accepts it as a break-glass, and the account is then locked to changing it again).
+- **Minimum password length is 8 on new installs.** Existing installs keep their current setting (4 unless you changed it) so nobody is locked out — consider raising it in Settings → Users.
+- **The container no longer runs as root.** The app runs as uid/gid `10001`; the compose files add `read_only`, `cap_drop: ALL` (keeping only `CHOWN`/`SETUID`/`SETGID` for start-up) and `no-new-privileges`.
+  **Existing data volumes** are root-owned. The entrypoint detects that, hands `/data` to uid 10001 once at start, then drops privileges — no manual step. What may need attention:
+  - *Your own compose file / `docker run`*: it keeps working (the container still drops to uid 10001), but copy the hardening block from `docker-compose.yml` to get the rest.
+  - *SSH agent socket or bind mounts owned by another user*: uid 10001 probably can't open them — set `APT_UI_UID` / `APT_UI_GID` to the owner's ids. `APT_UI_UID=0` restores the old behaviour.
+  - *Starting the container as a non-root user yourself* (`user:` / `--user`): the entrypoint can't chown then; it exits with the exact one-off `chown` command to run.
+  - *Root-squashed NFS*: the chown fails; chown the export to `10001:10001` on the server side.
+- **Kubernetes manifest (`k8s/deployment.yaml`)**:
+  - **It no longer contains a `Secret`.** The old manifest shipped one with empty values, so `kubectl apply -f k8s/deployment.yaml` **overwrote a real `apt-ui-secrets` with empty strings**. Create the secret with `kubectl create secret` (command in the manifest's comment and the README). Note for anyone who applied the old manifest with `kubectl apply`: applying the new one will *prune nothing* — your existing secret is left alone.
+  - The pod now has a `securityContext`: `runAsNonRoot` / uid `10001`, `fsGroup: 10001` (this is what migrates an existing root-owned volume), read-only root filesystem with an `emptyDir` at `/tmp`, all capabilities dropped, `RuntimeDefault` seccomp. If your storage class ignores `fsGroup`, chown the volume to `10001:10001` once.
+- **Supply chain.** Python dependencies are now a hash-locked set (`backend/requirements.txt`, generated from the new `backend/requirements.in` with `make lock`) installed with `pip --require-hashes`; both base images are pinned by digest; the release workflow's actions are pinned to commit SHAs; `.github/dependabot.yml` keeps all of them (plus npm) updated. For local development install `backend/requirements.in`.
+- **HTTP hooks can no longer reach cloud metadata services by another name.** The filter compared the URL's hostname against two literal strings, so a DNS record, `169.254.169.254.nip.io`, a decimal IP or an IPv4-mapped IPv6 address walked past it. The host is now resolved, every address is checked (link-local and metadata ranges are refused; LAN and loopback targets stay allowed, since that is what hooks are for), and the request is pinned to the checked address.
+
+### Fixed
+
+- **Security-update notifications never reached notification destinations, and reboot-required ones only when Slack was also enabled** — the fan-out used variables that were undefined (or defined only inside the Slack branch) and died with a `NameError`.
+
+---
+
 ## [2026.11.19-01] — 2026-11-19
 
 A security release. An audit of the codebase found that read-only accounts could run commands on managed hosts; this closes that and a number of smaller holes, fixes the backend's memory growth ([#92](https://github.com/mzac/apt-ui/issues/92)) and the unreachable **Start Upgrade** button ([#93](https://github.com/mzac/apt-ui/issues/93)). **Upgrade recommended for any instance with non-admin users, API tokens, or SSO.** The autoremove package-list change below was prepared as `2026.09.29-01` but never tagged, so it ships here.

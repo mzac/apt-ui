@@ -13,9 +13,11 @@ Prerequisites on remote servers:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import re
+import socket
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +81,64 @@ async def _load_hooks(server_id: int, phase: str, db: AsyncSession):
     return list(res.scalars().all())
 
 
+# Cloud metadata services that are *not* in a link-local range (those are
+# covered by is_link_local below: 169.254.169.254 for AWS/GCP/Azure/DO/OpenStack,
+# 169.254.170.2 for ECS task credentials, fe80::/10).
+_HOOK_BLOCKED_IPS = frozenset(ipaddress.ip_address(a) for a in (
+    "100.100.100.200",   # Alibaba Cloud
+    "192.0.0.192",       # Oracle Cloud (classic)
+    "fd00:ec2::254",     # AWS IMDS over IPv6
+    "fd20:ce::254",      # GCP metadata over IPv6
+))
+
+
+def hook_ip_block_reason(ip_text: str) -> str | None:
+    """Why an http hook may not connect to this address, or None if it may.
+
+    Private (RFC 1918) and loopback targets are deliberately allowed: the whole
+    point of an http hook is to poke a load balancer or alert silencer on the
+    same LAN. What is refused is the address space that hands out credentials
+    — link-local and the cloud metadata endpoints — plus addresses that are
+    never a legitimate destination.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_text.split("%", 1)[0])  # drop any IPv6 zone id
+    except ValueError:
+        return "unparseable address"
+    # Unwrap v4-in-v6 forms so ::ffff:169.254.169.254 doesn't slip through.
+    if ip.version == 6:
+        ip = ip.ipv4_mapped or ip.sixtofour or ip
+    if ip.is_link_local or ip in _HOOK_BLOCKED_IPS:
+        return f"{ip} is a link-local / cloud metadata address"
+    if ip.is_unspecified or ip.is_multicast:
+        return f"{ip} is not a valid destination"
+    return None
+
+
+async def _resolve_hook_target(hostname: str) -> tuple[str | None, str]:
+    """Resolve an http hook's host and vet *every* address it maps to.
+
+    Returns (ip_to_connect_to, "") or (None, reason). The old filter compared
+    the hostname string against two literals, so any other name or encoding
+    pointing at the metadata service (a DNS record, `169.254.169.254.nip.io`,
+    decimal `2852039166`, `[::ffff:a9fe:a9fe]`) walked straight past it.
+    """
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            hostname, None, type=socket.SOCK_STREAM,
+        )
+    except (socket.gaierror, UnicodeError):
+        return None, "hostname could not be resolved"
+    addrs = list(dict.fromkeys(info[4][0] for info in infos))
+    if not addrs:
+        return None, "hostname could not be resolved"
+    for addr in addrs:
+        reason = hook_ip_block_reason(addr)
+        if reason:
+            return None, reason
+    return addrs[0].split("%", 1)[0], ""
+
+
 async def _run_hook(server: Server, hook, send_fn) -> int:
     """Execute a pre/post hook. Returns an exit code (0 = success).
 
@@ -95,17 +155,35 @@ async def _run_hook(server: Server, hook, send_fn) -> int:
             if send_fn:
                 await send_fn({"type": "output", "data": f"  http hook '{hook.name}': invalid URL\n"})
             return 1
-        host_norm = parsed.hostname.rstrip(".").lower()
-        if host_norm in ("169.254.169.254", "metadata.google.internal"):
+        try:
+            port = parsed.port
+        except ValueError:
+            port = -1
+        pinned_ip, reason = (None, "invalid port") if port == -1 else await _resolve_hook_target(parsed.hostname)
+        if pinned_ip is None:
             if send_fn:
-                await send_fn({"type": "output", "data": f"  http hook '{hook.name}': blocked metadata endpoint\n"})
+                await send_fn({"type": "output", "data": f"  http hook '{hook.name}': blocked — {reason}\n"})
             return 1
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(url, json={
-                    "hook": hook.name, "phase": hook.phase,
-                    "server": server.name, "hostname": server.hostname,
-                })
+            # Connect to the address that was just vetted rather than letting
+            # httpx resolve the name a second time (DNS rebinding). The original
+            # name still goes out as Host and as the TLS SNI / certificate name.
+            # Redirects are not followed (httpx default), so a 30x can't bounce
+            # the request to a blocked address either.
+            host_header = parsed.hostname if ":" not in parsed.hostname else f"[{parsed.hostname}]"
+            if port:
+                host_header = f"{host_header}:{port}"
+            pinned_url = httpx.URL(url).copy_with(host=pinned_ip)
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                resp = await client.post(
+                    pinned_url,
+                    headers={"Host": host_header},
+                    extensions={"sni_hostname": parsed.hostname},
+                    json={
+                        "hook": hook.name, "phase": hook.phase,
+                        "server": server.name, "hostname": server.hostname,
+                    },
+                )
             if send_fn:
                 await send_fn({"type": "output", "data": f"  http hook '{hook.name}' → {resp.status_code}\n"})
             return 0 if resp.is_success else 1

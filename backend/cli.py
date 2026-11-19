@@ -19,6 +19,34 @@ from sqlalchemy.orm import Session
 from backend.config import DATABASE_PATH
 from backend.models import User
 
+
+
+def _drop_root_to_db_owner() -> None:
+    """`docker exec … python -m backend.cli` runs as root, but the app runs as
+    an unprivileged user that owns the database. Writing to it as root would
+    leave root-owned SQLite journal files behind that the app can't replace
+    (or fail outright, since the container's root has no DAC_OVERRIDE). So when
+    started as root, become whoever owns the database before touching it."""
+    import os
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    try:
+        st = os.stat(DATABASE_PATH)
+    except OSError:
+        return
+    if st.st_uid == 0:
+        return  # root-owned DB (APT_UI_UID=0 or a pre-migration volume)
+    try:
+        os.setgroups([])
+        os.setgid(st.st_gid)
+        os.setuid(st.st_uid)
+    except OSError as exc:
+        print(f"⚠️  Could not switch to the database owner (uid {st.st_uid}): {exc}. "
+              f"Re-run with: docker exec -u {st.st_uid}:{st.st_gid} …", file=sys.stderr)
+
+
+_drop_root_to_db_owner()
+
 # Use synchronous SQLAlchemy for the CLI — no async needed
 _sync_url = f"sqlite:///{DATABASE_PATH}"
 _engine = create_engine(_sync_url, connect_args={"check_same_thread": False})
@@ -51,6 +79,9 @@ def cmd_reset_password(args):
             sys.exit(1)
         user.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
         user.token_version = (user.token_version or 0) + 1  # revoke existing sessions
+        # Resetting to the well-known default is allowed as a break-glass, but
+        # the account is then confined to changing it at next login.
+        user.must_change_password = new_password == "admin"
         session.commit()
     print(f"✅  Password for '{username}' has been reset.")
 
@@ -78,6 +109,7 @@ def cmd_create_user(args):
             password_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
             is_admin=not args.readonly,
             created_at=datetime.utcnow(),
+            must_change_password=password == "admin",
         )
         session.add(user)
         session.commit()

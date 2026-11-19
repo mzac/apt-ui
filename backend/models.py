@@ -21,6 +21,10 @@ class User(Base):
     # Bumped whenever the password changes; session JWTs carry the value they were
     # issued under, so every older session stops working at that moment.
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Set while the account still has the well-known default password ("admin").
+    # A browser session for such an account may only change the password — see
+    # auth.enforce_password_change(). Cleared by any password change.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # Last TOTP step counter accepted at login — blocks code replay (issue #62).
     totp_last_counter: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # SSO (issue #62). 'local' users authenticate with password_hash; 'oidc' users
