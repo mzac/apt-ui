@@ -1,0 +1,18 @@
+# Direct dependencies with loose lower bounds — the file to edit.
+# backend/requirements.txt is the hash-locked resolution of this file and is
+# what the Docker image installs. After changing anything here run `make lock`.
+fastapi>=0.139.0
+uvicorn[standard]>=0.51.0
+sqlalchemy[asyncio]>=2.0.51
+aiosqlite>=0.22.1
+bcrypt>=5.0.0
+PyJWT>=2.13.0
+asyncssh>=2.24.0
+apscheduler>=3.11.3
+aiosmtplib>=5.1.2
+httpx>=0.28.1
+python-multipart>=0.0.32
+cryptography>=49.0.0
+prometheus-client>=0.20.0
+pyotp>=2.10.0
+qrcode[pil]>=8.2

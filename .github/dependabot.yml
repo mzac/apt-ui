@@ -1,0 +1,37 @@
+# Dependabot version updates. (Security updates for npm/pip are enabled in the
+# repository settings and work independently of this file.)
+version: 2
+updates:
+  # Actions in .github/workflows are pinned to commit SHAs; this bumps the SHA
+  # and the trailing version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base image digests in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # backend/requirements.in → hash-locked backend/requirements.txt (Dependabot
+  # understands the pip-compile pair and regenerates the hashes).
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]

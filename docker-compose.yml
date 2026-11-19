@@ -8,18 +8,40 @@ services:
       - SSH_PRIVATE_KEY=${SSH_PRIVATE_KEY}
       # --- Auth option 2: SSH agent (comment out SSH_PRIVATE_KEY and uncomment below) ---
       # - SSH_AUTH_SOCK=/run/ssh-agent.sock
+      #   The app runs as uid 10001, which usually cannot open your agent socket. Run it as
+      #   the socket's owner instead:  - APT_UI_UID=1000  and  - APT_UI_GID=1000  (see `id -u` / `id -g`)
       - TZ=America/Montreal
       # Optional overrides:
       # - JWT_SECRET=change-me-to-a-random-string
       # - ENCRYPTION_KEY=change-me-to-a-random-string  # encrypts per-server SSH keys/TOTP secrets in the DB
       #                                                 # (falls back to JWT_SECRET, then to a key auto-generated and stored in the DB)
       # - LOG_LEVEL=INFO
+      # - ADMIN_PASSWORD=choose-a-long-password   # initial admin password, read on FIRST start only
+      #                                            # (unset: run `python -m backend.cli reset-password` in the container)
       # - ENABLE_TERMINAL=true   # Enable interactive SSH shell in the UI (disabled by default)
     volumes:
       - apt-ui-data:/data
       # --- Required when using SSH agent (mount the host agent socket) ---
       # - ${SSH_AUTH_SOCK}:/run/ssh-agent.sock:ro
     restart: unless-stopped
+    # ── Hardening ────────────────────────────────────────────────────────────
+    # The app runs as uid 10001. The container starts as root only so the
+    # entrypoint can hand a root-owned data volume (from older images) to that
+    # user; CHOWN/SETUID/SETGID are the three capabilities that needs, and
+    # every other one is dropped. To run with no capabilities at all, chown the
+    # volume once (see README → "Running as non-root") and replace the cap_add
+    # block with:  user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s

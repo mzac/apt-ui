@@ -122,6 +122,7 @@
 | 🔢 | **TOTP 2FA** | QR enrolment in Settings → Account · login flow asks for a 6-digit code when enabled |
 | 🔑 | **API tokens + `/api/v1`** | `aptui_<32 url-safe bytes>` · scrypt-hashed · shown once · per-token scopes (read / check / upgrade / calendar) and optional expiry · inbound automation API returns a pollable `job_id` |
 | 👥 | **RBAC** | admin / read-only roles · `require_admin` on ~28 mutation endpoints · "read-only" badge in the nav |
+| 🧱 | **Hardened by default** | no default password (`ADMIN_PASSWORD` or the CLI on first start) · container runs as non-root on a read-only root filesystem with capabilities dropped · hash-locked Python deps, digest-pinned base images, SHA-pinned CI actions |
 | 🚫 | **Brute-force lockout** | per-(username, IP) backoff + lockout on repeated login / 2FA failures · TOTP replay protection · real-time alert on lockout |
 | 🕵 | **Actor attribution + auth-event log** | every action records who triggered it · logins / failures / token use / role changes in an **Auth Events** history tab |
 
@@ -233,7 +234,29 @@ To pin to a specific release instead of `latest`, edit `docker-compose.ghcr.yml`
 
 The app will be available at **http://localhost:8111**.
 
-Default login: `admin` / `admin` — **change this immediately** via Settings → Account.
+**First login.** There is no default password. On the very first start apt-ui creates an `admin` account with no usable password; set one with:
+
+```bash
+docker compose exec apt-ui python -m backend.cli reset-password
+```
+
+Or set `ADMIN_PASSWORD` in `.env` before the first start and skip that step (it is ignored once the database exists). No password is ever written to the log. The same command resets a lost password.
+
+> **Upgrading an install that still uses `admin` / `admin`:** login still works, but the server refuses everything except changing the password until you do (API tokens are unaffected).
+
+### Running as non-root
+
+The app runs as an unprivileged user (uid/gid `10001`) on a read-only root filesystem with all capabilities dropped except the three the start-up migration needs.
+
+- **Upgrading from an older image needs no manual step.** Those images ran as root, so the existing `/data` volume is root-owned; the entrypoint starts as root, `chown`s the volume to `10001` once, then drops privileges before the app starts. That is what `cap_add: [CHOWN, SETUID, SETGID]` in the compose files is for.
+- **If you maintain your own compose file**, copy the `read_only` / `tmpfs` / `cap_drop` / `cap_add` / `security_opt` block from [`docker-compose.yml`](docker-compose.yml). Without it the container still drops to uid 10001; it just keeps Docker's default capability set until then.
+- **Never root at all:** chown the volume once, then set `user: "10001:10001"` and remove `cap_add`:
+  ```bash
+  docker compose run --rm -u 0 --entrypoint chown apt-ui -R 10001:10001 /data
+  ```
+- **SSH agent socket / bind mounts owned by another user:** set `APT_UI_UID` / `APT_UI_GID` to that user's ids (e.g. your own `id -u` / `id -g`, so the app can open your agent socket). `APT_UI_UID=0` restores the old run-as-root behaviour.
+- **Kubernetes** runs the pod as `10001` from the start; `fsGroup: 10001` in the manifest migrates the volume. If your storage driver ignores `fsGroup`, chown the volume once.
+- `docker exec … python -m backend.cli …` still works as before — the CLI switches to the database's owner by itself.
 
 ---
 
@@ -317,6 +340,8 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 |---|---|---|
 | `SSH_PRIVATE_KEY` | — | Full PEM content of the private key. Required unless using SSH agent. |
 | `SSH_AUTH_SOCK` | — | Path to SSH agent socket inside the container (e.g. `/run/ssh-agent.sock`). Alternative to `SSH_PRIVATE_KEY` — allows passphrase-protected keys. |
+| `ADMIN_PASSWORD` | random | Password for the initial `admin` account. Read on the **first start only** (empty database); if unset, the account has no usable password until you run `python -m backend.cli reset-password`. |
+| `APT_UI_UID` / `APT_UI_GID` | `10001` | User/group the app drops to after the entrypoint's start-up `chown` of the data directory. Set to the owner of a mounted SSH agent socket or bind mount; `0` runs as root. Ignored when the container is already started as non-root. |
 | `JWT_SECRET` | generated | JWT signing secret. Auto-generated and stored in the DB on first start, so sessions survive restarts. |
 | `ENCRYPTION_KEY` | generated | Master key used to encrypt per-server SSH keys and TOTP secrets in the DB. Falls back to `JWT_SECRET`, then to a key auto-generated and stored in the DB on first start. Set it explicitly if you want the key managed outside the database. |
 | `DATABASE_PATH` | `/data/apt-ui.db` | SQLite file path. |
@@ -410,9 +435,10 @@ A ready-to-use manifest is provided at [`k8s/deployment.yaml`](k8s/deployment.ya
 - 1-replica Deployment
 - ClusterIP Service on port 8000
 - PersistentVolumeClaim (Longhorn storage class — change if needed)
-- Secret references for `SSH_PRIVATE_KEY` and `JWT_SECRET`
+- Secret references for `SSH_PRIVATE_KEY` and `JWT_SECRET` — the Secret itself is **not** in the manifest (it used to ship an empty one, and `kubectl apply` overwrote a real secret with empty strings); create it with the command below
+- Pod runs as non-root (uid `10001`, `fsGroup` for the volume), read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp
 - Liveness + readiness probes against `GET /health`
-- Resource limits: 128–256 Mi RAM, 100m–500m CPU
+- Resource limits: 128–512 Mi RAM, 100m–500m CPU
 
 ```bash
 # Create the secret
@@ -508,7 +534,7 @@ flowchart LR
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.in     # loose constraints; requirements.txt is the hash-locked set the image installs
 
 export SSH_PRIVATE_KEY="$(cat ~/.ssh/id_rsa)"
 export DATABASE_PATH="./data/dev.db"

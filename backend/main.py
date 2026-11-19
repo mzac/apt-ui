@@ -26,17 +26,78 @@ async def seed_defaults():
 
     async with AsyncSessionLocal() as session:
         # Default admin user
-        result = await session.execute(select(models.User))
-        if not result.scalars().first():
-            admin = models.User(
+        from backend.config import ADMIN_PASSWORD
+        from backend.routers.auth import (
+            NEW_INSTALL_PASSWORD_MIN_LENGTH, PASSWORD_MIN_LENGTH_KEY,
+        )
+
+        users = (await session.execute(select(models.User))).scalars().all()
+        if not users:
+            # First start. There is no well-known default password any more:
+            # take ADMIN_PASSWORD if the operator set one. Otherwise the account
+            # is created with a random password that is thrown away — it is
+            # never logged or written to disk (container logs get shipped and
+            # retained) — and the operator sets a real one with
+            # `python -m backend.cli reset-password`.
+            generated = not ADMIN_PASSWORD
+            initial_password = ADMIN_PASSWORD or secrets.token_urlsafe(32)
+            is_default = initial_password == auth_module.DEFAULT_PASSWORD
+            session.add(models.User(
                 username="admin",
-                password_hash=bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode(),
+                password_hash=bcrypt.hashpw(initial_password.encode(), bcrypt.gensalt()).decode(),
                 is_admin=True,
-            )
-            session.add(admin)
-            logger.warning(
-                "⚠️  Default admin account created. Login with admin/admin and change the password immediately."
-            )
+                must_change_password=is_default,
+            ))
+            if generated:
+                banner = "=" * 68
+                logger.warning(
+                    "\n%s\n  apt-ui first start — the admin account has no usable password yet.\n"
+                    "  Set one with:\n"
+                    "    docker compose exec apt-ui python -m backend.cli reset-password\n"
+                    "  (kubectl: kubectl exec -it deploy/apt-ui -- python -m backend.cli reset-password)\n"
+                    "  or set ADMIN_PASSWORD before the first start.\n%s",
+                    banner, banner,
+                )
+            elif is_default:
+                logger.warning(
+                    "ADMIN_PASSWORD is the old default ('admin'): the admin account was created, "
+                    "but it can do nothing until that password is changed at first login."
+                )
+            else:
+                logger.info("Initial admin account created with the password from ADMIN_PASSWORD.")
+                if len(initial_password) < NEW_INSTALL_PASSWORD_MIN_LENGTH:
+                    logger.warning(
+                        "ADMIN_PASSWORD is shorter than the minimum length new installs enforce "
+                        "for every later password change."
+                    )
+            # New installs start with a stricter password policy. Existing
+            # databases have no stored value and keep the old fallback (4)
+            # until an admin raises it, so nobody is locked out by an upgrade.
+            has_policy = (await session.execute(
+                select(models.AppConfig).where(models.AppConfig.key == PASSWORD_MIN_LENGTH_KEY)
+            )).scalar_one_or_none()
+            if not has_policy:
+                session.add(models.AppConfig(
+                    key=PASSWORD_MIN_LENGTH_KEY, value=str(NEW_INSTALL_PASSWORD_MIN_LENGTH),
+                ))
+        else:
+            # Existing install: flag any local account still on the old seeded
+            # password. Login keeps working, but the session is confined to
+            # changing the password (auth.enforce_password_change).
+            default_pw = auth_module.DEFAULT_PASSWORD.encode()
+            for u in users:
+                if u.must_change_password or (u.auth_provider or "local") != "local":
+                    continue
+                try:
+                    still_default = bcrypt.checkpw(default_pw, u.password_hash.encode())
+                except ValueError:
+                    still_default = False  # unusable / non-bcrypt hash
+                if still_default:
+                    u.must_change_password = True
+                    logger.warning(
+                        "User '%s' still has the default password — the account is restricted to "
+                        "changing it until that is done.", u.username,
+                    )
 
         # Default notification config (id=1)
         result = await session.execute(

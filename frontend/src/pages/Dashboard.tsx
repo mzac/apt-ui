@@ -135,8 +135,6 @@ export default function Dashboard() {
   const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const progressFailuresRef = useRef(0)
 
-  const isDefaultPassword = user?.is_default_password === true
-
   async function pingAll() {
     try {
       const raw = await serversApi.reachability()
@@ -470,13 +468,6 @@ export default function Dashboard() {
         <div className="px-4 py-2 bg-red/10 border border-red/30 rounded text-red text-sm flex items-center gap-2">
           <span>⚠ {loadError}</span>
           <button onClick={() => load()} className="btn-secondary text-xs ml-auto">Retry</button>
-        </div>
-      )}
-
-      {/* Default password warning */}
-      {isDefaultPassword && (
-        <div className="px-4 py-2 bg-amber/10 border border-amber/30 rounded text-amber text-sm">
-          ⚠️ You're using the default password. <Link to="/settings" className="underline">Change it in Settings.</Link>
         </div>
       )}
 

@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Set up environment (from repo root)
 python -m venv venv
 source venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.in   # loose input; requirements.txt is the hash-locked output (`make lock`)
 
 # Run backend dev server
 export SSH_PRIVATE_KEY="$(cat ~/.ssh/id_rsa)"
@@ -38,7 +38,8 @@ There is no test framework configured. Testing is manual.
 ### Local CI runner
 ```bash
 make ci          # Python syntax + import check + frontend build (mirrors GitHub Actions)
-make venv        # Create ./venv and install backend/requirements.txt
+make venv        # Create ./venv and install backend/requirements.in
+make lock        # Regenerate hash-locked backend/requirements.txt (needs Docker)
 make help        # List all targets
 ```
 `make ci` auto-detects a venv at `./venv` or `./.venv`; falls back to system `python3` and skips the import check if FastAPI isn't installed.
@@ -134,6 +135,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - **The USN feed is never loaded whole** (issue #92). `cve_matcher.fetch_and_index()` spools the ~344 MB download to disk and `_iter_top_level_items()` parses one entry at a time in a worker thread. `resp.json()` on it peaked at ~2 GiB RSS daily and glibc kept most of it — that was the "leak". `MALLOC_ARENA_MAX=2` in the Dockerfile is a secondary mitigation only; it did not fix this on its own (measured).
 - **Security headers + CSP are set by one middleware in `backend/main.py`**; the CSP hashes whatever inline `<script>` the built `index.html` contains, so don't add `'unsafe-inline'` for scripts. `/docs`, `/redoc` and `/openapi.json` are disabled.
 
+- **There is no default password.** `seed_defaults()` creates `admin` with `ADMIN_PASSWORD`, or with a discarded random password (never logged — the operator runs `backend.cli reset-password`; CodeQL rejects logging it), and writes `password_min_length=8` for *new* databases only (existing ones keep the fallback of 4). Accounts still on the old `admin` password are flagged `User.must_change_password` at startup; `auth.enforce_password_change()` (called from `get_current_user`'s cookie path and `ws_authenticate`) 403s everything except `/api/auth/me`, `PUT /api/auth/password` and the password-policy GET. API-token requests are deliberately not confined. Any code path that sets a password must clear the flag (and `_reject_default_password()` refuses `admin` as a new password).
+- **The container is non-root via the entrypoint, not a `USER` instruction.** `docker-entrypoint.sh` starts as root only to chown a root-owned `/data` (pre-2026.11 volumes) to uid 10001, then `setpriv`s down with no-new-privs; started as non-root (k8s `runAsUser`) it just checks writability and execs. The root filesystem is read-only in the shipped compose/k8s files — **anything the app writes must go to the data dir (`dirname(DATABASE_PATH)`) or `/tmp`**. `backend/cli.py` drops from root to the DB owner on import so `docker exec` can't leave root-owned SQLite files behind.
+- **Dependencies are locked.** Edit `backend/requirements.in`, run `make lock`, commit both. The image installs `requirements.txt` with `--require-hashes`; base images are digest-pinned and workflow actions SHA-pinned (Dependabot updates all three — `.github/dependabot.yml`).
+- **HTTP hooks resolve before they connect.** `_resolve_hook_target()` in `upgrade_manager.py` vets every resolved address with `hook_ip_block_reason()` (link-local + cloud metadata are refused; RFC 1918 and loopback are *allowed* on purpose — hooks exist to poke LAN services) and the request is pinned to the vetted IP with the original name as `Host`/SNI, so a second DNS answer can't redirect it.
+
 - **Read-only / overlay roots are refused, not attempted** (issue #86). The `root_fs_mode` probe in `_gather_stats` stores `rw`/`ro`/`overlay` on `server_stats`; `root_fs_block_reason()` in `backend/fs_guard.py` is the single gate — call it from any new package-changing entry point, the same way `window_block_reason()` is called for maintenance windows. An overlay root (Pi overlay FS, `overlayroot`) is always blocked because writes land in tmpfs and a "successful" upgrade reverts at reboot; a plain `ro` root is blocked unless the admin sets `Server.allow_readonly_root` (they remount rw via hooks). Docker/podman containers run on an overlay root too but their writable layer persists, so the probe excludes them. `upgrade_manager` re-checks as a last line (records `status='skipped'`, not `'error'`, so rollout rings don't abort and failure notifications don't fire every run). Separately, a failed `apt-get update` during a check no longer passes silently: the check still succeeds but carries `UpdateCheck.warning_message` (shown as "⚠ stale").
 
 ### Router → file mapping
@@ -196,6 +202,8 @@ See [TODO.md](TODO.md) for the backlog.
 | `SSH_PRIVATE_KEY` | Yes* | PEM-encoded SSH private key (full content, not a path). Required unless `SSH_AUTH_SOCK` is set. |
 | `SSH_AUTH_SOCK` | No | SSH agent socket — alternative to `SSH_PRIVATE_KEY`. |
 | `ENCRYPTION_KEY` | No | Master key for Fernet-encrypting per-server SSH keys and TOTP secrets. Falls back to `JWT_SECRET`, then to a key auto-generated and persisted in the DB. |
+| `ADMIN_PASSWORD` | No | Initial `admin` password, read on first start only (empty DB). Unset: no usable password until `backend.cli reset-password` is run. |
+| `APT_UI_UID` / `APT_UI_GID` | No | uid/gid the entrypoint drops to (default `10001`). Entrypoint-only — not read by Python. |
 | `JWT_SECRET` | No | JWT signing secret. If unset, a random secret is generated on first start and persisted in the DB. |
 | `DATABASE_PATH` | No | Default: `/data/apt-ui.db` |
 | `TZ` | No | Timezone for scheduled jobs. Default: `America/Montreal` |

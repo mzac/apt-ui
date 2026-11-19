@@ -970,13 +970,20 @@ async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSessio
         await _send_email(cfg, subject, html, text, event_type="security_updates_found")
     if cfg.notify_security_telegram:
         await _send_telegram(cfg, tg_text, event_type="security_updates_found")
+    # Built unconditionally: notify_destinations() below needs the title/body
+    # whether or not the Slack channel is enabled. They used to be defined only
+    # inside the Slack branch, so with Slack off the fan-out raised NameError
+    # and no destination ever received a security notification.
+    slack_header = f"🔒 Security Updates — {total_sec} on {len(sec_servers)} server(s)"
+    slack_body = "\n".join(
+        f"• *{sd['server'].name}* (`{sd['server'].hostname}`) — "
+        f"{sd['check'].security_packages} security update(s)"
+        for sd in sec_servers
+    )
     if cfg.notify_security_slack:
-        slack_header = f"🔒 Security Updates — {total_sec} on {len(sec_servers)} server(s)"
-        slack_body_lines = []
         slack_code_lines = []
         for sd in sec_servers:
-            s, chk = sd["server"], sd["check"]
-            slack_body_lines.append(f"• *{s.name}* (`{s.hostname}`) — {chk.security_packages} security update(s)")
+            s = sd["server"]
             for p in [pp for pp in sd["packages"] if pp.get("is_security")][:5]:
                 slack_code_lines.append(
                     f"{s.name}: {p['name']} {p['current_version']} → {p['available_version']}"
@@ -984,7 +991,7 @@ async def notify_security_updates_found(cfg: NotificationConfig, db: AsyncSessio
         await _send_slack(
             cfg,
             slack_header,
-            body="\n".join(slack_body_lines),
+            body=slack_body,
             code_body="\n".join(slack_code_lines) if slack_code_lines else None,
             event_type="security_updates_found",
         )
@@ -1050,11 +1057,13 @@ async def notify_reboot_required(cfg: NotificationConfig, db: AsyncSession):
         await _send_email(cfg, subject, html, text, event_type="reboot_required")
     if cfg.notify_reboot_telegram:
         await _send_telegram(cfg, tg_text, event_type="reboot_required")
+    # Built unconditionally — also used by notify_destinations() below (it
+    # raised NameError whenever the Slack channel was off).
+    slack_header = f"↻ Reboot Required — {len(reboot_servers)} server(s)"
+    slack_body = "\n".join(
+        f"• *{sd['server'].name}* (`{sd['server'].hostname}`)" for sd in reboot_servers
+    )
     if cfg.notify_reboot_slack:
-        slack_header = f"↻ Reboot Required — {len(reboot_servers)} server(s)"
-        slack_body = "\n".join(
-            f"• *{sd['server'].name}* (`{sd['server'].hostname}`)" for sd in reboot_servers
-        )
         await _send_slack(cfg, slack_header, body=slack_body, event_type="reboot_required")
     if cfg.notify_reboot_webhook:
         await _send_webhook(cfg, "reboot_required", {

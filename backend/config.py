@@ -9,6 +9,11 @@ SSH_PRIVATE_KEY = os.getenv("SSH_PRIVATE_KEY", "")
 SSH_AUTH_SOCK = os.getenv("SSH_AUTH_SOCK", "")  # path to SSH agent socket (optional alternative to SSH_PRIVATE_KEY)
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")  # master key for encrypting per-server SSH keys in the DB
 
+# Password for the initial `admin` account. Read only on the very first start
+# (empty database); if unset the account gets a discarded random password and the
+# operator sets a real one with `python -m backend.cli reset-password`.
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24

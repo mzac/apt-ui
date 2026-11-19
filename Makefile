@@ -5,7 +5,7 @@
 #
 # `make help` lists all targets.
 
-.PHONY: help ci backend-syntax backend-imports frontend-build frontend-typecheck docker-build venv clean
+.PHONY: lock help ci backend-syntax backend-imports frontend-build frontend-typecheck docker-build venv clean
 
 # Auto-detect a venv at ./venv or ./.venv; fall back to system python3.
 PYTHON ?= $(shell test -x venv/bin/python && echo venv/bin/python || (test -x .venv/bin/python && echo .venv/bin/python) || echo python3)
@@ -49,14 +49,24 @@ docker-build:  ## Build the Docker image locally (slow, multi-stage)
 	@echo "→ Docker build (linux/amd64)"
 	@docker build -t apt-ui:ci .
 
-venv:  ## Create ./venv and install backend/requirements.txt
+lock:  ## Regenerate the hash-locked backend/requirements.txt from requirements.in
+	@echo "→ pip-compile --generate-hashes (in python:3.12-slim, to match the image)"
+	@head -7 backend/requirements.txt > backend/requirements.txt.new
+	@docker run --rm -i python:3.12-slim sh -c "pip install -q --root-user-action=ignore pip-tools >/dev/null 2>&1 \
+		&& mkdir /w && cd /w && cat > requirements.in \
+		&& pip-compile -q --generate-hashes --allow-unsafe --strip-extras --no-header --upgrade -o requirements.txt requirements.in >&2 \
+		&& cat requirements.txt" < backend/requirements.in >> backend/requirements.txt.new
+	@mv backend/requirements.txt.new backend/requirements.txt
+	@echo "  ✓ backend/requirements.txt updated — rebuild the image to test it"
+
+venv:  ## Create ./venv and install backend/requirements.in (loose, for local dev)
 	@if [ ! -d venv ]; then \
 		echo "→ Creating venv at ./venv"; \
 		python3 -m venv venv; \
 	fi
 	@echo "→ Installing Python dependencies"
 	@venv/bin/pip install --quiet --upgrade pip
-	@venv/bin/pip install --quiet -r backend/requirements.txt
+	@venv/bin/pip install --quiet -r backend/requirements.in
 	@echo "  ✓ venv ready (activate: source venv/bin/activate)"
 
 clean:  ## Remove build artefacts and Python caches

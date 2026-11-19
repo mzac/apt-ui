@@ -169,6 +169,38 @@ def _enforce_token_confinement(request: Request, scopes: set[str] | None) -> Non
     )
 
 
+# The password every pre-2026.11 install was seeded with. An account that still
+# has it is flagged `must_change_password` (at startup, or by the CLI) and its
+# browser sessions are confined to changing it.
+DEFAULT_PASSWORD = "admin"
+
+# What a session may still reach while the default password is in use: enough
+# for the SPA to boot, show the forced change-password screen, and log out.
+_PASSWORD_CHANGE_ALLOWED = frozenset({
+    ("GET", "/api/auth/me"),
+    ("PUT", "/api/auth/password"),
+    ("GET", "/api/auth/password-policy"),
+})
+PASSWORD_CHANGE_REQUIRED = (
+    "Password change required: this account still uses the default password. "
+    "Change it before doing anything else."
+)
+
+
+def enforce_password_change(request: Request, user) -> None:
+    """Refuse everything but change-password while the default password is in use.
+
+    Only cookie sessions are confined. An API token on the same account was
+    minted by someone already inside and is not what an attacker who knows
+    "admin/admin" gets — locking it too would just break existing automation.
+    """
+    if not getattr(user, "must_change_password", False):
+        return
+    if (request.method.upper(), request.url.path.rstrip("/")) in _PASSWORD_CHANGE_ALLOWED:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PASSWORD_CHANGE_REQUIRED)
+
+
 async def get_current_user(
     request: Request,
     apt_ui_token: str | None = Cookie(default=None),
@@ -232,6 +264,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
         )
+    enforce_password_change(request, user)
     return user
 
 
@@ -348,6 +381,9 @@ async def ws_authenticate(websocket, session: AsyncSession, *, admin: bool):
     user = await get_current_user_ws(websocket.cookies.get("apt_ui_token") or "", session)
     if user is None:
         await _refuse(None)
+        return None
+    if getattr(user, "must_change_password", False):
+        await _refuse(PASSWORD_CHANGE_REQUIRED)
         return None
     if admin and not user.is_admin:
         await _refuse("This action requires an administrator account.")
