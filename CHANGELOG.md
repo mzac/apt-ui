@@ -4,9 +4,9 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.11.19-01] — 2026-11-19
 
-A security release. An audit of the codebase found that read-only accounts could run commands on managed hosts; this closes that and a number of smaller holes, fixes the backend's memory growth ([#92](https://github.com/mzac/apt-ui/issues/92)) and the unreachable **Start Upgrade** button ([#93](https://github.com/mzac/apt-ui/issues/93)). **Upgrade recommended for any instance with non-admin users, API tokens, or SSO.**
+A security release. An audit of the codebase found that read-only accounts could run commands on managed hosts; this closes that and a number of smaller holes, fixes the backend's memory growth ([#92](https://github.com/mzac/apt-ui/issues/92)) and the unreachable **Start Upgrade** button ([#93](https://github.com/mzac/apt-ui/issues/93)). **Upgrade recommended for any instance with non-admin users, API tokens, or SSO.** The autoremove package-list change below was prepared as `2026.09.29-01` but never tagged, so it ships here.
 
 ### Security
 
