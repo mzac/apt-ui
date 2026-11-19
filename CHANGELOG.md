@@ -4,6 +4,19 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [2026.11.19-03] — 2026-11-19
+
+Dependency refresh on top of the two security releases earlier today. No behaviour changes.
+
+### Changed
+
+- **Runtime image is now Python 3.15** (was 3.12) and the frontend is built with **Node 26** (was 22). Both base images stay pinned by digest.
+- **Frontend dependencies updated**: React 19.3, react-router-dom 7.18.5, recharts 3.10, zustand 5.1, Tailwind CSS 4.3.5, `@vitejs/plugin-react` 6.3.
+- `actions/checkout` 7.0.1 in the release workflow.
+- `make lock` now resolves the hash-locked `backend/requirements.txt` inside the exact Python image the Dockerfile uses, so the lock and the runtime can't drift apart when the base image is bumped. The lock was regenerated on Python 3.15.
+
+---
+
 ## [2026.11.19-02] — 2026-11-19
 
 Deployment hardening — the part of the security audit that changes first-run and container behaviour. **Read the upgrade notes below before upgrading.** Existing Docker Compose installs using the shipped compose files upgrade with a plain `pull` + `up -d`; the notes say where anything else is needed.

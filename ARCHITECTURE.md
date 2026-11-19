@@ -345,8 +345,8 @@ flowchart LR
     end
 
     subgraph dockerfile["📦 Dockerfile · multi-stage"]
-        DF1["Stage 1: node:22-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
-        DF2["Stage 2: python:3.12-slim<br/>pip install --require-hashes -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
+        DF1["Stage 1: node:26-alpine<br/>npm ci<br/>npm run build<br/>→ /app/frontend/dist/"]
+        DF2["Stage 2: python:3.15-slim<br/>pip install --require-hashes -r requirements.txt<br/>Copy backend/<br/>Copy dist/ → static/<br/>EXPOSE 8000"]
         DF1 --> DF2
     end
 
@@ -425,8 +425,8 @@ Triggered by a **published GitHub Release**. All steps run on `ubuntu-latest`.
 
 The build is split into two stages to keep the final image small:
 
-- **Stage 1 (`node:22-alpine`)** — installs Node.js dependencies with `npm ci` (reproducible from `package-lock.json`) and produces the compiled React SPA in `dist/`
-- **Stage 2 (`python:3.12-slim`)** — installs Python dependencies, copies the backend, and copies the compiled frontend from Stage 1 into `static/`. FastAPI serves these static files directly with a SPA catch-all route.
+- **Stage 1 (`node:26-alpine`)** — installs Node.js dependencies with `npm ci` (reproducible from `package-lock.json`) and produces the compiled React SPA in `dist/`
+- **Stage 2 (`python:3.15-slim`)** — installs Python dependencies, copies the backend, and copies the compiled frontend from Stage 1 into `static/`. FastAPI serves these static files directly with a SPA catch-all route.
 
 The result is a single self-contained image with no Node.js runtime in production.
 

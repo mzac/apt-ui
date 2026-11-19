@@ -49,10 +49,15 @@ docker-build:  ## Build the Docker image locally (slow, multi-stage)
 	@echo "→ Docker build (linux/amd64)"
 	@docker build -t apt-ui:ci .
 
+# The lock is resolved inside the exact runtime image the Dockerfile uses (tag
+# and digest read from its FROM line), so the two can't drift when Dependabot
+# bumps the base image.
+PY_IMAGE := $(shell awk '/^FROM python:/{print $$2; exit}' Dockerfile)
+
 lock:  ## Regenerate the hash-locked backend/requirements.txt from requirements.in
-	@echo "→ pip-compile --generate-hashes (in python:3.12-slim, to match the image)"
+	@echo "→ pip-compile --generate-hashes (in $(PY_IMAGE), to match the image)"
 	@head -7 backend/requirements.txt > backend/requirements.txt.new
-	@docker run --rm -i python:3.12-slim sh -c "pip install -q --root-user-action=ignore pip-tools >/dev/null 2>&1 \
+	@docker run --rm -i $(PY_IMAGE) sh -c "pip install -q --root-user-action=ignore pip-tools >/dev/null 2>&1 \
 		&& mkdir /w && cd /w && cat > requirements.in \
 		&& pip-compile -q --generate-hashes --allow-unsafe --strip-extras --no-header --upgrade -o requirements.txt requirements.in >&2 \
 		&& cat requirements.txt" < backend/requirements.in >> backend/requirements.txt.new

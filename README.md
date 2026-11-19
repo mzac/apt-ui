@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white" alt="Python"/>
+  <img src="https://img.shields.io/badge/python-3.15-3776AB?logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/fastapi-009688?logo=fastapi&logoColor=white" alt="FastAPI"/>
   <img src="https://img.shields.io/badge/sqlalchemy-async-D71F00?logo=sqlalchemy&logoColor=white" alt="SQLAlchemy"/>
   <img src="https://img.shields.io/badge/sqlite-003B57?logo=sqlite&logoColor=white" alt="SQLite"/>
@@ -511,7 +511,7 @@ flowchart LR
 
 | Layer | Library / Tool |
 |---|---|
-| **Backend** | Python 3.12 · FastAPI · Uvicorn |
+| **Backend** | Python 3.15 · FastAPI · Uvicorn |
 | **Auth** | passlib[bcrypt] · PyJWT (HS256, 24 h httpOnly cookie) · pyotp (TOTP) · scrypt (API tokens) |
 | **SSH** | asyncssh — fresh connection per command, `known_hosts=None` (trusted LAN) |
 | **Encryption** | Fernet (AES-128-CBC + HMAC-SHA256) — per-server SSH keys + TOTP secrets at rest |
@@ -522,7 +522,7 @@ flowchart LR
 | **State** | Zustand (auth + job store + servers store) |
 | **Charts** | Recharts |
 | **Terminal** | ansi-to-html (apt output) · @xterm/xterm (interactive shell) |
-| **Container** | Multi-stage Dockerfile — `node:22-alpine` build → `python:3.12-slim` runtime |
+| **Container** | Multi-stage Dockerfile — `node:26-alpine` build → `python:3.15-slim` runtime |
 | **Registry** | GitHub Container Registry — `linux/amd64` + `linux/arm64` |
 | **CI/CD** | GitHub Actions · CodeQL · Dependabot · multi-arch release pipeline |
 
