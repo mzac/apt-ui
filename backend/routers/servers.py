@@ -796,8 +796,14 @@ async def search_package_fleet(
         # rejects patterns containing e.g. lookarounds or named groups.
         if len(pkg) > 200:
             raise HTTPException(status_code=400, detail="Regex too long (max 200 chars)")
-        if not _re.match(r'^[a-zA-Z0-9._+\-*?\[\]^$|()\\]+$', pkg):
+        if not _re.fullmatch(r'^[a-zA-Z0-9._+\-*?\[\]^$|()\\]+$', pkg):
             raise HTTPException(status_code=400, detail="Regex contains unsupported characters")
+        # A quantified group — `(a+)+`, `(a|ab)*` — is what makes backtracking go
+        # exponential, and this pattern runs on the event loop against every
+        # installed package name: one such search froze the API and scheduler for
+        # minutes. Without it the worst case is polynomial on ~50-char names.
+        if _re.search(r'\)[*+?]', pkg):
+            raise HTTPException(status_code=400, detail="Quantified groups like (…)+ are not supported")
         try:
             py_filter = _re.compile(pkg)
         except _re.error:
@@ -805,7 +811,7 @@ async def search_package_fleet(
         glob = "*"
     else:
         # Validate that the user-supplied substring is "package-name-shaped"
-        if not _re.match(r'^[a-zA-Z0-9._+\-]+$', pkg):
+        if not _re.fullmatch(r'^[a-zA-Z0-9._+\-]+$', pkg):
             raise HTTPException(status_code=400, detail="Search term may only contain letters, digits, '.', '_', '+', '-'")
         if mode == "exact":
             glob = pkg
@@ -1126,7 +1132,7 @@ async def bulk_hold(
     server_ids: list[int] = body.get("server_ids") or []
     pkg = (body.get("package") or "").strip()
     hold = bool(body.get("hold", True))
-    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+    if not pkg or not _re.fullmatch(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
         raise HTTPException(status_code=400, detail="Invalid package name")
     if not server_ids:
         raise HTTPException(status_code=400, detail="server_ids required")
@@ -1286,7 +1292,7 @@ async def hold_package(
     server = await _get_server_or_404(server_id, db)
     pkg = (body.get("package") or "").strip()
     hold = bool(body.get("hold", True))
-    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+    if not pkg or not _re.fullmatch(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
         raise HTTPException(status_code=400, detail="Invalid package name")
     sudo = sudo_prefix(server)
     cmd = f"{sudo}apt-mark {'hold' if hold else 'unhold'} {pkg}"
@@ -1307,17 +1313,21 @@ async def restart_service(
     server_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """Restart a systemd service (issue #42)."""
     import re as _re
     set_actor(user.username)
     server = await _get_server_or_404(server_id, db)
-    unit = (body.get("unit") or "").strip()
-    if not unit or not _re.match(r'^[a-zA-Z0-9@.\-_:]+\.(service|socket|timer|target|path|mount)$', unit):
+    unit = body.get("unit")
+    unit = unit.strip() if isinstance(unit, str) else ""
+    # No `.target`: `systemctl restart reboot.target` / `poweroff.target` would be a
+    # reboot or shutdown that sidesteps the maintenance-window-checked reboot path.
+    # Must start alphanumeric so the name can never be read as an option.
+    if not _re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9@.\-_:]*\.(service|socket|timer|path|mount)', unit):
         raise HTTPException(status_code=400, detail="Invalid unit name")
     sudo = sudo_prefix(server)
-    result = await run_command(server, f"{sudo}systemctl restart {unit}", timeout=30)
+    result = await run_command(server, f"{sudo}systemctl restart -- {unit}", timeout=30)
     return {
         "success": result.exit_code == 0,
         "unit": unit,
@@ -1538,7 +1548,7 @@ async def create_package_watch(
     import re as _re
 
     pkg = (body.get("package_name") or "").strip()
-    if not pkg or not _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
+    if not pkg or not _re.fullmatch(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', pkg):
         raise HTTPException(status_code=400, detail="Invalid package name")
 
     existing = (

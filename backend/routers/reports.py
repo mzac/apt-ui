@@ -6,6 +6,8 @@ reporting. Exposed as JSON; the frontend offers CSV download.
 """
 
 import csv as _csv
+
+from backend.routers.exports import csv_safe
 import io as _io
 import json as _json
 from datetime import datetime, timedelta
@@ -267,7 +269,7 @@ async def change_record(
         w = _csv.writer(buf)
         w.writerow(["started_at", "server", "action", "status", "packages", "initiated_by", "snapshot"])
         for r in records:
-            w.writerow([r["started_at"], r["server"], r["action"], r["status"], r["packages"], r["initiated_by"], r["snapshot"]])
+            w.writerow(csv_safe([r["started_at"], r["server"], r["action"], r["status"], r["packages"], r["initiated_by"], r["snapshot"]]))
         return Response(content=buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=change-record-{days}d.csv"})
 

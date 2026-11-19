@@ -98,6 +98,20 @@ async def _iter_rows_keyset(db: AsyncSession, base_stmt: Select, id_column) -> A
             return
 
 
+def csv_safe(row: list) -> list:
+    """Neutralise spreadsheet formulas in a CSV row.
+
+    These exports carry text that originates on managed hosts (command output)
+    and from users. A cell starting with ``=``, ``+``, ``-`` or ``@`` is executed
+    as a formula when the file is opened in Excel / LibreOffice / Sheets, so such
+    cells get a leading apostrophe, which spreadsheets render as plain text.
+    """
+    return [
+        "'" + c if isinstance(c, str) and c[:1] in ("=", "+", "-", "@", "\t", "\r") else c
+        for c in row
+    ]
+
+
 class _Echo:
     """File-like shim so csv.writer hands us each formatted row as a string
     instead of writing to a real buffer — the standard streaming-CSV recipe."""
@@ -159,7 +173,7 @@ async def _history_csv_stream(db: AsyncSession, stmt: Select, srv_map: dict[int,
         "initiated_by", "snapshot_name",
     ])
     async for h in _iter_rows_keyset(db, stmt, UpdateHistory.id):
-        yield writer.writerow([
+        yield writer.writerow(csv_safe([
             h.id,
             utc_iso(h.started_at) or "",
             utc_iso(h.completed_at) or "",
@@ -171,7 +185,7 @@ async def _history_csv_stream(db: AsyncSession, stmt: Select, srv_map: dict[int,
             _history_pkg_count(h),
             h.initiated_by or "",
             h.snapshot_name or "",
-        ])
+        ]))
 
 
 def _md_escape(value: str) -> str:
@@ -261,7 +275,7 @@ async def _audit_csv_stream(db: AsyncSession, stmt: Select, srv_map: dict[int, s
         "initiated_by", "command", "exit_code", "output_excerpt",
     ])
     async for r in _iter_rows_keyset(db, stmt, SshAuditLog.id):
-        yield writer.writerow([
+        yield writer.writerow(csv_safe([
             r.id,
             utc_iso(r.started_at) or "",
             r.server_id,
@@ -271,7 +285,7 @@ async def _audit_csv_stream(db: AsyncSession, stmt: Select, srv_map: dict[int, s
             r.command,
             r.exit_code if r.exit_code is not None else "",
             r.output_excerpt or "",
-        ])
+        ]))
 
 
 async def _audit_md_stream(

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.actor import set_actor
-from backend.auth import get_current_user, require_admin, get_current_user_ws
+from backend.auth import get_current_user, require_admin, ws_authenticate
 from backend.database import AsyncSessionLocal, get_db
 from backend.models import Server, User
 from backend.ssh_manager import _connect_options, apt_prefix, run_command, sudo_prefix
@@ -33,7 +33,7 @@ def _allowed_path(path: str) -> bool:
         return True
     if path.startswith(_SOURCES_LIST_D):
         filename = path[len(_SOURCES_LIST_D):]
-        if '/' not in filename and _FILENAME_RE.match(filename):
+        if '/' not in filename and _FILENAME_RE.fullmatch(filename):
             return True
     return False
 
@@ -44,7 +44,7 @@ def _deletable_path(path: str) -> bool:
     if not path.startswith(_SOURCES_LIST_D):
         return False
     filename = path[len(_SOURCES_LIST_D):]
-    return '/' not in filename and _FILENAME_RE.match(filename) is not None
+    return '/' not in filename and _FILENAME_RE.fullmatch(filename) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,9 @@ async def write_apt_repo(
     server_id: int,
     body: AptRepoWriteRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    # Admin-only: this writes apt sources as root. A read-only account that can
+    # add a `[trusted=yes]` repo owns the host at the next upgrade.
+    _: User = Depends(require_admin),
 ):
     if not _allowed_path(body.path):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path not allowed")
@@ -254,11 +256,9 @@ async def ws_apt_repos_test(websocket: WebSocket, server_id: int):
     # query strings are captured by reverse-proxy access logs and browser history.
     # (The iCal feed's `?token=` is a different thing — a scoped API token, for
     # calendar clients that cannot send headers.)
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=False)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 

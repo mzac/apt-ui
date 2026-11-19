@@ -53,6 +53,14 @@ COPY --from=frontend-build /app/frontend/dist/ ./static/
 # Ensure the backend package is importable from /app
 ENV PYTHONPATH=/app
 
+# Cap glibc malloc arenas (issue #92). glibc creates up to 8 x cores arenas and
+# memory freed by one thread stays parked in that thread's arena, so with the
+# ~20 threads this process runs (uvicorn, the aiosqlite worker, the default
+# executor) RSS ratcheted from ~110 MiB to ~1.3 GiB over a week with no
+# Python-level leak behind it. Two arenas costs a little allocator contention,
+# which is irrelevant for an I/O-bound app. Override with -e MALLOC_ARENA_MAX=…
+ENV MALLOC_ARENA_MAX=2
+
 # Data volume mount point
 VOLUME ["/data"]
 

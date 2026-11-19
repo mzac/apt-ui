@@ -4,6 +4,36 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+A security release. An audit of the codebase found that read-only accounts could run commands on managed hosts; this closes that and a number of smaller holes, fixes the backend's memory growth ([#92](https://github.com/mzac/apt-ui/issues/92)) and the unreachable **Start Upgrade** button ([#93](https://github.com/mzac/apt-ui/issues/93)). **Upgrade recommended for any instance with non-admin users, API tokens, or SSO.**
+
+### Security
+
+- **Shell injection through the upgrade `action`.** The value from the request was interpolated into `apt-get {action} -y …` unchecked on the REST and WebSocket upgrade paths, so any logged-in user — including read-only ones — could run arbitrary commands as the SSH user on every server. It is now allowlisted (`upgrade` / `dist-upgrade`) at the single point where the command is built.
+- **Shell injection through the apt proxy URL**, which was written into a shell command unquoted. It must now be a plain `http(s)://host[:port]` and is quoted.
+- **Package-name validation could be bypassed with a trailing newline** (`"vim\n"`), splitting the install / selective-upgrade / autoremove / template command line into extra shell commands.
+- **Read-only accounts could change managed hosts.** Fourteen WebSocket operations (upgrade, upgrade-all, selective upgrade, install, autoremove, rolling reboot, template apply, apt proxy, auto security updates, EEPROM, `pveupgrade`, …) and several REST endpoints (start upgrade, upgrade-all, **writing apt sources**, restart service, template packages, apt-cache server delete) only checked that the caller was logged in. All now require an admin. `/api/v1/…/upgrade` also requires the token's owner to be an admin. Read-only users keep checks, dry-runs, search and their own watches.
+- **Scoped API tokens were full credentials outside `/api/v1`.** A `calendar` or `read` token could call any endpoint its owner could, including minting an unscoped token. Scoped tokens are now limited to `/api/v1` plus — for the `read` scope — GET requests elsewhere, and never `/api/auth` or `/api/config`. **If you use a scoped token against non-`/api/v1` write endpoints, switch to an unscoped token.**
+- **Secrets visible to read-only users.** The config export (SMTP password, Telegram bot token in clear) is now admin-only, and the generic webhook URL and signing secret are masked like the other notification secrets. Errors from the notification test buttons no longer echo tokens embedded in request URLs.
+- **Cross-site WebSocket hijacking.** WebSockets authenticate with the session cookie but had no `Origin` check, so a page on another port or sibling subdomain of the same host could drive upgrades or the shell with an admin's session. Handshakes whose `Origin` does not match the `Host` (or `X-Forwarded-Host`) header are refused; set `WS_ALLOWED_ORIGINS` if your reverse proxy rewrites `Host`.
+- **Security headers.** Responses now carry a Content-Security-Policy (no inline or third-party scripts), `X-Frame-Options: DENY` / `frame-ancestors 'none'` (clickjacking), `X-Content-Type-Options` and `Referrer-Policy`. The unauthenticated `/docs`, `/redoc` and `/openapi.json` are disabled.
+- **Sessions survive a password change no longer.** Changing or resetting a password (UI, admin reset, CLI) invalidates that user's existing sessions. The session cookie is marked `Secure` when the login happened over HTTPS.
+- **2FA could be switched off without the password** by re-running setup. Setup is now refused while 2FA is enabled; disable it (password required) first.
+- **Maintenance windows were not enforced** on the REST upgrade endpoints, selective upgrades, `pveupgrade` or rolling reboots.
+- **SSO login CSRF**: the OIDC `state` is now bound to the browser that started the login.
+- Smaller hardening: `systemctl restart` no longer accepts `.target` units (`reboot.target` bypassed the reboot checks); the regex package search rejects quantified groups that could freeze the server (ReDoS); package names parsed from a host's apt output are quoted before reuse; hosts can no longer auto-tag themselves into a `ring:`; CSV exports neutralise spreadsheet formulas; login no longer reveals which usernames exist by timing; password re-checks are rate-limited; the `/metrics` token comparison is constant-time; uploads are size-checked before being read into memory.
+- **Dependencies:** Vite 8.0 → 8.3.8 (five Dependabot advisories, dev-server only).
+
+### Fixed
+
+- **Backend memory grew from ~110 MiB to well over 1 GiB** ([#92](https://github.com/mzac/apt-ui/issues/92)). The daily CVE refresh loaded the ~344 MB USN feed with `resp.json()`: measured at ~2.2 GiB peak RSS, of which glibc returned almost nothing (1.5–1.85 GiB resident afterwards) — and it parsed on the event loop, stalling the API for ~15 s. The feed is now streamed to disk and parsed one entry at a time in a worker thread: the same refresh peaks at under 200 MiB with identical output. The image also sets `MALLOC_ARENA_MAX=2`, though that alone did not fix it. The example k8s manifest's memory limit is raised from 256Mi to 512Mi.
+- **"Start Upgrade" was unreachable with many servers selected** ([#93](https://github.com/mzac/apt-ui/issues/93)). The Upgrade All dialog grew past the viewport with no way to scroll. The dialog body now scrolls and the action buttons stay pinned at the bottom; Autoremove All and Rolling Reboot got the same treatment.
+- A manual rebuild of an old tag (`workflow_dispatch`) no longer moves the `:latest` image tag.
+- A failed manual CVE refresh returns a clear 502 instead of a bare 500.
+
+---
+
 ## [2026.09.29-01] — 2026-09-29
 
 Shows which packages autoremove will remove before you start it.

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth import get_current_user, get_current_user_ws, require_admin
+from backend.auth import get_current_user, ws_authenticate, require_admin
 from backend.actor import set_actor
 from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
@@ -23,7 +23,7 @@ from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
 from backend.ssh_manager import _connect_options, apt_prefix, conffile_opts, dpkg_conffile_opts, run_command, sudo_prefix
 from backend.timeutil import utc_iso
-from backend.upgrade_manager import upgrade_server, upgrade_packages_selective
+from backend.upgrade_manager import UPGRADE_ACTIONS, _PACKAGE_NAME_RE, upgrade_server, upgrade_packages_selective
 from backend import task_queue
 
 router = APIRouter(tags=["upgrades"])
@@ -85,6 +85,22 @@ async def _ws_refuse_if_readonly_root(websocket: WebSocket, db: AsyncSession, se
     return True
 
 
+async def _ws_refuse_if_window_blocked(
+    websocket: WebSocket, db: AsyncSession, server_id: int, user: User, params: dict, what: str,
+) -> bool:
+    """Send an error and close *websocket* if *server_id* is inside a maintenance
+    (deny) window. An admin may pass ``override_window`` — the same contract as
+    ws_upgrade. Returns True when the caller must stop."""
+    from backend.routers.maintenance import window_block_reason
+    override = bool(params.get("override_window", False)) and user.is_admin
+    block = await window_block_reason(db, server_id, override=override)
+    if block is None:
+        return False
+    await websocket.send_json({"type": "error", "data": f"{what} blocked: {block}"})
+    await websocket.close()
+    return True
+
+
 @router.get("/api/servers/{server_id}/packages/search", response_model=list[PackageSearchResult])
 async def search_packages(
     server_id: int,
@@ -98,7 +114,7 @@ async def search_packages(
     # Search package names and get top 20
     search_result = await run_command(
         server,
-        f"apt-cache search --names-only {safe_q} 2>/dev/null | head -20 | awk '{{print $1}}'",
+        f"apt-cache search --names-only -- {safe_q} 2>/dev/null | head -20 | awk '{{print $1}}'",
         timeout=30,
     )
     pkg_names = [n.strip() for n in search_result.stdout.splitlines() if n.strip()]
@@ -109,7 +125,7 @@ async def search_packages(
     pkg_list = " ".join(shlex.quote(p) for p in pkg_names[:20])
     show_result = await run_command(
         server,
-        f"apt-cache show {pkg_list} 2>/dev/null",
+        f"apt-cache show -- {pkg_list} 2>/dev/null",
         timeout=30,
     )
     details = _parse_apt_cache_show(show_result.stdout)
@@ -145,11 +161,9 @@ async def search_packages(
 async def ws_install(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -175,7 +189,7 @@ async def ws_install(websocket: WebSocket, server_id: int):
             return
 
         # Sanitise package names
-        safe_packages = [p for p in packages if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$', p)]
+        safe_packages = [p for p in packages if isinstance(p, str) and _PACKAGE_NAME_RE.fullmatch(p)]
         if not safe_packages:
             await websocket.send_json({"type": "error", "data": "No valid package names"})
             await websocket.close()
@@ -230,11 +244,9 @@ async def ws_install(websocket: WebSocket, server_id: int):
 async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -316,11 +328,9 @@ async def ws_auto_security_updates(websocket: WebSocket, server_id: int):
 async def ws_apt_proxy(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -340,7 +350,7 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
             params = {}
 
         enable: bool = params.get("enable", True)
-        proxy_url: str = params.get("proxy_url", "")
+        proxy_url = params.get("proxy_url", "")
         # mode: "manual" (write URL to 01proxy) or "auto" (install auto-apt-proxy package)
         mode: str = params.get("mode", "manual")
         sudo = sudo_prefix(server)
@@ -362,12 +372,26 @@ async def ws_apt_proxy(websocket: WebSocket, server_id: int):
                 f"{sudo}rm -f {conf_file}"  # remove any manual config that would override auto
             )
         else:
-            # Manual: write the proxy URL to the conventional 01proxy file
+            # Manual: write the proxy URL to the conventional 01proxy file.
+            # The URL lands inside a shell command *and* inside an apt.conf string,
+            # so only a plain http(s)://host[:port][/] is accepted — no quotes,
+            # spaces, semicolons or anything else that could break out of either.
+            if not isinstance(proxy_url, str) or not re.fullmatch(
+                r"https?://[A-Za-z0-9.\-]+(:[0-9]{1,5})?/?|https?://\[[0-9A-Fa-f:]+\](:[0-9]{1,5})?/?",
+                proxy_url,
+            ):
+                await websocket.send_json({
+                    "type": "error",
+                    "data": "Invalid proxy URL — expected http(s)://host[:port]",
+                })
+                await websocket.close()
+                return
+            conf_line = shlex.quote('Acquire::http::Proxy "' + proxy_url + '";')
             cmd = (
                 f"if dpkg -l auto-apt-proxy 2>/dev/null | grep -q '^ii'; then "
                 f"  {apt_prefix(server)}apt-get remove -y auto-apt-proxy 2>&1; "
                 f"fi; "
-                f"printf 'Acquire::http::Proxy \"{proxy_url}\";\\n' "
+                f"printf '%s\\n' {conf_line} "
                 f"| {sudo}tee {conf_file}"
             )
 
@@ -427,11 +451,9 @@ async def ws_eeprom_update(websocket: WebSocket, server_id: int):
     """
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -497,11 +519,9 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
     """Run pveupgrade on a Proxmox VE node, streaming output live."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -512,6 +532,8 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
             await websocket.close()
             return
         if await _ws_refuse_if_readonly_root(websocket, db, server, "Upgrade"):
+            return
+        if await _ws_refuse_if_window_blocked(websocket, db, server_id, user, {}, "Upgrade"):
             return
 
         async def send_fn(msg: dict):
@@ -579,11 +601,9 @@ async def ws_dry_run(websocket: WebSocket, server_id: int):
     """Run apt-get upgrade/dist-upgrade --dry-run and stream the output."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=False)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -639,13 +659,19 @@ async def start_upgrade(
     server_id: int,
     body: UpgradeRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     server = await _get_server(server_id, db)
     from backend.fs_guard import root_fs_block_reason
     block = await root_fs_block_reason(db, server)
     if block:
         raise HTTPException(status_code=409, detail=f"Upgrade {block}.")
+    # Same maintenance-window gate as the WebSocket path — otherwise a freeze
+    # window could be sidestepped just by calling this endpoint instead.
+    from backend.routers.maintenance import window_block_reason
+    window_block = await window_block_reason(db, server_id)
+    if window_block:
+        raise HTTPException(status_code=409, detail=f"Upgrade blocked: {window_block}")
     cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = cfg_res.scalar_one_or_none()
     run_apt_update = cfg.run_apt_update_before_upgrade if cfg else False
@@ -704,7 +730,7 @@ async def start_upgrade(
 async def start_upgrade_all(
     body: UpgradeRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
     cfg = cfg_res.scalar_one_or_none()
@@ -728,6 +754,9 @@ async def start_upgrade_all(
         if chk and chk.status == "success" and chk.packages_available > 0:
             if await root_fs_block_reason(db, s):
                 continue
+            from backend.routers.maintenance import window_block_reason
+            if await window_block_reason(db, s.id):
+                continue  # inside a maintenance (deny) window — same gate as the WS path
             to_upgrade.append(s)
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -756,11 +785,9 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
     # Auth via cookie
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -781,6 +808,10 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
             params = {}
 
         action = params.get("action", "upgrade")
+        if action not in UPGRADE_ACTIONS:
+            await websocket.send_json({"type": "error", "data": "Invalid upgrade action"})
+            await websocket.close()
+            return
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
         reboot_if_required = params.get("reboot_if_required", False)
@@ -892,11 +923,9 @@ async def ws_upgrade(websocket: WebSocket, server_id: int):
 async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -921,6 +950,8 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
         if not packages:
             await websocket.send_json({"type": "error", "data": "No packages specified"})
             await websocket.close()
+            return
+        if await _ws_refuse_if_window_blocked(websocket, db, server_id, user, params, "Upgrade"):
             return
 
         cfg_res = await db.execute(select(ScheduleConfig).where(ScheduleConfig.id == 1))
@@ -964,11 +995,9 @@ async def ws_upgrade_selective(websocket: WebSocket, server_id: int):
 async def ws_upgrade_all(websocket: WebSocket):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -979,6 +1008,10 @@ async def ws_upgrade_all(websocket: WebSocket):
             params = {}
 
         action = params.get("action", "upgrade")
+        if action not in UPGRADE_ACTIONS:
+            await websocket.send_json({"type": "error", "data": "Invalid upgrade action"})
+            await websocket.close()
+            return
         allow_phased = params.get("allow_phased", False)
         conffile_action = params.get("conffile_action", "confdef_confold")
         reboot_if_required = params.get("reboot_if_required", False)
@@ -1266,11 +1299,9 @@ async def ws_shell(websocket: WebSocket, server_id: int):
         return
 
     # Auth via cookie
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         # Admin-only: this is an interactive shell on the remote host, almost always as
         # root. Authenticating alone is not enough — without this check every read-only
@@ -1365,11 +1396,9 @@ async def ws_shell(websocket: WebSocket, server_id: int):
 async def ws_template_apply(websocket: WebSocket, template_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -1524,11 +1553,9 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
     """Run `sudo apt-get update` on the server and stream the output."""
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=False)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -1578,11 +1605,9 @@ async def ws_apt_update(websocket: WebSocket, server_id: int):
 async def ws_autoremove(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -1637,11 +1662,9 @@ async def ws_autoremove(websocket: WebSocket, server_id: int):
 async def ws_autoremove_all(websocket: WebSocket):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -1884,11 +1907,9 @@ async def ws_reboot_all(websocket: WebSocket):
     await websocket.accept()
     logger_local = logging.getLogger(__name__)
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         set_actor(user.username)
 
@@ -1958,6 +1979,19 @@ async def ws_reboot_all(websocket: WebSocket):
                     servers.append(s)
                 else:
                     await _send_skipped(s.id, s.name, "No reboot required")
+
+        # Maintenance windows apply to reboots too (the single-server reboot already
+        # checks); an admin can pass override_window, as with upgrade-all.
+        from backend.routers.maintenance import window_block_reason
+        override_window = bool(params.get("override_window", False)) and user.is_admin
+        allowed = []
+        for s in servers:
+            block = await window_block_reason(db, s.id, override=override_window)
+            if block:
+                await _send_skipped(s.id, s.name, block)
+            else:
+                allowed.append(s)
+        servers = allowed
 
         if not servers:
             await websocket.send_json({
@@ -2370,8 +2404,13 @@ async def upload_deb(
     if not (file.filename or "").lower().endswith(".deb"):
         raise HTTPException(status_code=400, detail="File must be a .deb package")
 
-    contents = await file.read()
-    if len(contents) > 500 * 1024 * 1024:
+    # Check the size before reading: the upload is spooled to disk, and reading an
+    # oversized one into memory first is what the limit is meant to prevent.
+    max_bytes = 500 * 1024 * 1024
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(status_code=400, detail="File too large (max 500 MB)")
+    contents = await file.read(max_bytes + 1)
+    if len(contents) > max_bytes:
         raise HTTPException(status_code=400, detail="File too large (max 500 MB)")
 
     safe_name = re.sub(r"[^a-zA-Z0-9._\-+]", "_", file.filename or "package.deb")
@@ -2397,11 +2436,9 @@ async def upload_deb(
 async def ws_install_deb(websocket: WebSocket, server_id: int):
     await websocket.accept()
 
-    token = websocket.cookies.get("apt_ui_token")
     async with AsyncSessionLocal() as db:
-        user = await get_current_user_ws(token or "", db)
+        user = await ws_authenticate(websocket, db, admin=True)
         if user is None:
-            await websocket.close(code=1008)
             return
         # Admin-only: a .deb's maintainer scripts run as root, so installing one is
         # arbitrary remote code execution. Authenticating alone would let any
@@ -2460,7 +2497,7 @@ async def ws_install_deb(websocket: WebSocket, server_id: int):
 
             elif source == "remote":
                 path = params.get("path", "")
-                if not re.match(r"^/tmp/[a-zA-Z0-9._\-+]+\.deb$", path):
+                if not re.fullmatch(r"/tmp/[a-zA-Z0-9._\-+]+\.deb", path):
                     await send_fn({"type": "error", "data": "Invalid remote path"})
                     await websocket.close()
                     return

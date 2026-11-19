@@ -24,6 +24,12 @@ ENABLE_TERMINAL = os.getenv("ENABLE_TERMINAL", "false").lower() == "true"
 # Only honor X-Forwarded-For (for login lockout / audit IP) when behind a trusted
 # reverse proxy; otherwise a client could spoof the header (issue #62).
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+# Extra origins allowed to open WebSockets, comma-separated (e.g.
+# "https://apt.example.com"). Only needed behind a reverse proxy that rewrites
+# Host without sending X-Forwarded-Host — see auth._origin_allowed.
+WS_ALLOWED_ORIGINS = {
+    o.strip().lower().rstrip("/") for o in os.getenv("WS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+}
 
 APP_VERSION = os.getenv("APP_VERSION", "dev")
 

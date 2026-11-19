@@ -250,7 +250,10 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
         </div>
 
         {!started ? (
-          <div className="p-4 space-y-4">
+          <>
+          {/* Body scrolls; the action buttons stay pinned below it so a long
+              server list can never push them off-screen (issue #93). */}
+          <div className="p-4 space-y-4 flex-1 min-h-0 overflow-y-auto">
             <p className="text-sm text-text-muted">
               This will upgrade <span className="text-amber font-mono">{servers.length} servers</span> ({totalPackages} total packages).
             </p>
@@ -323,12 +326,12 @@ export default function UpgradeAllModal({ servers, onClose, onMinimize }: Props)
                 </div>
               ))}
             </div>
-
-            <div className="flex gap-2">
-              <button onClick={start} className="btn-amber">Start Upgrade</button>
-              <button onClick={handleClose} className="btn-secondary">Cancel</button>
-            </div>
           </div>
+          <div className="p-4 border-t border-border flex gap-2 shrink-0">
+            <button onClick={start} className="btn-amber">Start Upgrade</button>
+            <button onClick={handleClose} className="btn-secondary">Cancel</button>
+          </div>
+          </>
         ) : (
           <div className="flex-1 overflow-hidden flex flex-col p-4 gap-3">
             {/* Server status chips — click to filter terminal output */}

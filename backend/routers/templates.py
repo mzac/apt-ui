@@ -112,7 +112,7 @@ async def add_template_package(
     template_id: int,
     body: TemplatePackageCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     await _get_template_or_404(template_id, db)
     pkg = TemplatePackage(
@@ -136,7 +136,7 @@ async def remove_template_package(
     template_id: int,
     pkg_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
 ):
     result = await db.execute(
         select(TemplatePackage).where(

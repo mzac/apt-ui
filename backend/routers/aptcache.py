@@ -202,7 +202,7 @@ async def update_server(
 async def delete_server(
     server_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(get_current_user),
+    _=Depends(require_admin),
 ):
     result = await db.execute(select(AptCacheServer).where(AptCacheServer.id == server_id))
     s = result.scalar_one_or_none()

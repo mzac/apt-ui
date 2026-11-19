@@ -18,6 +18,9 @@ class User(Base):
     # TOTP 2FA (issue #18) — secret stored Fernet-encrypted via backend.crypto
     totp_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Bumped whenever the password changes; session JWTs carry the value they were
+    # issued under, so every older session stops working at that moment.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Last TOTP step counter accepted at login — blocks code replay (issue #62).
     totp_last_counter: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # SSO (issue #62). 'local' users authenticate with password_hash; 'oidc' users

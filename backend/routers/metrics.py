@@ -13,6 +13,8 @@ Scrape config example:
       - targets: ['apt-ui.example.com']
 """
 
+import hmac
+import logging
 import os
 import time
 from datetime import datetime
@@ -41,7 +43,7 @@ def _check_auth(authorization: str | None) -> None:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     token = authorization[7:].strip()
-    if token != METRICS_TOKEN:
+    if not hmac.compare_digest(token.encode(), METRICS_TOKEN.encode()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
@@ -132,7 +134,14 @@ async def cve_status(_: User = _Depends(get_current_user)):
 async def cve_refresh(_: User = _Depends(require_admin)):
     """Manually trigger a CVE feed refresh."""
     from backend.cve_matcher import refresh_and_reload
-    payload = await refresh_and_reload()
+    try:
+        payload = await refresh_and_reload()
+    except Exception as exc:
+        # The upstream feed times out / rate-limits now and then; report that
+        # rather than a bare 500.
+        logging.getLogger(__name__).warning("Manual CVE refresh failed: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="Could not fetch the USN feed — try again later")
     return {
         "fetched_at": payload.get("fetched_at"),
         "package_count": payload.get("package_count", 0),
