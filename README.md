@@ -122,7 +122,7 @@
 | 🔢 | **TOTP 2FA** | QR enrolment in Settings → Account · login flow asks for a 6-digit code when enabled |
 | 🔑 | **API tokens + `/api/v1`** | `aptui_<32 url-safe bytes>` · scrypt-hashed · shown once · per-token scopes (read / check / upgrade / calendar) and optional expiry · inbound automation API returns a pollable `job_id` |
 | 👥 | **RBAC** | admin / read-only roles · `require_admin` on ~28 mutation endpoints · "read-only" badge in the nav |
-| 🧱 | **Hardened by default** | no default password (random or `ADMIN_PASSWORD` on first start) · container runs as non-root on a read-only root filesystem with capabilities dropped · hash-locked Python deps, digest-pinned base images, SHA-pinned CI actions |
+| 🧱 | **Hardened by default** | no default password (`ADMIN_PASSWORD` or the CLI on first start) · container runs as non-root on a read-only root filesystem with capabilities dropped · hash-locked Python deps, digest-pinned base images, SHA-pinned CI actions |
 | 🚫 | **Brute-force lockout** | per-(username, IP) backoff + lockout on repeated login / 2FA failures · TOTP replay protection · real-time alert on lockout |
 | 🕵 | **Actor attribution + auth-event log** | every action records who triggered it · logins / failures / token use / role changes in an **Auth Events** history tab |
 
@@ -234,13 +234,13 @@ To pin to a specific release instead of `latest`, edit `docker-compose.ghcr.yml`
 
 The app will be available at **http://localhost:8111**.
 
-**First login.** There is no default password. On the very first start apt-ui creates an `admin` account and prints a random password **once** in the container log:
+**First login.** There is no default password. On the very first start apt-ui creates an `admin` account with no usable password; set one with:
 
 ```bash
-docker compose logs apt-ui | grep -A3 "initial admin account"
+docker compose exec apt-ui python -m backend.cli reset-password
 ```
 
-To choose it yourself, set `ADMIN_PASSWORD` in `.env` before the first start (it is ignored once the database exists). Lost it? `docker compose exec apt-ui python -m backend.cli reset-password`.
+Or set `ADMIN_PASSWORD` in `.env` before the first start and skip that step (it is ignored once the database exists). No password is ever written to the log. The same command resets a lost password.
 
 > **Upgrading an install that still uses `admin` / `admin`:** login still works, but the server refuses everything except changing the password until you do (API tokens are unaffected).
 
@@ -340,7 +340,7 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 |---|---|---|
 | `SSH_PRIVATE_KEY` | — | Full PEM content of the private key. Required unless using SSH agent. |
 | `SSH_AUTH_SOCK` | — | Path to SSH agent socket inside the container (e.g. `/run/ssh-agent.sock`). Alternative to `SSH_PRIVATE_KEY` — allows passphrase-protected keys. |
-| `ADMIN_PASSWORD` | random | Password for the initial `admin` account. Read on the **first start only** (empty database); if unset, a random one is generated and printed once in the log. |
+| `ADMIN_PASSWORD` | random | Password for the initial `admin` account. Read on the **first start only** (empty database); if unset, the account has no usable password until you run `python -m backend.cli reset-password`. |
 | `APT_UI_UID` / `APT_UI_GID` | `10001` | User/group the app drops to after the entrypoint's start-up `chown` of the data directory. Set to the owner of a mounted SSH agent socket or bind mount; `0` runs as root. Ignored when the container is already started as non-root. |
 | `JWT_SECRET` | generated | JWT signing secret. Auto-generated and stored in the DB on first start, so sessions survive restarts. |
 | `ENCRYPTION_KEY` | generated | Master key used to encrypt per-server SSH keys and TOTP secrets in the DB. Falls back to `JWT_SECRET`, then to a key auto-generated and stored in the DB on first start. Set it explicitly if you want the key managed outside the database. |

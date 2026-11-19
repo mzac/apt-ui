@@ -92,7 +92,7 @@ spec:
               value: /data/apt-ui.db
             # Optional overrides — uncomment as needed:
             # Initial admin password, read on the FIRST start only (empty DB).
-            # Unset: a random one is generated and printed once in the pod log.
+            # Unset: set one with `kubectl exec -it deploy/apt-ui -- python -m backend.cli reset-password`.
             # - name: ADMIN_PASSWORD
             #   valueFrom:
             #     secretKeyRef:

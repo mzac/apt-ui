@@ -34,12 +34,13 @@ async def seed_defaults():
         users = (await session.execute(select(models.User))).scalars().all()
         if not users:
             # First start. There is no well-known default password any more:
-            # take ADMIN_PASSWORD if the operator set one, otherwise generate a
-            # random one and print it exactly once — it is not stored anywhere
-            # but as a bcrypt hash, so `python -m backend.cli reset-password`
-            # is the way back in if this log line is lost.
+            # take ADMIN_PASSWORD if the operator set one. Otherwise the account
+            # is created with a random password that is thrown away — it is
+            # never logged or written to disk (container logs get shipped and
+            # retained) — and the operator sets a real one with
+            # `python -m backend.cli reset-password`.
             generated = not ADMIN_PASSWORD
-            initial_password = ADMIN_PASSWORD or secrets.token_urlsafe(18)
+            initial_password = ADMIN_PASSWORD or secrets.token_urlsafe(32)
             is_default = initial_password == auth_module.DEFAULT_PASSWORD
             session.add(models.User(
                 username="admin",
@@ -50,11 +51,12 @@ async def seed_defaults():
             if generated:
                 banner = "=" * 68
                 logger.warning(
-                    "\n%s\n  apt-ui first start — initial admin account created\n"
-                    "    username: admin\n    password: %s\n"
-                    "  This password is shown only once. Change it after logging in\n"
-                    "  (Settings → Account), or set ADMIN_PASSWORD before first start.\n%s",
-                    banner, initial_password, banner,
+                    "\n%s\n  apt-ui first start — the admin account has no usable password yet.\n"
+                    "  Set one with:\n"
+                    "    docker compose exec apt-ui python -m backend.cli reset-password\n"
+                    "  (kubectl: kubectl exec -it deploy/apt-ui -- python -m backend.cli reset-password)\n"
+                    "  or set ADMIN_PASSWORD before the first start.\n%s",
+                    banner, banner,
                 )
             elif is_default:
                 logger.warning(
@@ -65,8 +67,8 @@ async def seed_defaults():
                 logger.info("Initial admin account created with the password from ADMIN_PASSWORD.")
                 if len(initial_password) < NEW_INSTALL_PASSWORD_MIN_LENGTH:
                     logger.warning(
-                        "ADMIN_PASSWORD is shorter than the %d-character minimum new installs enforce "
-                        "for every later password change.", NEW_INSTALL_PASSWORD_MIN_LENGTH,
+                        "ADMIN_PASSWORD is shorter than the minimum length new installs enforce "
+                        "for every later password change."
                     )
             # New installs start with a stricter password policy. Existing
             # databases have no stored value and keep the old fallback (4)

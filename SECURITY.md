@@ -39,7 +39,7 @@ apt-ui is designed to run as a **single Docker container on a trusted private ne
 
 - All API endpoints (except `/api/auth/login` and `/health`) require a valid JWT stored in an httpOnly, SameSite=Lax cookie.
 - Passwords are hashed with bcrypt.
-- There is no default password. The initial `admin` account gets the value of `ADMIN_PASSWORD`, or a random password printed once in the log at first start. An account that still has the legacy `admin` password (installs created before this was introduced) can log in but is refused everything except changing it.
+- There is no default password. The initial `admin` account gets the value of `ADMIN_PASSWORD`, or no usable password until one is set with `python -m backend.cli reset-password`; a password is never logged. An account that still has the legacy `admin` password (installs created before this was introduced) can log in but is refused everything except changing it.
 - New installs enforce a minimum password length of 8 (configurable in Settings → Users). Installs created earlier keep their previous minimum (4 unless changed) — raising it is recommended.
 - WebSocket endpoints validate the JWT from the cookie on handshake and close with code 1008 on failure.
 - There is no multi-user RBAC — all authenticated users have full admin access.

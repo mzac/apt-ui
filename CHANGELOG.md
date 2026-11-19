@@ -10,7 +10,7 @@ Deployment hardening — the part of the security audit that changes first-run a
 
 ### Changed — upgrade notes
 
-- **No more default `admin` / `admin`.** A new install creates `admin` with the password from the new `ADMIN_PASSWORD` env var, or — if unset — a random one printed **once** in the log at first start (`docker compose logs apt-ui | grep -A3 "initial admin account"`).
+- **No more default `admin` / `admin`.** A new install creates `admin` with the password from the new `ADMIN_PASSWORD` env var, or — if unset — with no usable password until you set one with `docker compose exec apt-ui python -m backend.cli reset-password` (the first-start log tells you so). No password is ever written to the log.
   **Existing installs still on `admin` / `admin`:** you can still log in, but the server now refuses every request except changing the password, and the UI shows only a change-password screen until you do. API tokens on that account keep working. `admin` can no longer be chosen as a password (the CLI `reset-password` still accepts it as a break-glass, and the account is then locked to changing it again).
 - **Minimum password length is 8 on new installs.** Existing installs keep their current setting (4 unless you changed it) so nobody is locked out — consider raising it in Settings → Users.
 - **The container no longer runs as root.** The app runs as uid/gid `10001`; the compose files add `read_only`, `cap_drop: ALL` (keeping only `CHOWN`/`SETUID`/`SETGID` for start-up) and `no-new-privileges`.

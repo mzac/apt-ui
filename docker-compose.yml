@@ -17,7 +17,7 @@ services:
       #                                                 # (falls back to JWT_SECRET, then to a key auto-generated and stored in the DB)
       # - LOG_LEVEL=INFO
       # - ADMIN_PASSWORD=choose-a-long-password   # initial admin password, read on FIRST start only
-      #                                            # (unset: a random one is generated and printed once in the logs)
+      #                                            # (unset: run `python -m backend.cli reset-password` in the container)
       # - ENABLE_TERMINAL=true   # Enable interactive SSH shell in the UI (disabled by default)
     volumes:
       - apt-ui-data:/data
