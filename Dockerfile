@@ -10,7 +10,7 @@
 #
 # Base images are pinned by digest (the tag is kept only for readability — the
 # digest is what is pulled). Dependabot's `docker` ecosystem bumps both.
-FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS frontend-build
+FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend-build
 
 WORKDIR /app/frontend
 
@@ -29,7 +29,7 @@ RUN npm run build
 
 
 # ── Stage 2: Python runtime ────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # openssh-client is not required by asyncssh but useful for manual debugging
 # inside the container (e.g. ssh -i ... user@host)
