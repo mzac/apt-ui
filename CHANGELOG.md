@@ -4,7 +4,7 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.11.19-02] — 2026-11-19
 
 Deployment hardening — the part of the security audit that changes first-run and container behaviour. **Read the upgrade notes below before upgrading.** Existing Docker Compose installs using the shipped compose files upgrade with a plain `pull` + `up -d`; the notes say where anything else is needed.
 
