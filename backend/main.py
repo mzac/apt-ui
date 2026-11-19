@@ -1,5 +1,8 @@
+import base64
+import hashlib
 import logging
 from contextlib import asynccontextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -158,7 +161,98 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title="Apt Dashboard", version=APP_VERSION, lifespan=lifespan)
+# The interactive API docs are off: they are served unauthenticated, disclose the
+# whole REST/WebSocket surface, and pull their UI from a third-party CDN onto the
+# app's own origin (which would also need a hole in the CSP below).
+app = FastAPI(
+    title="Apt Dashboard",
+    version=APP_VERSION,
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+_static_dir = Path(__file__).parent.parent / "static"
+
+
+def _inline_script_hashes() -> str:
+    """CSP hash sources for the inline <script> blocks in the built index.html.
+
+    index.html carries one small inline script (it applies the saved theme before
+    React mounts). Hashing whatever is actually in the built file keeps the policy
+    free of 'unsafe-inline' without having to keep a hard-coded hash in sync.
+    """
+    try:
+        html = (_static_dir / "index.html").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    class _InlineScripts(HTMLParser):
+        """Collects the exact text of every <script> that has no src attribute."""
+
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._current: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script" and not any(name == "src" for name, _ in attrs):
+                self._current = []
+
+        def handle_data(self, data):
+            if self._current is not None:
+                self._current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._current is not None:
+                self.bodies.append("".join(self._current))
+                self._current = None
+
+    parser = _InlineScripts()
+    parser.feed(html)
+    parser.close()
+    hashes = []
+    for body in parser.bodies:
+        digest = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+        hashes.append(f"'sha256-{digest}'")
+    return " ".join(hashes)
+
+
+# Log output from managed hosts is rendered as HTML (ANSI colours), so the CSP is
+# the second line of defence behind the escaping done in the frontend: no inline
+# or third-party script can run even if something slips through. Inline *styles*
+# stay allowed — React style props and xterm.js need them.
+_CSP = "; ".join([
+    "default-src 'self'",
+    f"script-src 'self' {_inline_script_hashes()}".rstrip(),
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    # frame-ancestors covers modern browsers; X-Frame-Options covers the rest.
+    # Either way the upgrade / reboot buttons can't be framed for clickjacking.
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+
 
 # Routers
 from backend.routers import auth as auth_router
@@ -238,7 +332,6 @@ async def health():
 
 
 # Mount static frontend (built by Docker stage 1)
-_static_dir = Path(__file__).parent.parent / "static"
 if _static_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
 

@@ -1,7 +1,9 @@
+import hashlib
+import hmac
 import logging
 import time
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -60,6 +62,7 @@ async def get_password_min_length(db: AsyncSession) -> int:
 _MAX_ATTEMPTS = 5
 _WINDOW_SECONDS = 15 * 60
 _LOCKOUT_SECONDS = 15 * 60
+_DUMMY_HASH = hash_password("apt-ui-dummy-password-for-constant-time-login")
 _attempts: dict[tuple[str, str], list[float]] = {}
 _locked_until: dict[tuple[str, str], float] = {}
 
@@ -77,6 +80,42 @@ def _client_ip(request: Request | None) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _is_https(request: Request | None) -> bool:
+    """True when the browser reached us over HTTPS (directly or via a proxy)."""
+    if request is None:
+        return False
+    if request.url.scheme == "https":
+        return True
+    from backend.config import TRUST_PROXY_HEADERS
+    if TRUST_PROXY_HEADERS:
+        proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+        return proto == "https"
+    return False
+
+
+def _set_session_cookie(response: Response, request: Request | None, token: str) -> None:
+    """Set the session cookie; marked Secure whenever the login itself was HTTPS,
+    so the 24h admin JWT is never sent over a later plain-http request to the same
+    host. Plain-http LAN deployments keep working (the flag is simply omitted)."""
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=_is_https(request),
+        max_age=COOKIE_MAX_AGE,
+    )
+
+
+def _prune_attempts(now: float) -> None:
+    """Drop expired entries. Keys include the attacker-chosen username, so without
+    this an unauthenticated client could grow both dicts without bound."""
+    for k in [k for k, v in _attempts.items() if not any(now - t < _WINDOW_SECONDS for t in v)]:
+        _attempts.pop(k, None)
+    for k in [k for k, until in _locked_until.items() if until <= now]:
+        _locked_until.pop(k, None)
+
+
 def _lockout_remaining(key: tuple[str, str]) -> int:
     until = _locked_until.get(key)
     if until and until > time.time():
@@ -87,6 +126,8 @@ def _lockout_remaining(key: tuple[str, str]) -> int:
 def _record_failure(key: tuple[str, str]) -> bool:
     """Record a failed attempt; return True if this trips a fresh lockout."""
     now = time.time()
+    if len(_attempts) + len(_locked_until) > 1000:
+        _prune_attempts(now)
     recent = [t for t in _attempts.get(key, []) if now - t < _WINDOW_SECONDS]
     recent.append(now)
     _attempts[key] = recent
@@ -95,6 +136,24 @@ def _record_failure(key: tuple[str, str]) -> bool:
         _attempts[key] = []
         return True
     return False
+
+
+def _check_password_or_throttle(user: User, password: str, error: str) -> None:
+    """Re-authenticate an already-logged-in user (password change, 2FA disable).
+
+    Shares the login lockout counters, so someone holding a stolen session can't
+    use these endpoints as an unthrottled oracle to guess the account password.
+    """
+    key = (user.username.lower(), "reauth")
+    if _lockout_remaining(key) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Try again later.",
+        )
+    if not verify_password(password, user.password_hash):
+        _record_failure(key)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
+    _clear_attempts(key)
 
 
 def _clear_attempts(key: tuple[str, str]) -> None:
@@ -162,7 +221,10 @@ async def login(
     result = await db.execute(select(User).where(User.username == body.username))
     user = result.scalar_one_or_none()
 
-    if user is None or not verify_password(body.password, user.password_hash):
+    # Always run one bcrypt verification, so an unknown username takes as long as a
+    # wrong password and response time doesn't reveal which usernames exist.
+    password_ok = verify_password(body.password, user.password_hash if user else _DUMMY_HASH)
+    if user is None or not password_ok:
         tripped = _record_failure(key)
         await record_auth_event(db, "login_failed", username=body.username, ip=ip,
                                 detail="invalid credentials", success=False)
@@ -222,14 +284,8 @@ async def login(
     await db.refresh(user)
     await record_auth_event(db, "login", username=user.username, ip=ip, success=True)
 
-    token = create_access_token(user.username)
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=COOKIE_MAX_AGE,
-    )
+    token = create_access_token(user.username, user.token_version)
+    _set_session_cookie(response, request, token)
     out = UserOut.model_validate(user)
     out.is_default_password = bcrypt.checkpw(b"admin", user.password_hash.encode())
     return out
@@ -284,6 +340,9 @@ _SSO_ERROR_CODES = frozenset({
 })
 
 
+_SSO_STATE_COOKIE = "apt_ui_sso_state"
+
+
 def _login_error_redirect(code: str) -> RedirectResponse:
     """Bounce back to the login page with a fixed, allow-listed failure code."""
     safe_code = code if code in _SSO_ERROR_CODES else "sso_failed"
@@ -307,7 +366,23 @@ async def sso_login(request: Request, next: str | None = Query(default=None)):
     except oidc.OIDCError as exc:
         logger.warning("SSO login start failed: %s", exc)
         return _login_error_redirect("sso_provider_error")
-    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+    redirect = RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+    # Bind the flow to the browser that started it. `state` alone lived only in a
+    # server-side dict, so an attacker could start a flow, sign in at the IdP as
+    # themselves, and hand the unused callback URL to a victim — who would then be
+    # logged in as the attacker (login CSRF). The callback now also requires this
+    # cookie, which only the initiating browser holds.
+    state = parse_qs(urlsplit(url).query).get("state", [""])[0]
+    redirect.set_cookie(
+        key=_SSO_STATE_COOKIE,
+        value=hashlib.sha256(state.encode()).hexdigest(),
+        httponly=True,
+        samesite="lax",  # Lax is sent on the IdP's top-level redirect back to us
+        secure=_is_https(request),
+        max_age=600,
+        path="/api/auth/sso",
+    )
+    return redirect
 
 
 @router.get("/sso/callback")
@@ -337,6 +412,12 @@ async def sso_callback(
     if not code or not state:
         await record_auth_event(db, "sso_login_failed", ip=ip, detail="missing code/state", success=False)
         return _fail("sso_bad_callback")
+
+    expected = request.cookies.get(_SSO_STATE_COOKIE) or ""
+    if not hmac.compare_digest(expected, hashlib.sha256(state.encode()).hexdigest()):
+        await record_auth_event(db, "sso_login_failed", ip=ip,
+                                detail="state not bound to this browser", success=False)
+        return _fail("sso_state_invalid")
 
     try:
         pending = oidc.pop_pending(state)
@@ -370,17 +451,12 @@ async def sso_callback(
         )
     await record_auth_event(db, "sso_login", username=info["username"], ip=ip, success=True)
 
-    token = create_access_token(user.username)
+    token = create_access_token(user.username, user.token_version)
     # Re-validate at the point of use, not just when it was stored: this is what
     # guarantees the post-login redirect can only ever be same-origin.
     redirect = RedirectResponse(url=_safe_next_path(pending.next_path), status_code=status.HTTP_302_FOUND)
-    redirect.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=COOKIE_MAX_AGE,
-    )
+    _set_session_cookie(redirect, request, token)
+    redirect.delete_cookie(key=_SSO_STATE_COOKIE, path="/api/auth/sso")
     return redirect
 
 
@@ -394,14 +470,12 @@ async def me(current_user: User = Depends(get_current_user)):
 @router.put("/password")
 async def change_password(
     body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not verify_password(body.current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
+    _check_password_or_throttle(current_user, body.current_password, "Current password is incorrect")
 
     # Same minimum the admin create/reset paths enforce
     min_length = await get_password_min_length(db)
@@ -415,7 +489,11 @@ async def change_password(
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one()
     user.password_hash = hash_password(body.new_password)
+    # Invalidate every session issued under the old password, then hand this
+    # browser a fresh one so the person changing their password stays logged in.
+    user.token_version = (user.token_version or 0) + 1
     await db.commit()
+    _set_session_cookie(response, request, create_access_token(user.username, user.token_version))
 
     return {"detail": "Password changed successfully"}
 
@@ -571,6 +649,15 @@ async def totp_setup(
     """
     import pyotp
     from backend.crypto import encrypt
+    # Re-running setup overwrites the secret and clears totp_enabled, so on an
+    # account that already has 2FA it would silently turn it *off* with one
+    # body-less POST — no password, no code. Force the password-checked
+    # /2fa/disable first.
+    if current_user.totp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="2FA is already enabled. Disable it (password required) before enrolling again.",
+        )
     secret = pyotp.random_base32()
     uri = pyotp.totp.TOTP(secret).provisioning_uri(
         name=current_user.username,
@@ -631,8 +718,8 @@ async def totp_disable(
     db: AsyncSession = Depends(get_db),
 ):
     """Disable 2FA. Requires the current password to confirm."""
-    if not verify_password(body.get("password") or "", current_user.password_hash):
-        raise HTTPException(status_code=400, detail="Invalid password")
+    password = body.get("password")
+    _check_password_or_throttle(current_user, password if isinstance(password, str) else "", "Invalid password")
     res = await db.execute(select(User).where(User.id == current_user.id))
     user = res.scalar_one()
     user.totp_enabled = False
@@ -736,6 +823,7 @@ async def update_user(
         if len(body["password"]) < min_length:
             raise HTTPException(status_code=400, detail=f"Password must be at least {min_length} characters")
         user.password_hash = hash_password(body["password"])
+        user.token_version = (user.token_version or 0) + 1  # revoke that user's sessions
 
     await db.commit()
     await db.refresh(user)

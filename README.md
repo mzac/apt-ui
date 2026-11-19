@@ -327,7 +327,8 @@ All runtime configuration (SMTP / Telegram / Slack / schedules / server list / u
 | `STATUS_PAGE_PUBLIC` | `false` | Set `true` to enable the unauthenticated `/status.json` fleet health endpoint. |
 | `STATUS_PAGE_SHOW_NAMES` | `false` | Include server names (not hostnames) in `/status.json`. |
 | `STATUS_PAGE_TITLE` | `apt-ui Fleet Status` | Custom title returned by `/status.json`. |
-| `TRUST_PROXY_HEADERS` | `false` | Set `true` only when behind a trusted reverse proxy so client-IP attribution (auth log, lockout) trusts `X-Forwarded-For` / `X-Real-IP`. Otherwise the socket peer is used, preventing IP spoofing. |
+| `WS_ALLOWED_ORIGINS` | – | Comma-separated extra origins (e.g. `https://apt.example.com`) allowed to open WebSockets. WebSockets are refused unless the browser's `Origin` matches the `Host` (or `X-Forwarded-Host`) header, so this is only needed behind a reverse proxy that rewrites `Host` without forwarding the original. |
+| `TRUST_PROXY_HEADERS` | `false` | Set `true` only when behind a trusted reverse proxy so client-IP attribution (auth log, lockout) trusts `X-Forwarded-For` / `X-Real-IP`, and the session cookie is marked `Secure` when `X-Forwarded-Proto` is `https`. Otherwise the socket peer is used, preventing IP spoofing. |
 | `OIDC_ENABLED` | `false` | Enable OIDC/OAuth2 single sign-on. SSO stays fully inert unless this **and** issuer/client id/secret/redirect are all set, so a half-configured deployment behaves as disabled rather than broken. |
 | `OIDC_ISSUER` | – | Issuer URL, e.g. `https://auth.example.com/realms/main`. Endpoints are read from its `/.well-known/openid-configuration`. |
 | `OIDC_CLIENT_ID` | – | OAuth2 client ID. |

@@ -221,7 +221,10 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
         </div>
 
         {!started ? (
-          <div className="p-4 space-y-4">
+          <>
+          {/* Body scrolls; the action buttons stay pinned below it so a long
+              server list can never push them off-screen (issue #93). */}
+          <div className="p-4 space-y-4 flex-1 min-h-0 overflow-y-auto">
             <p className="text-sm text-text-muted">
               Run <span className="font-mono text-text-primary">apt-get autoremove</span> on{' '}
               <span className="text-amber font-mono">{servers.length} server{servers.length !== 1 ? 's' : ''}</span>{' '}
@@ -280,12 +283,12 @@ export default function AutoremoveAllModal({ servers, onClose }: Props) {
               The list comes from each server's last check. <span className="font-mono">apt-get autoremove</span> removes
               whatever is orphaned at the time it runs, so it can differ if packages changed since.
             </p>
-
-            <div className="flex gap-2">
-              <button onClick={start} className="btn-amber">Start Autoremove</button>
-              <button onClick={handleClose} className="btn-secondary">Cancel</button>
-            </div>
           </div>
+          <div className="p-4 border-t border-border flex gap-2 shrink-0">
+            <button onClick={start} className="btn-amber">Start Autoremove</button>
+            <button onClick={handleClose} className="btn-secondary">Cancel</button>
+          </div>
+          </>
         ) : (
           <div className="flex-1 overflow-hidden flex flex-col p-4 gap-3">
             <div className="flex flex-wrap gap-2">

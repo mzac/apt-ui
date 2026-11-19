@@ -29,7 +29,8 @@ _EXPORT_VERSION = 1
 @router.get("/export")
 async def export_config(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    # Admin-only: the export carries the SMTP password and Telegram bot token in clear.
+    _: User = Depends(require_admin),
 ):
     groups_result = await db.execute(select(ServerGroup).order_by(ServerGroup.sort_order, ServerGroup.name))
     groups = [
@@ -258,7 +259,11 @@ async def import_servers_csv(
     _: User = Depends(require_admin),
 ):
     import csv, io
-    content = (await file.read()).decode("utf-8-sig")
+    max_bytes = 5 * 1024 * 1024
+    raw = await file.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=400, detail="CSV too large (max 5 MB)")
+    content = raw.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(content))
 
     group_map: dict[str, int] = {}

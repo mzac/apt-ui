@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 # Secrets that are masked on read and must therefore be ignored on write when the
 # caller echoes the mask back instead of a real value.
-_MASKED_FIELDS = ("smtp_password", "telegram_bot_token", "slack_webhook_url")
+_MASKED_FIELDS = ("smtp_password", "telegram_bot_token", "slack_webhook_url", "webhook_url", "webhook_secret")
 
 
 def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
@@ -28,7 +28,27 @@ def _mask(cfg: NotificationConfig) -> NotificationConfigOut:
     if out.slack_webhook_url:
         # The webhook URL *is* the credential; show only enough to identify it.
         out.slack_webhook_url = out.slack_webhook_url[:24] + "••••••••"
+    # This config is readable by read-only accounts. Generic webhook URLs routinely
+    # embed a token in the path or query, and webhook_secret is the HMAC signing key.
+    if getattr(out, "webhook_url", None):
+        out.webhook_url = out.webhook_url[:24] + "••••••••"
+    if getattr(out, "webhook_secret", None):
+        out.webhook_secret = "••••••••"
     return out
+
+
+def _redact(message: str, cfg) -> str:
+    """Strip configured secrets out of an error message before returning it.
+
+    httpx errors quote the request URL, and the Telegram API URL embeds the bot
+    token (as do Slack / generic webhook URLs), so a failed test would otherwise
+    print the credential straight into the UI and the browser's network log.
+    """
+    for field in _MASKED_FIELDS:
+        secret = getattr(cfg, field, None)
+        if isinstance(secret, str) and len(secret) >= 6:
+            message = message.replace(secret, "••••••••")
+    return message
 
 
 async def _get_cfg(db: AsyncSession) -> NotificationConfig:
@@ -114,7 +134,7 @@ async def test_email(
         await send_daily_summary(cfg, db)
         return {"detail": "Test email sent"}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=_redact(str(exc), cfg))
 
 
 @router.post("/test/telegram")
@@ -132,7 +152,7 @@ async def test_telegram(
         await _send_telegram(cfg, "✅ Apt Dashboard test message — Telegram notifications are working!")
         return {"detail": "Test Telegram message sent"}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=_redact(str(exc), cfg))
 
 
 @router.post("/test/slack")
@@ -155,7 +175,7 @@ async def test_slack(
         )
         return {"detail": "Test Slack message sent"}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=_redact(str(exc), cfg))
 
 
 @router.post("/test-weekly-digest")
@@ -179,7 +199,7 @@ async def test_weekly_digest(
         results = await send_weekly_digest(cfg, db)
         return {"detail": "Weekly digest dispatched", "results": results}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=_redact(str(exc), cfg))
 
 
 @router.get("/history")
@@ -234,7 +254,7 @@ async def detect_chat_id(
         chats = await get_telegram_updates(token)
         return {"chats": chats}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=_redact(str(exc), cfg))
 
 
 # ---------------------------------------------------------------------------

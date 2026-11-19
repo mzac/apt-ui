@@ -10,7 +10,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true, ws: true },
+      // No changeOrigin: the backend refuses WebSockets whose Origin doesn't match
+      // Host, so the proxy must pass the browser's Host through untouched.
+      '/api': { target: 'http://localhost:8000', ws: true },
       '/health': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },

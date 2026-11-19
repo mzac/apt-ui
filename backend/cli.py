@@ -50,6 +50,7 @@ def cmd_reset_password(args):
             print(f"❌  User '{username}' not found.", file=sys.stderr)
             sys.exit(1)
         user.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+        user.token_version = (user.token_version or 0) + 1  # revoke existing sessions
         session.commit()
     print(f"✅  Password for '{username}' has been reset.")
 

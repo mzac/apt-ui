@@ -79,6 +79,10 @@ async def v1_check(server_id: int, db: AsyncSession = Depends(get_db), user: Use
 async def v1_upgrade(server_id: int, body: dict | None = None,
                      db: AsyncSession = Depends(get_db), user: User = Depends(require_scope("upgrade"))):
     body = body or {}
+    # The scope limits what a *token* may do; it does not raise its owner's role.
+    # Any user can mint a token, so without this a read-only account could upgrade.
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     set_actor(user.username)
     server = (await db.execute(select(Server).where(Server.id == server_id))).scalar_one_or_none()
     if server is None:

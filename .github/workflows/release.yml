@@ -54,7 +54,10 @@ jobs:
           tags: |
             type=ref,event=tag
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=raw,value=latest
+            # Only a real release moves :latest. Rebuilding an older tag by hand
+            # must not repoint it, or every `:latest` deployment silently
+            # downgrades to a build that may carry since-fixed vulnerabilities.
+            type=raw,value=latest,enable=${{ github.event_name != 'workflow_dispatch' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7

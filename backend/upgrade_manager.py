@@ -43,7 +43,22 @@ def _get_lock(server_id: int) -> asyncio.Lock:
 
 # Debian/Ubuntu package names must start with an alphanumeric and contain only
 # lowercase letters, digits, and `.+-`. Anchored to prevent shell metacharacters.
-_PACKAGE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.+\-]*$')
+# Always test with .fullmatch(): with .match(), `$` also matches *before* a
+# trailing newline, so "vim\n" passed validation and — since names are joined
+# into one command line — split it into extra shell commands.
+_PACKAGE_NAME_RE = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9.+\-]*')
+
+# The only apt-get verbs an upgrade may run. `action` reaches this module from
+# request bodies and from persisted rollout steps, and is interpolated into the
+# command line, so it is checked here at the single choke point rather than
+# trusting every caller to have done it.
+UPGRADE_ACTIONS = ("upgrade", "dist-upgrade")
+
+
+def validate_upgrade_action(action: str) -> str:
+    if action not in UPGRADE_ACTIONS:
+        raise ValueError(f"Invalid upgrade action: {action!r}")
+    return action
 
 
 async def _load_hooks(server_id: int, phase: str, db: AsyncSession):
@@ -119,13 +134,14 @@ def _validate_package_names(packages: list[str]) -> list[str]:
     into apt-get commands. Invalid names include any with shell metacharacters
     (spaces, semicolons, quotes, etc.).
     """
-    invalid = [p for p in packages if not _PACKAGE_NAME_RE.match(p or "")]
+    invalid = [p for p in packages if not isinstance(p, str) or not _PACKAGE_NAME_RE.fullmatch(p)]
     if invalid:
         raise ValueError(f"Invalid package name(s): {', '.join(invalid[:5])}")
     return packages
 
 
 def _build_upgrade_command(server, action: str, allow_phased: bool, conffile_action: str = "confdef_confold") -> str:
+    validate_upgrade_action(action)
     base = f"{apt_prefix(server)}apt-get {action} -y {conffile_opts(conffile_action)}"
     if allow_phased:
         base += " -o APT::Get::Always-Include-Phased-Updates=true"
@@ -185,6 +201,7 @@ async def upgrade_server(
     If *send_fn* is provided, streams output over WebSocket in real time.
     Always creates an UpdateHistory record.
     """
+    validate_upgrade_action(action)
     skipped = await _skip_if_readonly_root(server, db, action, allow_phased, initiated_by, send_fn)
     if skipped is not None:
         return skipped

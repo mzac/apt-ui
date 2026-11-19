@@ -291,7 +291,10 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
         </div>
 
         {!started ? (
-          <div className="p-4 space-y-4 overflow-y-auto">
+          <>
+          {/* Body scrolls; the action buttons stay pinned below it so a long
+              server list can never push them off-screen (issue #93). */}
+          <div className="p-4 space-y-4 flex-1 min-h-0 overflow-y-auto">
             <p className="text-sm text-text-muted">
               Reboot <span className="text-amber font-mono">{servers.length} server{servers.length !== 1 ? 's' : ''}</span>{' '}
               with <span className="font-mono text-text-primary">reboot_required</span>.
@@ -327,12 +330,12 @@ export default function RollingRebootModal({ servers, onClose }: Props) {
                 </div>
               ))}
             </div>
-
-            <div className="flex gap-2">
-              <button onClick={start} className="btn-amber">Start Rolling Reboot</button>
-              <button onClick={handleClose} className="btn-secondary">Cancel</button>
-            </div>
           </div>
+          <div className="p-4 border-t border-border flex gap-2 shrink-0">
+            <button onClick={start} className="btn-amber">Start Rolling Reboot</button>
+            <button onClick={handleClose} className="btn-secondary">Cancel</button>
+          </div>
+          </>
         ) : (
           <div className="flex-1 overflow-hidden flex flex-col p-4 gap-3">
             <div className="text-xs font-mono text-text-muted flex flex-wrap items-center gap-x-3 gap-y-1">

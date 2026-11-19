@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, PlainSerializer
 
 from backend.timeutil import utc_iso
@@ -252,7 +252,7 @@ class PackageSearchResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class UpgradeRequest(BaseModel):
-    action: str = "upgrade"  # "upgrade" | "dist-upgrade"
+    action: Literal["upgrade", "dist-upgrade"] = "upgrade"
     allow_phased: bool = False
     conffile_action: str = "confdef_confold"  # "confdef_confold" | "confold" | "confnew"
     reboot_if_required: bool = False  # auto-reboot after successful upgrade if /var/run/reboot-required exists

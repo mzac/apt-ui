@@ -7,8 +7,12 @@ small lookup table {package_name: [{usn, cves, severity, summary, fixed_version}
 Notes:
 - Ubuntu USN covers most Debian packages too (same source), so we use a single
   feed for both Ubuntu and Debian-derived servers.
-- The feed at usn-db/database.json is ~344 MB uncompressed (verified 2026-08-31)
-  and held in memory only transiently while indexing; we cache the small
+- The feed at usn-db/database.json is ~344 MB uncompressed (verified 2026-08-31).
+  It is NEVER loaded whole: it is streamed to a temp file and parsed one USN
+  entry at a time (see _iter_top_level_items). `resp.json()` on it peaked at
+  ~2 GiB RSS — measured — once a day, on the event loop, and glibc never handed
+  most of that back, which is what issue #92 saw as a slow "leak" (and what
+  OOM-kills the pod under any sane memory limit). We cache the small
   post-processed index in /data/cve_cache.json to keep lookups fast and avoid
   re-downloading it on every request.
 - We do NOT do exact version comparison (Debian version semantics are tricky);
@@ -43,9 +47,11 @@ TTL plus a separate failure-backoff window, and always degrades to
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -88,11 +94,117 @@ async def fetch_and_index() -> dict:
     Each entry: {"id", "url", "title", "cves", "severity", "fixed_version", "published"}.
     """
     logger.info("CVE: fetching USN feed from %s", USN_FEED_URL)
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        resp = await client.get(USN_FEED_URL)
-        resp.raise_for_status()
-        usn_db: dict[str, Any] = resp.json()
+    # Spool the download to disk, then index it in a worker thread: neither the
+    # body nor the parsed document is ever held in memory, and ~15 s of JSON
+    # parsing stays off the event loop.
+    with tempfile.TemporaryFile(dir=_spool_dir()) as spool:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            async with client.stream("GET", USN_FEED_URL) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes(1 << 20):
+                    spool.write(chunk)
+        spool.seek(0)
+        payload = await asyncio.to_thread(_index_feed, spool)
 
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CACHE_PATH, "w") as f:
+            json.dump(payload, f)
+        logger.info("CVE: cached %d packages → %s", payload["package_count"], CACHE_PATH)
+    except Exception as exc:
+        logger.warning("CVE: could not write cache to %s: %s", CACHE_PATH, exc)
+
+    return payload
+
+
+def _spool_dir() -> str | None:
+    """Where to spool the feed download: the data volume when it is writable
+    (it has the room, and the root filesystem may be read-only), else the
+    system temp dir."""
+    parent = CACHE_PATH.parent
+    return str(parent) if parent.is_dir() and os.access(parent, os.W_OK) else None
+
+
+def _iter_top_level_items(fp, chunk_size: int = 1 << 20):
+    """Yield ``(key, value)`` for each member of the JSON object in text file *fp*,
+    holding only one member in memory at a time.
+
+    The stdlib has no streaming parser, but the feed is one flat object of
+    ~8k modest entries, so it is enough to keep a sliding text buffer and
+    ``raw_decode`` one key and one value at a time, reading more whenever a
+    decode runs off the end of the buffer.
+    """
+    decoder = json.JSONDecoder()
+    buf, pos, eof = "", 0, False
+
+    def fill() -> bool:
+        nonlocal buf, pos, eof
+        # Read at least as much as is already pending, so one very large member
+        # costs O(n log n) re-parsing rather than O(n²).
+        chunk = fp.read(max(chunk_size, len(buf) - pos))
+        if not chunk:
+            eof = True
+            return False
+        buf = buf[pos:] + chunk
+        pos = 0
+        return True
+
+    def skip(chars: str) -> None:
+        nonlocal pos
+        while True:
+            while pos < len(buf) and buf[pos] in chars:
+                pos += 1
+            if pos < len(buf) or not fill():
+                return
+
+    def decode():
+        nonlocal pos
+        while True:
+            try:
+                value, end = decoder.raw_decode(buf, pos)
+            except json.JSONDecodeError:
+                if not fill():
+                    raise
+                continue
+            # A bare number/literal ending exactly at the buffer edge may be cut short.
+            if end == len(buf) and not eof and fill():
+                continue
+            pos = end
+            return value
+
+    ws = " \t\r\n"
+    skip(ws)
+    if pos >= len(buf) or buf[pos] != "{":
+        raise ValueError("USN feed is not a JSON object")
+    pos += 1
+    while True:
+        skip(ws + ",")
+        if pos >= len(buf):
+            raise ValueError("USN feed ended unexpectedly")
+        if buf[pos] == "}":
+            return
+        key = decode()
+        skip(ws)
+        if pos >= len(buf) or buf[pos] != ":":
+            raise ValueError("USN feed is malformed")
+        pos += 1
+        skip(ws)
+        yield key, decode()
+
+
+def _index_feed(spool) -> dict:
+    """Build the lookup payload from the spooled feed (binary file at offset 0).
+    Runs in a worker thread."""
+    text = io.TextIOWrapper(spool, encoding="utf-8")
+    try:
+        return _index_entries(_iter_top_level_items(text))
+    finally:
+        text.detach()  # the caller owns (and closes) the spool file
+
+
+def _index_entries(entries) -> dict:
+    """Index an iterable of ``(usn_id, entry)`` pairs. Each entry: {"id", "url",
+    "title", "cves", "severity", "fixed_version", "published"}."""
     index: dict[str, list[dict]] = {}
     # Release-aware fixed-version map (issue #62 remediation planner):
     # {usn_id: {release_codename: {src_pkg: fixed_version}}}. The flattened per-package
@@ -108,7 +220,9 @@ async def fetch_and_index() -> dict:
     # Reverse index so the planner can go from a CVE id to its USN(s). Real measured size
     # across the whole feed: ~2 MB (24k+ distinct CVE ids).
     cve_to_usns: dict[str, list[str]] = {}
-    for usn_id, entry in usn_db.items():
+    for usn_id, entry in entries:
+        if not isinstance(entry, dict):
+            continue
         cves = entry.get("cves") or []
         title = entry.get("title", "")
         # USN releases is { release: { sources: { src_pkg: { version, binaries: [...] } } } }
@@ -191,23 +305,13 @@ async def fetch_and_index() -> dict:
         entries.sort(key=lambda e: e.get("published") or "", reverse=True)
         index[pkg] = entries[:5]
 
-    payload = {
+    return {
         "fetched_at": datetime.utcnow().isoformat() + "Z",
         "package_count": len(index),
         "index": index,
         "usn_releases": usn_releases,
         "cve_to_usns": cve_to_usns,
     }
-
-    try:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(CACHE_PATH, "w") as f:
-            json.dump(payload, f)
-        logger.info("CVE: cached %d packages → %s", len(index), CACHE_PATH)
-    except Exception as exc:
-        logger.warning("CVE: could not write cache to %s: %s", CACHE_PATH, exc)
-
-    return payload
 
 
 _in_memory_cache: dict | None = None

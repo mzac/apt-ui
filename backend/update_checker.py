@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -559,10 +560,12 @@ async def check_server(
 
     # Fetch short descriptions for all packages (upgradable + new); one SSH call
     if packages:
-        pkg_names = " ".join(p["name"] for p in packages[:150])  # cap at 150 packages
+        # These names were parsed out of the host's own apt output, so a hostile
+        # repo could plant shell metacharacters in them — quote before reuse.
+        pkg_names = " ".join(shlex.quote(p["name"]) for p in packages[:150])  # cap at 150 packages
         desc_result = await run_command(
             server,
-            f"apt-cache show --no-all-versions {pkg_names} 2>/dev/null",
+            f"apt-cache show --no-all-versions -- {pkg_names} 2>/dev/null",
             timeout=30,
         )
         descriptions = _parse_apt_cache_show(desc_result.stdout)
@@ -690,6 +693,14 @@ async def _auto_tag_server(server: Server, stats: dict, db: AsyncSession) -> Non
 
         if cfg.auto_tag_virt and stats.get("virt_type"):
             tags_to_apply.append((stats["virt_type"], _VIRT_TAG_COLOR))
+
+        # The names come from the host's own output. `ring:*` decides a server's
+        # place in staged rollouts, so a host must not be able to tag itself into
+        # (or out of) a ring by reporting a crafted OS / virt string.
+        tags_to_apply = [
+            (n, c) for n, c in tags_to_apply
+            if not n.lower().startswith("ring:") and len(n) <= 64
+        ]
 
         for tag_name, tag_color in tags_to_apply:
             # Ensure tag exists
