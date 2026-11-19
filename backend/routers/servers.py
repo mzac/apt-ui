@@ -1324,7 +1324,15 @@ async def restart_service(
     # No `.target`: `systemctl restart reboot.target` / `poweroff.target` would be a
     # reboot or shutdown that sidesteps the maintenance-window-checked reboot path.
     # Must start alphanumeric so the name can never be read as an option.
-    if not _re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9@.\-_:]*\.(service|socket|timer|path|mount)', unit):
+    # Split the suffix off instead of matching it in one pattern: `.` is also a
+    # legal name character, so a single regex backtracks polynomially on input
+    # like "0.0.0.0…" (CodeQL py/polynomial-redos).
+    stem, _, suffix = unit.rpartition(".")
+    if (
+        len(unit) > 256
+        or suffix not in ("service", "socket", "timer", "path", "mount")
+        or not _re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9@.\-_:]*', stem)
+    ):
         raise HTTPException(status_code=400, detail="Invalid unit name")
     sudo = sudo_prefix(server)
     result = await run_command(server, f"{sudo}systemctl restart -- {unit}", timeout=30)

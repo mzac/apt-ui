@@ -1,8 +1,8 @@
 import base64
 import hashlib
 import logging
-import re
 from contextlib import asynccontextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -187,8 +187,33 @@ def _inline_script_hashes() -> str:
         html = (_static_dir / "index.html").read_text(encoding="utf-8")
     except OSError:
         return ""
+
+    class _InlineScripts(HTMLParser):
+        """Collects the exact text of every <script> that has no src attribute."""
+
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.bodies: list[str] = []
+            self._current: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script" and not any(name == "src" for name, _ in attrs):
+                self._current = []
+
+        def handle_data(self, data):
+            if self._current is not None:
+                self._current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self._current is not None:
+                self.bodies.append("".join(self._current))
+                self._current = None
+
+    parser = _InlineScripts()
+    parser.feed(html)
+    parser.close()
     hashes = []
-    for body in re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, flags=re.S):
+    for body in parser.bodies:
         digest = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
         hashes.append(f"'sha256-{digest}'")
     return " ".join(hashes)
