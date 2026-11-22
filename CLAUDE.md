@@ -101,7 +101,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - Log output is capped at 1 MB per upgrade session before DB storage; the WebSocket stream is unbounded.
 - Server groups are many-to-many via `server_group_memberships` junction table. The legacy `servers.group_id` FK is kept for backward compat.
 - `PackageInstallModal` and `RebootButton` are rendered via `createPortal` to avoid click-event bubbling from server cards.
-- Proxmox VE detection uses `pveversion` (not `/etc/pve/pve-release`, which doesn't exist on modern PVE).
+- Proxmox VE detection uses `pveversion`, else an installed (`ii`) `pve-manager` package — not `/etc/pve/pve-release` (doesn't exist on modern PVE) and **never the `-pve` kernel suffix**: LXC containers share the host kernel, so that fallback labelled every container on a PVE host as Proxmox VE (issue #101). "Is this a PVE node?" is `eol_data.is_proxmox_ve()` everywhere (UI flag and the `pveupgrade` gate); don't reintroduce `os_info.startswith("Proxmox VE")`.
+- **Auto OS / virt tags replace themselves.** `server_tags.auto_kind` (`os`/`virt`, NULL = assigned by a person) marks auto-tagger rows; `_auto_tag_server()` keeps one per kind and drops the rest. Legacy NULL rows are only removed when they match `_LEGACY_AUTO_TAG_RE`. `_set_server_tags()` (manual edit) recreates rows with NULL — the next check re-adopts the current auto tags.
 - Dashboard sort order persists to `localStorage` key `dashboard:sortBy`. Theme persists to `localStorage` key `apt:theme`.
 - 401 responses anywhere in `api/client.ts` redirect to `/login?expired=1`.
 - `reachability_ttl_minutes` in `schedule_config`: servers that fail to connect during check-all are skipped for subsequent runs until the TTL expires, preventing SSH timeouts from slowing the whole fleet.

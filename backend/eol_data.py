@@ -155,7 +155,11 @@ _RASPBIAN_RE = re.compile(r"\b(?:raspbian|raspberry\s*pi\s*os)\b[^\d]*(\d+)", re
 # but have separate version cycles and EOL dates).
 _PROXMOX_PBS_RE = re.compile(r"\bproxmox\s+backup\s+server\b[^\d]*(\d+)", re.IGNORECASE)
 _PROXMOX_PMG_RE = re.compile(r"\bproxmox\s+mail\s+gateway\b[^\d]*(\d+)", re.IGNORECASE)
-_PROXMOX_VE_RE = re.compile(r"\bproxmox\s+ve\b[^\d]*(\d+)", re.IGNORECASE)
+# "Proxmox VE 8.2.4" — the version must follow directly. Older releases stored
+# "Proxmox VE (<kernel>)" for any host with a -pve kernel, including LXC
+# containers on a PVE host; that form carries a *kernel* version, not a PVE one,
+# so it must not match (issue #101).
+_PROXMOX_VE_RE = re.compile(r"\bproxmox\s+ve\s+v?(\d+)", re.IGNORECASE)
 
 
 def parse_os_info(os_info: str | None) -> tuple[str | None, str | None]:
@@ -173,6 +177,8 @@ def parse_os_info(os_info: str | None) -> tuple[str | None, str | None]:
     ('proxmox-ve', '8')
     >>> parse_os_info("Proxmox Backup Server 3.4-1")
     ('proxmox-pbs', '3')
+    >>> parse_os_info("Proxmox VE (7.0.14-30-pve)")   # legacy kernel-derived label
+    (None, None)
     """
     if not os_info:
         return None, None
@@ -206,6 +212,13 @@ def parse_os_info(os_info: str | None) -> tuple[str | None, str | None]:
         return "debian", m.group(1)
 
     return None, None
+
+
+def is_proxmox_ve(os_info: str | None) -> bool:
+    """True only for a real Proxmox VE node — decides whether pveupgrade is
+    offered and allowed. Shares the parser so a legacy kernel-derived
+    "Proxmox VE (<kernel>)" label (an LXC container on a PVE host) is not one."""
+    return parse_os_info(os_info)[0] == "proxmox-ve"
 
 
 def get_eol_date(os_id: str | None, version_id: str | None) -> date | None:

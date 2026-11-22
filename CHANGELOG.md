@@ -4,6 +4,16 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **LXC containers on a Proxmox VE host were shown as "Proxmox VE" with a false EOL badge** ([#101](https://github.com/mzac/apt-ui/issues/101)). A container shares its host's kernel, and any host whose `uname -r` ended in `-pve` was labelled `Proxmox VE (<kernel>)`, with the *kernel* major version (e.g. 7.0) checked against the Proxmox VE 7 EOL date. The container's upgrade panel also offered **Run pveupgrade**, which fails in a plain Debian container. Proxmox VE is now detected only from `pveversion` or an installed `pve-manager` package, so such containers show their real OS (e.g. *Debian GNU/Linux 13 (trixie)*). The old kernel-derived label is no longer treated as Proxmox VE even before the next check refreshes it, and `pveupgrade` is refused server-side on anything that isn't a Proxmox VE node.
+- **Automatic OS / virtualisation tags piled up instead of being replaced.** A host upgraded from Ubuntu 22.04 to 24.04 kept its `Ubuntu 22.04` tag next to the new one, because the auto-tagger only ever added tags. Each server now carries one auto OS tag and one auto virt tag: the next check after the OS or virt type changes swaps the old tag for the new one. Tags you assign yourself are never removed. Existing stale tags, assigned before this release, are cleaned up on each server's next check. Tags that no server uses any more are kept in the tag list; delete them in Settings if you don't want them.
+- **The auto OS tag for an Ubuntu release changed name at its first point release**: `Ubuntu 24.04 LTS` was tagged `Ubuntu 24` and `Ubuntu 24.04.1 LTS` `Ubuntu 24.04`, so one release produced two tags. Both now give `Ubuntu 24.04`, and existing `Ubuntu 24`-style tags are replaced on the next check.
+
+---
+
 ## [2026.11.19-03] — 2026-11-19
 
 Dependency refresh on top of the two security releases earlier today. No behaviour changes.

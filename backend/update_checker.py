@@ -134,10 +134,14 @@ async def _gather_stats(server: Server) -> dict:
         "disk": "df -P / | awk 'NR==2{print $5}'",
         "pkg_count": "dpkg --list 2>/dev/null | grep -c '^ii'",
         "apt_cache": "stat -c %Y /var/cache/apt/pkgcache.bin 2>/dev/null || echo ''",
-        # Detect OS: PBS (proxmox-backup-manager) → PMG (pmgversion) → PVE (pveversion
-        # or -pve kernel) → Armbian → os-release → lsb_release. PBS and PMG must be
-        # checked BEFORE the -pve kernel fallback because both ship with PVE kernels
-        # but are separate products with their own EOL cycles.
+        # Detect OS: PBS (proxmox-backup-manager) → PMG (pmgversion) → PVE (pveversion,
+        # else the pve-manager package) → Armbian → os-release → lsb_release.
+        # Proxmox products are identified only from their own packages, never from
+        # a `-pve` kernel: an LXC container shares the host's kernel, so `uname -r`
+        # inside a plain Debian container on a PVE host reports `…-pve` and the
+        # container was labelled "Proxmox VE (7.0.14-30-pve)" — with the *kernel*
+        # major matched against the PVE 7 EOL date and pveupgrade offered on a box
+        # that doesn't have it (issue #101).
         "os_info": (
             "if command -v proxmox-backup-manager > /dev/null 2>&1; then "
             "  ver=$(proxmox-backup-manager version 2>/dev/null | awk '/proxmox-backup-server/ {print $2; exit}'); "
@@ -149,8 +153,9 @@ async def _gather_stats(server: Server) -> dict:
             "elif command -v pveversion > /dev/null 2>&1; then "
             "  ver=$(pveversion 2>/dev/null | cut -d/ -f2); "
             "  echo \"Proxmox VE ${ver}\"; "
-            "elif uname -r 2>/dev/null | grep -q '\\-pve'; then "
-            "  echo \"Proxmox VE ($(uname -r))\"; "
+            # (only an *installed* package — `rc`, removed with configs left, still has a version)
+            "elif ver=$(dpkg-query -W -f='${db:Status-Abbrev}${Version}' pve-manager 2>/dev/null | sed -n 's/^ii *//p') && [ -n \"$ver\" ]; then "
+            "  echo \"Proxmox VE ${ver}\"; "
             "elif [ -f /etc/armbian-release ]; then "
             "  . /etc/armbian-release 2>/dev/null; "
             "  echo \"Armbian ${VERSION} ${IMAGE_TYPE} (${BOARD_NAME})\"; "
@@ -663,12 +668,42 @@ async def check_server(
 _OS_TAG_COLOR = "#06b6d4"   # cyan — auto-generated OS tags
 _VIRT_TAG_COLOR = "#8b5cf6"  # purple — auto-generated virt tags
 
+# What an auto-generated tag of each kind can look like. Used only to recognise
+# assignments made before server_tags.auto_kind existed (NULL there), so a host
+# upgraded from Ubuntu 22.04 to 24.04 loses its stale "Ubuntu 22.04" tag.
+_LEGACY_AUTO_TAG_RE = {
+    "os": re.compile(
+        r"(ubuntu|debian|raspbian|raspberry\s*pi\s*os|proxmox|armbian|linux\s+mint|pop!_os|kali|devuan)\b.*\d.*",
+        re.IGNORECASE,
+    ),
+    "virt": re.compile(r"(bare-metal|vm \(.+\)|container \(.+\))"),
+}
+
+
+def os_tag_name(os_info: str) -> str:
+    """The auto OS tag for an os_info string:
+    "Ubuntu 22.04.3 LTS" → "Ubuntu 22.04", "Debian GNU/Linux 12 (bookworm)" → "Debian 12 (bookworm)"."""
+    simplified = re.sub(r"\s+LTS$", "", os_info, flags=re.IGNORECASE)
+    simplified = re.sub(r"\s+GNU/Linux", "", simplified)
+    # Drop only a *third* version component (x.y.z → x.y). This used to strip
+    # any trailing ".N", so "Ubuntu 24.04 LTS" became "Ubuntu 24" until the
+    # first point release renamed it "Ubuntu 24.04" — two tags for one release.
+    simplified = re.sub(r"(\d+\.\d+)\.\d+$", r"\1", simplified)
+    return simplified.strip()
+
 
 async def _auto_tag_server(server: Server, stats: dict, db: AsyncSession) -> None:
     """
-    Create and assign automatic tags for OS and virtualisation type
-    when the corresponding schedule_config flags are enabled.
-    Runs after a successful check; idempotent (INSERT OR IGNORE).
+    Keep the automatic OS / virtualisation tags in step with what the host
+    reports, when the corresponding schedule_config flags are enabled.
+
+    Each enabled kind holds exactly one auto tag per server: the current one is
+    assigned (marked with ``server_tags.auto_kind``) and any other auto tag of
+    the same kind is removed — before, tags were only ever added, so a host
+    upgraded from Ubuntu 22.04 to 24.04 carried both. Tags a person assigned
+    (``auto_kind`` NULL) are left alone, except pre-``auto_kind`` assignments
+    that are recognisably an earlier auto tag of that kind.
+    The Tag rows themselves are kept even when no server uses them any more.
     """
     try:
         from backend.models import ScheduleConfig
@@ -677,32 +712,23 @@ async def _auto_tag_server(server: Server, stats: dict, db: AsyncSession) -> Non
         if not cfg:
             return
 
-        tags_to_apply: list[tuple[str, str]] = []  # (name, color)
-
+        wanted: list[tuple[str, str, str]] = []  # (kind, name, color)
         if cfg.auto_tag_os and stats.get("os_info"):
-            # Simplify: "Ubuntu 22.04.3 LTS" → "Ubuntu 22.04", "Debian GNU/Linux 12" → "Debian 12"
-            raw = stats["os_info"]
-            # Strip common long suffixes
-            import re as _re
-            simplified = _re.sub(r"\s+LTS$", "", raw, flags=_re.IGNORECASE)
-            simplified = _re.sub(r"\s+GNU/Linux", "", simplified)
-            simplified = _re.sub(r"\.\d+$", "", simplified)  # drop patch version x.y.z → x.y
-            simplified = simplified.strip()
-            if simplified:
-                tags_to_apply.append((simplified, _OS_TAG_COLOR))
-
+            name = os_tag_name(stats["os_info"])
+            if name:
+                wanted.append(("os", name, _OS_TAG_COLOR))
         if cfg.auto_tag_virt and stats.get("virt_type"):
-            tags_to_apply.append((stats["virt_type"], _VIRT_TAG_COLOR))
+            wanted.append(("virt", stats["virt_type"], _VIRT_TAG_COLOR))
 
         # The names come from the host's own output. `ring:*` decides a server's
         # place in staged rollouts, so a host must not be able to tag itself into
         # (or out of) a ring by reporting a crafted OS / virt string.
-        tags_to_apply = [
-            (n, c) for n, c in tags_to_apply
+        wanted = [
+            (k, n, c) for k, n, c in wanted
             if not n.lower().startswith("ring:") and len(n) <= 64
         ]
 
-        for tag_name, tag_color in tags_to_apply:
+        for kind, tag_name, tag_color in wanted:
             # Ensure tag exists
             await db.execute(
                 sa.text("INSERT OR IGNORE INTO tags (name, color, sort_order) VALUES (:n, :c, 0)"),
@@ -714,10 +740,39 @@ async def _auto_tag_server(server: Server, stats: dict, db: AsyncSession) -> Non
             if not tid_row:
                 continue
             tag_id = tid_row[0]
-            # Assign to server (idempotent)
+
+            # Drop this kind's previous auto tag(s) from the server.
+            rows = (await db.execute(
+                sa.text(
+                    "SELECT st.tag_id, st.auto_kind, t.name FROM server_tags st "
+                    "JOIN tags t ON t.id = st.tag_id "
+                    "WHERE st.server_id = :s AND st.tag_id != :t "
+                    "AND (st.auto_kind = :k OR st.auto_kind IS NULL)"
+                ),
+                {"s": server.id, "t": tag_id, "k": kind},
+            )).fetchall()
+            stale = [
+                r[0] for r in rows
+                if r[1] == kind or _LEGACY_AUTO_TAG_RE[kind].fullmatch(r[2] or "")
+            ]
+            for old_tag_id in stale:
+                await db.execute(
+                    sa.text("DELETE FROM server_tags WHERE server_id = :s AND tag_id = :t"),
+                    {"s": server.id, "t": old_tag_id},
+                )
+            if stale:
+                logger.info("auto-tag: replaced %d stale %s tag(s) on %s with '%s'",
+                            len(stale), kind, server.name, tag_name)
+
+            # Assign the current one. An existing unmarked assignment of the same
+            # tag (made before auto_kind existed) is adopted as automatic.
             await db.execute(
-                sa.text("INSERT OR IGNORE INTO server_tags (server_id, tag_id) VALUES (:s, :t)"),
-                {"s": server.id, "t": tag_id},
+                sa.text(
+                    "INSERT INTO server_tags (server_id, tag_id, auto_kind) VALUES (:s, :t, :k) "
+                    "ON CONFLICT(server_id, tag_id) DO UPDATE SET auto_kind = excluded.auto_kind "
+                    "WHERE server_tags.auto_kind IS NULL"
+                ),
+                {"s": server.id, "t": tag_id, "k": kind},
             )
     except Exception as exc:
         logger.warning("auto_tag_server failed for %s: %s", server.name, exc)

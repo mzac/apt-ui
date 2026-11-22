@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.actor import set_actor
 from backend.auth import get_current_user, require_admin
 from backend.database import get_db
-from backend.eol_data import get_eol_status_from_os_info
+from backend.eol_data import get_eol_status_from_os_info, is_proxmox_ve
 from backend.models import (
     PackageWatch, Server, ServerGroup, ServerGroupMembership, ServerStats, ServerTag, Tag,
     UpdateCheck, User,
@@ -284,7 +284,7 @@ async def _build_server_out(
         notes=server.notes,
         is_docker_host=_server_is_docker_host(server.hostname, stats_row.host_ips if stats_row else None),
         apt_proxy=stats_row.apt_proxy if stats_row else None,
-        is_proxmox=bool(server.os_info and server.os_info.startswith("Proxmox VE")),
+        is_proxmox=is_proxmox_ve(server.os_info),
         is_reachable=server.is_reachable,
         last_seen=server.last_seen,
         kernel_install_date=stats_row.kernel_install_date if stats_row else None,
