@@ -4,7 +4,9 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.11.21-01] — 2026-11-21
+
+Fixes Proxmox VE misdetection of LXC containers ([#101](https://github.com/mzac/apt-ui/issues/101)) and automatic OS / virtualisation tags that were never replaced when a host changed.
 
 ### Fixed
 
