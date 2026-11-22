@@ -158,6 +158,10 @@ class ServerTag(Base):
     tag_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
     )
+    # 'os' / 'virt' when the assignment was made by the auto-tagger after a
+    # check; NULL for tags a person assigned. Only auto assignments are ever
+    # removed automatically (when the host's OS or virt type changes).
+    auto_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     server: Mapped["Server"] = relationship("Server", back_populates="server_tags")
     tag: Mapped["Tag"] = relationship("Tag", back_populates="server_tags")

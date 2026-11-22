@@ -19,6 +19,7 @@ from backend.auth import get_current_user, ws_authenticate, require_admin
 from backend.actor import set_actor
 from backend.config import ENABLE_TERMINAL
 from backend.database import get_db, AsyncSessionLocal
+from backend.eol_data import is_proxmox_ve
 from backend.models import Server, ScheduleConfig, UpdateCheck, User
 from backend.schemas import PackageSearchResult, UpgradeRequest
 from backend.ssh_manager import _connect_options, apt_prefix, conffile_opts, dpkg_conffile_opts, run_command, sudo_prefix
@@ -529,6 +530,17 @@ async def ws_pveupgrade(websocket: WebSocket, server_id: int):
         server = server_result.scalar_one_or_none()
         if server is None:
             await websocket.send_json({"type": "error", "data": "Server not found"})
+            await websocket.close()
+            return
+        # Only offered for Proxmox VE nodes, so refuse it for anything else too —
+        # an LXC container on a PVE host used to be misdetected as one and the
+        # run died on a missing `pveupgrade` (issue #101).
+        if not is_proxmox_ve(server.os_info):
+            await websocket.send_json({
+                "type": "error",
+                "data": "pveupgrade is only available on Proxmox VE nodes. Run a check to refresh "
+                        "this server's OS detection, then use a normal upgrade.",
+            })
             await websocket.close()
             return
         if await _ws_refuse_if_readonly_root(websocket, db, server, "Upgrade"):
