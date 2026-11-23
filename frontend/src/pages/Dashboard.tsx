@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, Fragment } from 'react'
 import ContainerBadge, { containerRuntime } from '@/components/ContainerBadge'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
@@ -6,6 +6,7 @@ import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache
 import type { Server, ServerGroup, FleetOverview, ServerStatus, Tag, AptCacheStats, AptCacheDailyRow, PackageInfo } from '@/types'
 import { usePolling } from '@/hooks/usePolling'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useDashboardPrefs, useButtonVisible, type SectionId } from '@/hooks/useDashboardPrefs'
 import { useJobStore, visibleServerTasks } from '@/hooks/useJobStore'
 import TaskLogModal, { taskTypeLabel, statusBadge } from '@/components/TaskLogModal'
 import { useServersStore } from '@/hooks/useServers'
@@ -22,6 +23,9 @@ import DriftModal from '@/components/DriftModal'
 import CopySshButton from '@/components/CopySshButton'
 import { relativeTime, isStale } from '@/utils/datetime'
 import { PieChart, Pie, Cell, Tooltip as ReTooltip } from 'recharts'
+
+/** Opens Settings → Servers with the Add Server dialog already showing. */
+const ADD_SERVER_URL = '/settings?tab=Servers&add=1'
 
 function osIcon(osInfo: string | null): string {
   if (!osInfo) return '🖥'
@@ -93,6 +97,8 @@ const PieTooltipContent = ({
 
 export default function Dashboard() {
   const { user } = useAuthStore()
+  const layout = useDashboardPrefs()
+  const showButton = useButtonVisible()
   const [serverList, setServerList] = useState<Server[]>([])
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [initialLoaded, setInitialLoaded] = useState(false)
@@ -461,6 +467,11 @@ export default function Dashboard() {
   const groupsWithServers = groupList.filter(g => g.server_count > 0 ||
     serverList.some(s => (s.groups ?? []).some(sg => sg.id === g.id)))
 
+  const sectionOrder: (SectionId | 'tasks')[] = layout.order.flatMap(id => [
+    ...(layout.hiddenSections.includes(id) ? [] : [id]),
+    ...(id === 'summary' ? ['tasks' as const] : []),
+  ])
+
   return (
     <div className="space-y-4">
       {/* Load failure banner — a poll after the first successful load failed. The
@@ -472,6 +483,11 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* The sections below are built as a keyed map and rendered in the order the
+          user chose under Account → Display (issue #105). `tasks` is not a
+          user-facing section: in-flight operations always show, right after the
+          summary's slot. */}
+      {(() => { const parts: Record<SectionId | 'tasks', React.ReactNode> = { summary: (<>
       {/* Fleet summary */}
       {overview && (
         <>
@@ -563,6 +579,7 @@ export default function Dashboard() {
         </p>
       )}
 
+      </>), tasks: (<>
       {/* Reattach to in-flight operations (issue #62) — only rendered while there's
           something to reattach to, so a quiet fleet doesn't grow an empty section. */}
       {reattachableTasks.length > 0 && (
@@ -598,9 +615,11 @@ export default function Dashboard() {
         </div>
       )}
 
+      </>), trend: (<>
       {/* Fleet trend (hidden until 2+ snapshots exist) */}
       <FleetTrendCard />
 
+      </>), filters: (<>
       {/* Combined groups + tags filter row */}
       {(groupsWithServers.length > 0 || allTags.length > 0) && (
         <div className="flex flex-wrap gap-1 items-center">
@@ -661,6 +680,7 @@ export default function Dashboard() {
         </div>
       )}
 
+      </>), toolbar: (<>
       {/* Toolbar */}
       <div className="flex flex-wrap gap-2 items-center">
         <input
@@ -675,6 +695,7 @@ export default function Dashboard() {
           <option value="name">Sort: Name</option>
           <option value="group">Sort: Group</option>
         </select>
+        {showButton('group-view') && (
         <button
           onClick={() => setGroupView(v => !v)}
           className={`btn-secondary text-xs ${groupView ? 'bg-surface-2' : ''}`}
@@ -682,6 +703,8 @@ export default function Dashboard() {
         >
           ⊞ Group
         </button>
+        )}
+        {showButton('density') && (
         <button
           onClick={() => setDensity(d => { const n = d === 'compact' ? 'comfortable' : 'compact'; localStorage.setItem('dashboard:density', n); return n })}
           className={`btn-secondary text-xs ${density === 'compact' ? 'bg-surface-2' : ''}`}
@@ -689,6 +712,8 @@ export default function Dashboard() {
         >
           {density === 'compact' ? '▭ Cards' : '≣ List'}
         </button>
+        )}
+        {showButton('refresh-all') && (
         <div className="relative group/check">
           <button onClick={handleRefreshAll} disabled={checkingAll} className="btn-secondary text-xs">
             {checkingAll && checkingMode === 'refresh'
@@ -703,6 +728,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+        )}
+        {showButton('check-all') && (
         <div className="relative group/checkall">
           <button onClick={handleCheckAll} disabled={checkingAll} className="btn-secondary text-xs">
             {checkingAll && checkingMode === 'check'
@@ -717,7 +744,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-        {serversWithUpdates.length > 0 && (
+        )}
+        {showButton('upgrade-all') && serversWithUpdates.length > 0 && (
           <button
             // Also clear the minimized flag — otherwise clicking this while the modal
             // is minimized re-set an already-true flag and the wrapper stayed display:none,
@@ -728,13 +756,19 @@ export default function Dashboard() {
             Upgrade All ({serversWithUpdates.length})
           </button>
         )}
-        {serversWithUpdates.length > 0 && (
+        {showButton('all-updates') && serversWithUpdates.length > 0 && (
           <button onClick={() => setShowUpdatesSummary(v => !v)} className="btn-secondary text-xs">
             {showUpdatesSummary ? 'Hide Summary' : `All Updates`}
           </button>
         )}
+        {user?.is_admin && showButton('add-server') && (
+          <Link to={ADD_SERVER_URL} className="btn-secondary text-xs ml-auto" title="Add a server to the fleet">
+            + Add Server
+          </Link>
+        )}
       </div>
 
+      </>), servers: (<>
       {/* Check-all progress banner */}
       {checkingAll && (
         <div className="bg-cyan/10 border border-cyan/30 rounded px-3 py-2 text-sm text-cyan font-mono flex items-center gap-2">
@@ -774,7 +808,7 @@ export default function Dashboard() {
           {initialLoaded && filtered.length === 0 && (
             <div className="py-12 text-center text-text-muted text-sm">
               {serverList.length === 0 ? (
-                <>No servers yet. <Link to="/settings" className="text-cyan underline">Add one in Settings.</Link></>
+                <>No servers yet. <Link to={ADD_SERVER_URL} className="text-cyan underline">Add one.</Link></>
               ) : 'No servers match your filter.'}
             </div>
           )}
@@ -846,12 +880,15 @@ export default function Dashboard() {
           {initialLoaded && filtered.length === 0 && (
             <div className="col-span-full py-12 text-center text-text-muted text-sm">
               {serverList.length === 0 ? (
-                <>No servers yet. <Link to="/settings" className="text-cyan underline">Add one in Settings.</Link></>
+                <>No servers yet. <Link to={ADD_SERVER_URL} className="text-cyan underline">Add one.</Link></>
               ) : 'No servers match your filter.'}
             </div>
           )}
         </div>
       )}
+
+      </>) }
+      return sectionOrder.map(id => <Fragment key={id}>{parts[id]}</Fragment>) })()}
 
       {/* Bulk action bar — appears when servers are selected (issue #62) */}
       {selectedIds.size > 0 && (
@@ -1214,6 +1251,7 @@ function ServerRow({ server: s, checking, onCheck, onToggleEnabled, reachable, s
   onToggleSelect?: () => void
 }) {
   const navigate = useNavigate()
+  const showButton = useButtonVisible()
   const status = checking ? 'checking' : serverStatus(s)
   const c = s.latest_check
   const primaryGroupColor = (s.groups ?? [])[0]?.color || s.group_color || null
@@ -1243,8 +1281,8 @@ function ServerRow({ server: s, checking, onCheck, onToggleEnabled, reachable, s
         {c?.reboot_required && <span title="reboot required" className="text-amber">↻</span>}
       </div>
       <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-        <button onClick={onCheck} disabled={checking} className="btn-secondary text-xs py-0.5 px-2 disabled:opacity-50">{checking ? '…' : 'Check'}</button>
-        <button onClick={onToggleEnabled} className="btn-secondary text-xs py-0.5 px-2" title={s.is_enabled ? 'Disable server' : 'Enable server'}>{s.is_enabled ? 'Disable' : 'Enable'}</button>
+        {showButton('card-check') && <button onClick={onCheck} disabled={checking} className="btn-secondary text-xs py-0.5 px-2 disabled:opacity-50">{checking ? '…' : 'Check'}</button>}
+        {showButton('card-enable') && <button onClick={onToggleEnabled} className="btn-secondary text-xs py-0.5 px-2" title={s.is_enabled ? 'Disable server' : 'Enable server'}>{s.is_enabled ? 'Disable' : 'Enable'}</button>}
       </div>
     </div>
   )
@@ -1260,6 +1298,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
   onToggleSelect?: () => void
 }) {
   const navigate = useNavigate()
+  const showButton = useButtonVisible()
   const status = checking ? 'checking' : serverStatus(s)
   const c = s.latest_check
   const [showInstall, setShowInstall] = useState(false)
@@ -1518,6 +1557,7 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           {isStale(c?.checked_at, 24) && ' ⚠'}
         </span>
         <div className="flex gap-1 flex-wrap justify-end items-center">
+          {showButton('card-enable') && (
           <button
             onClick={onToggleEnabled}
             className={`text-xs py-0.5 px-1.5 rounded border transition-colors font-mono ${
@@ -1529,14 +1569,18 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           >
             {s.is_enabled ? '⏸' : '▶'}
           </button>
+          )}
+          {showButton('card-check') && (
           <button onClick={e => { e.stopPropagation(); onCheck() }} disabled={checking} className="btn-secondary text-xs py-0.5">
             {checking ? '…' : 'Check'}
           </button>
-          {c && c.packages_available > 0 && (
+          )}
+          {showButton('card-upgrade') && c && c.packages_available > 0 && (
             <Link to={`/servers/${s.id}`} onClick={e => e.stopPropagation()} className="btn-amber text-xs py-0.5">
               Upgrade
             </Link>
           )}
+          {showButton('card-install') && (
           <button
             onClick={e => { e.stopPropagation(); setShowInstall(true) }}
             className="btn-secondary text-xs py-0.5"
@@ -1544,14 +1588,17 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           >
             + Install
           </button>
-          {c?.reboot_required && (
+          )}
+          {showButton('card-reboot') && c?.reboot_required && (
             <span onClick={e => e.stopPropagation()}>
               <RebootButton serverId={s.id} serverName={s.name} />
             </span>
           )}
+          {showButton('card-edit') && (
           <Link to={`/servers/${s.id}`} state={{ openEdit: true }} onClick={e => e.stopPropagation()} className="btn-secondary text-xs py-0.5">
             ✎
           </Link>
+          )}
         </div>
       </div>
       {showInstall && (

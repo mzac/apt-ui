@@ -1,3 +1,4 @@
+import Logo from '@/components/Logo'
 import { useEffect, useState } from 'react'
 import { auth } from '@/api/client'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -46,7 +47,7 @@ export default function ForcePasswordChange() {
     <div className="min-h-screen bg-bg flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="text-green font-mono text-3xl mb-2">⬡</div>
+          <Logo size={44} className="mx-auto mb-3" />
           <h1 className="font-mono text-xl text-text-primary">apt-ui</h1>
         </div>
 

@@ -4,11 +4,23 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.11.22-01] — 2026-11-22
 
 ### Added
 
 - **Container badge.** Servers that are containers now show a small `LXC` / `DOCKER` badge next to the OS name on dashboard cards, in the compact list, and on the server page ([#101](https://github.com/mzac/apt-ui/issues/101)). A container shares its host's kernel, so it helps to see at a glance which entries are not full machines. The badge replaces the small `container (lxc)` text that was easy to miss; VMs and bare-metal hosts are shown as before.
+- **Arrange the dashboard your way** ([#105](https://github.com/mzac/apt-ui/issues/105)). Under the new **Account → Display** page you can reorder the dashboard's sections (summary tiles, trend chart, group/tag filters, toolbar, server list), hide the ones you don't use, switch off individual toolbar and server-card buttons, and hide pages from the top navigation. These choices are saved in your browser, like the theme and sort order. Hiding something only tidies the screen: hidden pages still open from the command palette, and what an account may do is unchanged.
+- **Add Server from the dashboard** ([#105](https://github.com/mzac/apt-ui/issues/105)). Admins get a `+ Add Server` button in the dashboard toolbar that opens the Add Server dialog directly. The command palette's "Add server" action does the same.
+- **Account menu** ([#105](https://github.com/mzac/apt-ui/issues/105)). Clicking your username in the header opens a menu with **Account** (password, 2FA, API tokens), **Display** and **Logout**.
+
+### Changed
+
+- **Personal settings moved out of Settings** ([#105](https://github.com/mzac/apt-ui/issues/105)). The **Account** tab and the **Display** section of Preferences now live on their own `/account` page, reached from the username menu. Settings is fleet configuration only. Old links to `/settings?tab=Account` redirect.
+- **One logo everywhere.** The header and login screens now use the same terminal-prompt mark as the browser tab icon, replacing the `⬡` character.
+
+### Fixed
+
+- **The browser tab icon never loaded** ([#105](https://github.com/mzac/apt-ui/issues/105)). The favicon was built into the image, but the server answered `/favicon.svg` with the app's HTML page, so browsers showed a blank icon. Files at the root of the frontend build are now served as themselves.
 
 ---
 

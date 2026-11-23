@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { useSearchParams } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, scheduler as schedulerApi, notifications as notifApi, auth, config as configApi, aptcache as aptcacheApi, tailscale as tailscaleApi, maintenance as maintenanceApi, hooks as hooksApi } from '@/api/client'
 import type { MaintenanceWindow, UpgradeHook } from '@/api/client'
 import type { Server, ServerGroup, ScheduleConfig, NotificationConfig, Tag, AptCacheServer, TailscaleStatus } from '@/types'
@@ -9,7 +9,9 @@ import { confirmDialog } from '@/hooks/useConfirm'
 import { toast } from '@/hooks/useToast'
 import NotificationDestinations from '@/components/NotificationDestinations'
 
-const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Users', 'Account', 'Backup'] as const
+// Personal settings (password, 2FA, API tokens, display) live on /account, reached
+// from the username menu — this page is fleet configuration only (issue #105).
+const TABS = ['Servers', 'Schedule', 'Preferences', 'Notifications', 'Infrastructure', 'Users', 'Backup'] as const
 type Tab = typeof TABS[number]
 
 const PALETTE = [
@@ -123,6 +125,9 @@ export default function Settings() {
   // rendering an empty page.
   const activeTab: Tab = visibleTabs.includes(tab) ? tab : 'Servers'
 
+  // Old bookmarks and links to the tab that moved.
+  if (tabParam === 'Account') return <Navigate to="/account" replace />
+
   return (
     <div className="max-w-5xl mx-auto">
       <h1 className="text-lg font-mono text-text-primary mb-4">Settings</h1>
@@ -154,7 +159,6 @@ export default function Settings() {
       {activeTab === 'Notifications' && <NotificationsTab />}
       {activeTab === 'Infrastructure' && <InfrastructureTab />}
       {activeTab === 'Users' && <UsersTab />}
-      {activeTab === 'Account' && <AccountTab />}
       {activeTab === 'Backup' && <BackupTab />}
     </div>
   )
@@ -195,6 +199,20 @@ function ServersTab() {
   const [groupList, setGroupList] = useState<ServerGroup[]>([])
   const [tagList, setTagList] = useState<Tag[]>([])
   const [showAddServer, setShowAddServer] = useState(false)
+  // ?add=1 opens the Add Server dialog straight away — the dashboard's
+  // "+ Add Server" button and the command palette link here (issue #105). The
+  // flag is dropped from the URL once used so a reload doesn't reopen it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const addRequested = searchParams.get('add') === '1'
+  useEffect(() => {
+    if (!addRequested) return
+    setShowAddServer(true)
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('add')
+      return next
+    }, { replace: true })
+  }, [addRequested, setSearchParams])
   const [showAddGroup, setShowAddGroup] = useState(false)
   const [showAddTag, setShowAddTag] = useState(false)
   const [form, setForm] = useState({ name: '', hostname: '', username: '', ssh_port: '22', groupIds: [] as number[], tagIds: [] as number[], ssh_private_key: '', notes: '' })
@@ -2454,72 +2472,12 @@ function PreferencesTab() {
         </div>
       </section>
 
-      <DisplayPreferencesSection />
       <div className="flex items-center gap-3">
         <button type="submit" className="btn-primary" disabled={saving || cronInvalid}>{saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Preferences'}</button>
         {error && <span className="text-xs text-red">{error}</span>}
       </div>
     </form>
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Display preferences (localStorage only — no backend)
-// ---------------------------------------------------------------------------
-
-const SORT_OPTIONS = [
-  { value: 'name',    label: 'Name' },
-  { value: 'status',  label: 'Status' },
-  { value: 'updates', label: 'Update count' },
-  { value: 'group',   label: 'Group' },
-] as const
-
-function DisplayPreferencesSection() {
-  const [defaultSort, setDefaultSort] = useState(
-    () => localStorage.getItem('dashboard:sortBy') ?? 'status'
-  )
-  const [alwaysShowReboot, setAlwaysShowReboot] = useState(
-    () => localStorage.getItem('dashboard:alwaysShowReboot') === 'true'
-  )
-
-  function handleSortChange(v: string) {
-    setDefaultSort(v)
-    localStorage.setItem('dashboard:sortBy', v)
-  }
-
-  function handleAlwaysShowRebootChange(v: boolean) {
-    setAlwaysShowReboot(v)
-    localStorage.setItem('dashboard:alwaysShowReboot', String(v))
-  }
-
-  return (
-    <section className="card p-4 space-y-3">
-      <h2 className="text-sm font-medium text-text-primary">Display</h2>
-      <p className="text-xs text-text-muted">These preferences are stored locally in your browser and apply only to this device.</p>
-      <div>
-        <label className="label">Always show Reboot button</label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={alwaysShowReboot}
-            onChange={e => handleAlwaysShowRebootChange(e.target.checked)}
-            className="w-4 h-4 accent-green"
-          />
-          <span className="text-sm text-text-primary">Show Reboot button regardless of reboot-required state</span>
-        </label>
-        <p className="text-xs text-text-muted mt-1">When enabled, the Reboot button is always visible on server cards and the server detail page, not only when the system reports a reboot is needed.</p>
-      </div>
-      <div>
-        <label className="label">Default dashboard sort order</label>
-        <select className="input w-48" value={defaultSort} onChange={e => handleSortChange(e.target.value)}>
-          {SORT_OPTIONS.map(o => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-        <p className="text-xs text-text-muted mt-1">Takes effect on the next page load. Changing the sort on the dashboard also updates this.</p>
-      </div>
-    </section>
   )
 }
 
@@ -3367,7 +3325,7 @@ function UsersTab() {
 // ---------------------------------------------------------------------------
 // Account tab
 // ---------------------------------------------------------------------------
-function AccountTab() {
+export function AccountTab() {
   const { user, logout } = useAuthStore()
   const [minPasswordLength] = usePasswordMinLength()
   const [form, setForm] = useState({ current_password: '', new_password: '', confirm: '' })

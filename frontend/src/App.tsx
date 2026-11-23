@@ -15,6 +15,7 @@ import Reports from '@/pages/Reports'
 import Rollouts from '@/pages/Rollouts'
 import Security from '@/pages/Security'
 import Run from '@/pages/Run'
+import Account from '@/pages/Account'
 
 // Keyed by :id so navigating between servers (e.g. via the command palette) fully
 // remounts ServerDetail and all its tab children. Without this, react-router reuses
@@ -143,6 +144,16 @@ export default function App() {
             <RequireAuth>
               <Layout>
                 <Run />
+              </Layout>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/account"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Account />
               </Layout>
             </RequireAuth>
           }

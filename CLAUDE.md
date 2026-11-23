@@ -104,6 +104,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 - Proxmox VE detection uses `pveversion`, else an installed (`ii`) `pve-manager` package — not `/etc/pve/pve-release` (doesn't exist on modern PVE) and **never the `-pve` kernel suffix**: LXC containers share the host kernel, so that fallback labelled every container on a PVE host as Proxmox VE (issue #101). "Is this a PVE node?" is `eol_data.is_proxmox_ve()` everywhere (UI flag and the `pveupgrade` gate); don't reintroduce `os_info.startswith("Proxmox VE")`.
 - **Auto OS / virt tags replace themselves.** `server_tags.auto_kind` (`os`/`virt`, NULL = assigned by a person) marks auto-tagger rows; `_auto_tag_server()` keeps one per kind and drops the rest. Legacy NULL rows are only removed when they match `_LEGACY_AUTO_TAG_RE`. `_set_server_tags()` (manual edit) recreates rows with NULL — the next check re-adopts the current auto tags.
 - Dashboard sort order persists to `localStorage` key `dashboard:sortBy`. Theme persists to `localStorage` key `apt:theme`.
+- **Dashboard layout is per-browser and cosmetic** (issue #105). `frontend/src/hooks/useDashboardPrefs.ts` (localStorage key `dashboard:layout`) holds section order/visibility, hidden buttons and hidden nav links; the dashboard builds its sections as a keyed map and renders them in that order. Adding a section or a hideable button means adding it to `SECTIONS` / `BUTTONS` there. It is never access control — keep `require_admin` / `user.is_admin` checks regardless.
+- **`/settings` is fleet configuration; `/account` is the signed-in user's own** (password, 2FA, API tokens, display preferences). `AccountTab` is still defined in `Settings.tsx` (it shares the password helpers with the Users tab) and is exported to `pages/Account.tsx`.
+- **Root-level static files are served from an allowlist built at startup** (`_root_static_files` in `backend/main.py`), so the request path is only a dict key. Before that the SPA fallback answered `/favicon.svg` with `index.html`. Anything added to `frontend/public/` is picked up automatically.
 - 401 responses anywhere in `api/client.ts` redirect to `/login?expired=1`.
 - `reachability_ttl_minutes` in `schedule_config`: servers that fail to connect during check-all are skipped for subsequent runs until the TTL expires, preventing SSH timeouts from slowing the whole fleet.
 - API token hashing uses `hashlib.scrypt` with a fixed salt (`b"apt-ui-api-token"`) for deterministic, memory-hard hashing. SHA-256 / HMAC-SHA256 are rejected by CodeQL as "insufficient" for credential storage.
@@ -180,10 +183,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a full diagram and detailed breakdown
 | Server detail (Packages / Upgrade / Health / Apt Repos / dpkg Log / History / Stats / Shell) | `frontend/src/pages/ServerDetail.tsx` |
 | Fleet-wide history (Upgrade History / Notification History / SSH Audit Log / Auth Events sub-tabs) | `frontend/src/pages/History.tsx` |
 | Fleet-wide CVE inventory (CVE → servers / Server → CVEs views) | `frontend/src/pages/Security.tsx` |
-| Settings (Schedule / Hooks / Maintenance / Notifications / Users / Servers / Account) | `frontend/src/pages/Settings.tsx` |
+| Settings (Schedule / Hooks / Maintenance / Notifications / Users / Servers) | `frontend/src/pages/Settings.tsx` |
 | Package templates | `frontend/src/pages/Templates.tsx` |
 | Multi-server package comparison | `frontend/src/pages/Compare.tsx` |
 | Login (+ 2FA code input) | `frontend/src/pages/Login.tsx` |
+| Account (Account / Display tabs — personal settings) | `frontend/src/pages/Account.tsx` |
 | Fleet-wide package search | `frontend/src/pages/Search.tsx` |
 | Upgrade activity reports + change records | `frontend/src/pages/Reports.tsx` |
 | Safe fleet command runner (admin) | `frontend/src/pages/Run.tsx` |
