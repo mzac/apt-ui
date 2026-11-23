@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import ContainerBadge from '@/components/ContainerBadge'
 import { useParams, Link, useLocation } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, tags as tagsApi, config as configApi } from '@/api/client'
 import type { DpkgLogEntry, AptRepoFile } from '@/api/client'
@@ -346,6 +347,7 @@ export default function ServerDetail() {
       {c && (
         <div className="flex flex-wrap gap-3 text-xs font-mono text-text-muted">
           {server.os_info && <span className="text-text-primary">{server.os_info}</span>}
+          <ContainerBadge virtType={server.virt_type} />
           {c.packages_available > 0 && (
             <span className="text-amber">{c.packages_available} updates ({c.security_packages} security)</span>
           )}

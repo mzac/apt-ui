@@ -4,6 +4,14 @@ All notable changes to apt-ui are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Container badge.** Servers that are containers now show a small `LXC` / `DOCKER` badge next to the OS name on dashboard cards, in the compact list, and on the server page ([#101](https://github.com/mzac/apt-ui/issues/101)). A container shares its host's kernel, so it helps to see at a glance which entries are not full machines. The badge replaces the small `container (lxc)` text that was easy to miss; VMs and bare-metal hosts are shown as before.
+
+---
+
 ## [2026.11.21-01] — 2026-11-21
 
 Fixes Proxmox VE misdetection of LXC containers ([#101](https://github.com/mzac/apt-ui/issues/101)) and automatic OS / virtualisation tags that were never replaced when a host changed.

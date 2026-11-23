@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import ContainerBadge, { containerRuntime } from '@/components/ContainerBadge'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
 import { servers as serversApi, groups as groupsApi, stats as statsApi, aptcache as aptcacheApi, type PendingUpdatePkg } from '@/api/client'
@@ -1230,6 +1231,7 @@ function ServerRow({ server: s, checking, onCheck, onToggleEnabled, reachable, s
       <div className="min-w-0 flex-1 flex items-center gap-2">
         <span className="font-mono text-sm text-text-primary truncate">{s.name}</span>
         <span className="text-xs text-text-muted font-mono truncate hidden sm:inline">{s.hostname}</span>
+        <ContainerBadge virtType={s.virt_type} />
       </div>
       <div className="flex items-center gap-2 text-xs font-mono shrink-0">
         {c?.status === 'error' && <span className="text-red">error</span>}
@@ -1325,9 +1327,12 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
               <CopySshButton username={s.username} hostname={s.hostname} port={s.ssh_port} />
             </span>
           </div>
-          {s.os_info && (
-            <div className="text-xs text-text-muted font-mono truncate">
-              <span className="mr-1">{osIcon(s.os_info)}</span>{s.os_info}
+          {(s.os_info || containerRuntime(s.virt_type)) && (
+            <div className="flex items-center gap-1.5 text-xs text-text-muted font-mono min-w-0">
+              {s.os_info && (
+                <span className="truncate"><span className="mr-1">{osIcon(s.os_info)}</span>{s.os_info}</span>
+              )}
+              <ContainerBadge virtType={s.virt_type} />
             </div>
           )}
         </div>
@@ -1362,11 +1367,11 @@ function ServerCard({ server: s, checking, onCheck, onToggleEnabled, reachable, 
           ) : null}
 
           {/* Hardware stats */}
-          {(s.cpu_count != null || memGb != null || s.virt_type) && (
+          {(s.cpu_count != null || memGb != null || (s.virt_type && !containerRuntime(s.virt_type))) && (
             <div className="text-[10px] text-text-muted font-mono text-right leading-tight mt-0.5">
               {s.cpu_count != null && <div>{s.cpu_count} CPU</div>}
               {memGb != null && <div>{memGb} GB</div>}
-              {s.virt_type && <div className="text-text-muted/60 truncate max-w-[80px]">{s.virt_type}</div>}
+              {s.virt_type && !containerRuntime(s.virt_type) && <div className="text-text-muted/60 truncate max-w-[80px]">{s.virt_type}</div>}
             </div>
           )}
         </div>
