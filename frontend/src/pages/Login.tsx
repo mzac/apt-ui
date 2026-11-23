@@ -1,3 +1,4 @@
+import Logo from '@/components/Logo'
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { auth } from '@/api/client'
@@ -106,7 +107,7 @@ export default function Login() {
     <div className="min-h-screen bg-bg flex items-center justify-center">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="text-green font-mono text-3xl mb-2">⬡</div>
+          <Logo size={44} className="mx-auto mb-3" />
           <h1 className="font-mono text-xl text-text-primary">apt-ui</h1>
           <p className="text-text-muted text-sm mt-1">Fleet update manager</p>
         </div>

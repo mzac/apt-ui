@@ -358,6 +358,8 @@ export default function CommandPalette() {
       { label: 'Security', path: '/security', hint: 'Fleet CVE inventory' },
       { label: 'Reports', path: '/reports', hint: 'Upgrade activity reports' },
       { label: 'Settings', path: '/settings', hint: 'Configure apt-ui' },
+      { label: 'Account', path: '/account', hint: 'Password, 2FA, API tokens' },
+      { label: 'Display preferences', path: '/account?tab=Display', hint: 'Dashboard layout, buttons, navigation' },
       // Run calls an admin-only endpoint — gate it the same way the nav does.
       ...(user?.is_admin
         ? [{ label: 'Run', path: '/run', hint: 'Safe fleet command runner' }]
@@ -387,7 +389,6 @@ export default function CommandPalette() {
       { label: 'Notifications', tab: 'Notifications', hint: 'Email + webhook config' },
       { label: 'Users', tab: 'Users', hint: 'Multi-user management' },
       { label: 'Servers', tab: 'Servers', hint: 'Add or edit servers' },
-      { label: 'Account', tab: 'Account', hint: 'Password, 2FA, API tokens' },
       { label: 'Preferences', tab: 'Preferences', hint: 'Concurrency, retention' },
       { label: 'Infrastructure', tab: 'Infrastructure', hint: 'Tailscale + apt-cacher-ng' },
       { label: 'Backup', tab: 'Backup', hint: 'Export / import config' },
@@ -448,8 +449,8 @@ export default function CommandPalette() {
       },
       {
         label: 'Add server',
-        hint: 'Open the server settings page',
-        perform: () => navigate('/settings?tab=Servers'),
+        hint: 'Open the Add Server dialog',
+        perform: () => navigate('/settings?tab=Servers&add=1'),
       },
       {
         label: 'Logout',

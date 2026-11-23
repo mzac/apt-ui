@@ -10,6 +10,8 @@ import type { Job } from '@/hooks/useJobStore'
 import CommandPalette from './CommandPalette'
 import ToastHost from './ToastHost'
 import ConfirmHost from './ConfirmHost'
+import Logo from './Logo'
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs'
 
 function isMac(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -75,6 +77,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { theme, toggle: toggleTheme } = useTheme()
   const [bellOpen, setBellOpen] = useState(false)
   const bellRef = useRef<HTMLDivElement>(null)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+  const hiddenNav = useDashboardPrefs(s => s.hiddenNav)
   const checkPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Release check (issue #13) — poll once on mount; cached server-side for 6h
@@ -142,17 +147,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
         setBellOpen(false)
       }
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false)
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') { setBellOpen(false); setUserMenuOpen(false) }
     }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [])
+
+  // Close the account menu whenever the route changes.
+  useEffect(() => { setUserMenuOpen(false) }, [pathname])
 
   function openBell() {
     setBellOpen(v => !v)
     if (!bellOpen) markSeen()
   }
 
-  const nav: { to: string; label: string; badge?: number; badgeColor?: string }[] = [
+  const allNav: { to: string; label: string; badge?: number; badgeColor?: string }[] = [
     { to: '/', label: 'Dashboard' },
     { to: '/history', label: 'History' },
     { to: '/templates', label: 'Templates' },
@@ -169,13 +187,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     // Run page calls an admin-only endpoint — only surface it to admins.
     ...(user?.is_admin ? [{ to: '/run', label: 'Run' }] : []),
   ]
+  // Pages the user hid under Account → Display. The page you are on always stays
+  // in the bar, so a hidden page opened from the palette still shows where you are.
+  const nav = allNav.filter(n => !hiddenNav.includes(n.to) || n.to === pathname)
 
   return (
     <div className="min-h-screen bg-bg text-text-primary font-sans">
       {/* Top bar */}
       <header className="bg-surface border-b border-border h-12 flex items-center px-3 gap-3 sticky top-0 z-40">
-        <Link to="/" className="font-mono text-green font-medium tracking-tight text-sm hover:text-green/80 transition-colors shrink-0">
-          ⬡ <span className="hidden sm:inline">apt-ui</span>
+        <Link to="/" className="flex items-center gap-2 font-mono text-green font-medium tracking-tight text-sm hover:text-green/80 transition-colors shrink-0">
+          <Logo size={22} />
+          <span className="hidden sm:inline">apt-ui</span>
         </Link>
         <nav className="flex gap-0.5 flex-1 overflow-x-auto min-w-0">
           {nav.map(({ to, label, badge, badgeColor }) => (
@@ -293,19 +315,53 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </Link>
 
         {user && (
-          <div className="flex items-center gap-2 text-sm shrink-0">
-            <span className="text-text-muted font-mono text-xs hidden sm:inline">{user.username}</span>
+          <div ref={userMenuRef} className="relative flex items-center gap-2 text-sm shrink-0">
             {!user.is_admin && (
               <span className="badge bg-blue/10 text-blue border border-blue/30 text-[10px]" title="Read-only — mutations are disabled">
                 read-only
               </span>
             )}
+            {/* Account menu — personal settings live behind the username (issue #105) */}
             <button
-              onClick={logout}
-              className="text-text-muted hover:text-red transition-colors text-xs"
+              onClick={() => setUserMenuOpen(v => !v)}
+              className={`h-8 flex items-center gap-1.5 px-2 rounded text-xs font-mono transition-colors ${
+                userMenuOpen || pathname === '/account'
+                  ? 'bg-surface-2 text-text-primary'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              title="Your account"
             >
-              Logout
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4" aria-hidden="true">
+                <path d="M10 10a4 4 0 100-8 4 4 0 000 8zm-7 8a7 7 0 1114 0H3z" />
+              </svg>
+              <span className="hidden sm:inline max-w-[10rem] truncate">{user.username}</span>
+              <span className="text-[10px]" aria-hidden="true">▾</span>
             </button>
+            {userMenuOpen && (
+              <div role="menu" className="absolute right-0 top-full mt-1 w-52 bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden py-1">
+                <div className="px-3 py-2 border-b border-border">
+                  <div className="text-xs text-text-muted">Signed in as</div>
+                  <div className="text-sm font-mono text-text-primary truncate">{user.username}</div>
+                </div>
+                <Link role="menuitem" to="/account" className="block px-3 py-2 text-sm text-text-primary hover:bg-surface-2 transition-colors">
+                  Account
+                  <span className="block text-xs text-text-muted">Password, 2FA, API tokens</span>
+                </Link>
+                <Link role="menuitem" to="/account?tab=Display" className="block px-3 py-2 text-sm text-text-primary hover:bg-surface-2 transition-colors">
+                  Display
+                  <span className="block text-xs text-text-muted">Dashboard layout and buttons</span>
+                </Link>
+                <button
+                  role="menuitem"
+                  onClick={logout}
+                  className="w-full text-left px-3 py-2 text-sm text-red hover:bg-surface-2 transition-colors border-t border-border"
+                >
+                  Logout
+                </button>
+              </div>
+            )}
           </div>
         )}
       </header>

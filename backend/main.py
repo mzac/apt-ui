@@ -396,7 +396,20 @@ async def health():
 if _static_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
 
+    # Files Vite copies to the root of the build (frontend/public/*: the favicon
+    # and friends). Listed once at startup, so a request path is only ever used as
+    # a dictionary key — it never reaches the filesystem. Without this the SPA
+    # fallback answered /favicon.svg with index.html and the tab icon never loaded
+    # (issue #105).
+    _root_static_files = {
+        p.name: p for p in _static_dir.iterdir()
+        if p.is_file() and p.name != "index.html"
+    }
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
+        root_file = _root_static_files.get(full_path)
+        if root_file is not None:
+            return FileResponse(str(root_file))
         index = _static_dir / "index.html"
         return FileResponse(str(index))

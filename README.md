@@ -119,7 +119,7 @@
 | 🚨 | **Fleet CVE inventory** | `/security` page pivots CVE → servers · severity / status / group filters · CSV export · nav badge with critical-CVE count |
 | 🔐 | **Per-server SSH keys** | Fernet-encrypted in DB · falls back to global `SSH_PRIVATE_KEY` or `SSH_AUTH_SOCK` |
 | 🛡 | **Auto security updates** | per-server `unattended-upgrades` toggle with shield-badge state · streams live SSH output when toggling |
-| 🔢 | **TOTP 2FA** | QR enrolment in Settings → Account · login flow asks for a 6-digit code when enabled |
+| 🔢 | **TOTP 2FA** | QR enrolment under your username → Account · login flow asks for a 6-digit code when enabled |
 | 🔑 | **API tokens + `/api/v1`** | `aptui_<32 url-safe bytes>` · scrypt-hashed · shown once · per-token scopes (read / check / upgrade / calendar) and optional expiry · inbound automation API returns a pollable `job_id` |
 | 👥 | **RBAC** | admin / read-only roles · `require_admin` on ~28 mutation endpoints · "read-only" badge in the nav |
 | 🧱 | **Hardened by default** | no default password (`ADMIN_PASSWORD` or the CLI on first start) · container runs as non-root on a read-only root filesystem with capabilities dropped · hash-locked Python deps, digest-pinned base images, SHA-pinned CI actions |
