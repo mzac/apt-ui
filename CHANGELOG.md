@@ -4,7 +4,7 @@ All notable changes to apt-ui are documented here.
 
 ---
 
-## [Unreleased]
+## [2026.11.22-01] — 2026-11-22
 
 ### Added
 
